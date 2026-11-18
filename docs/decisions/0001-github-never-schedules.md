@@ -25,4 +25,4 @@ Hugi learns about commits by polling, not by webhooks. The host should expose no
 
 ## Consequences
 
-The workflow file stays the only definition of a lane: Hugi reads the job's steps from it instead of restating them. The hosted macOS job can stay in the workflow behind a switch, as a fallback for when the host is down.
+The workflow file stays the only definition of a lane: Hugi reads the job's steps from it instead of restating them. The hosted macOS job can stay in the workflow behind a switch, as a fallback for when the host is down. [ADR-0004](0004-lanes-declared-in-hugi-yaml.md) replaces this fallback: promotion moves the job out of GitHub's workflow, and the fallback for an outage is removing Hugi's statuses from the required checks, then a commit that moves the job back.
