@@ -1,0 +1,22 @@
+# Toolchains baked into the golden image, as a mise global config.
+# build.sh installs this file as ~/.config/mise/config.toml inside the image.
+# Pins come from the lanes' own workflow files and toolchain files; the comment
+# on each line names the source. Add a toolchain here and rebuild the image.
+
+[settings]
+# Runs happen in throwaway VMs, so a repository's own mise.toml or
+# .tool-versions needs no per-checkout trust step.
+trusted_config_paths = ["~"]
+
+[tools]
+# dbtlr/loomcli 90f72d52b ci.yml (setup-node node-version)
+node = "22.23.2"
+# dbtlr/loomcli 90f72d52b ci.yml (pnpm/action-setup version) and mise.toml
+pnpm = "12.16.1"
+# dbtlr/loomcli 90f72d52b ci.yml (setup-bun) and dbtlr/mimir v0.29.0 .tool-versions
+bun = "1.4.4"
+# dbtlr/norn-next 7e71dfe81 rust-toolchain.toml (channel and components)
+rust = { version = "1.97.1", profile = "minimal", components = "clippy,rustfmt" }
+# loomcli's tests run `pwsh`; the workflow takes whatever the runner ships, so this is the
+# current release when the image was specified.
+powershell-core = "7.7.0"
