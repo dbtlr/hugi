@@ -1,0 +1,53 @@
+---
+title: Glossary
+description: Hugi's domain language for lanes, runs, verdicts, images, and how a repository comes to trust its verdicts. Use these terms in code, docs, and reviews.
+---
+# Hugi Glossary
+
+Hugi runs a repository's macOS CI lanes in throwaway VMs on its own host and reports each verdict to GitHub. These terms name what it runs, what it produces, and how a repository comes to rely on it.
+
+## Running
+
+**Lane**:
+One job in a repository's workflow file, with its matrix values fixed, that Hugi runs on macOS. The workflow file is the lane's only definition.
+_Avoid_: Job (when Hugi's unit is meant), pipeline, check
+
+**Step plan**:
+The ordered steps of a lane, read from the workflow file at a commit.
+_Avoid_: Script, recipe
+
+**Run**:
+One execution of a lane at a commit, in its own VM.
+_Avoid_: Build, attempt
+
+**Verdict**:
+The pass or fail Hugi reports for a lane at a commit, with its logs. A lane that cannot be read, a failing step, and a timeout are all fail verdicts. A run that Hugi interrupts, or that fails to clone or boot its VM or to fetch the source, yields no verdict, because the failure lies outside the lane's steps.
+_Avoid_: Result, status (except for the GitHub commit status that carries a verdict)
+
+**Hosted result**:
+The outcome of the same lane at the same commit on GitHub's hosted runners, which shadow compares verdicts against.
+_Avoid_: Hosted verdict
+
+**Golden image**:
+The VM image every run is cloned from, holding the toolchains and warm package caches the enrolled lanes need.
+_Avoid_: Base image, template, snapshot
+
+## Admission
+
+**Enrolment**:
+The admission of a repository to Hugi, recorded outside the repository.
+_Avoid_: Registration, onboarding, subscription
+
+**Allowlist**:
+The authors, recorded outside the repositories, whose pull requests Hugi runs. Commits on an enrolled repository's default branch run without it.
+_Avoid_: Whitelist, trusted users
+
+## Authority
+
+**Shadow**:
+The period in which an enrolled repository's verdicts are posted as advisory statuses and compared with the hosted results, while nothing depends on them.
+_Avoid_: Dry run, trial, beta
+
+**Promotion**:
+The change that makes a repository's verdict a required check and turns off its hosted macOS job for pull requests, after the verdicts matched through shadow.
+_Avoid_: Graduation, cutover
