@@ -33,7 +33,7 @@ lanes:
     matrix: { os: macos-latest }
 ```
 
-The file is a YAML mapping with one key, `lanes`, a nonempty list of entries. It is read with the YAML 1.2 core schema, so `yes` and `no` are strings. Duplicate keys, merge keys (`<<`), anchors, aliases, and explicit YAML tags are refused. Each entry is a mapping with these keys and no others:
+The file is a YAML mapping with one key, `lanes`, a nonempty list of entries. It is read with the YAML 1.2 core schema, so `yes` and `no` are strings. YAML directives such as `%YAML 1.1`, duplicate keys, merge keys (`<<`), anchors, aliases, and explicit YAML tags are refused. Each entry is a mapping with these keys and no others:
 
 - `workflow` (required, a string) names the file the jobs are in. A bare file name, without `/`, is read from `.github/workflows/`. A path containing `/` is relative to the repository root and must be canonical: no leading `/`, and no empty, `.`, or `..` segments. Either form must name a file directly in `.github/workflows/` or directly in `.github/hugi/`. Unlike `hugi run`, a declaration does not accept a leading `./`. Entries are compared by the path the name resolves to, so `ci.yml` and `.github/workflows/ci.yml` name the same file.
 - `jobs` (required) is a nonempty list of distinct job ids in that file.
@@ -56,7 +56,7 @@ Hugi refuses the whole declaration when:
 - a listed job does not exist, or declares `needs`;
 - a job's matrix cannot be expanded when the file is read, for example because it is built by an expression;
 - a filter key appears in no row of a job, or a filter selects no row of a job;
-- two rows of a listed job's expanded matrix are equal under the filter comparison, such as `version: [1, '1']`, so a complete row could not select exactly one;
+- a selected lane's complete row, written as `hugi run --matrix` values, does not select exactly that one row of the job's matrix, as with `version: [1, '1']` or `v: [true, 'True']`;
 - a selected lane's `runs-on` does not resolve to a macOS label Hugi runs, so an entry that forgets the filter on an `[ubuntu-latest, macos-latest]` matrix is refused rather than run on Linux legs;
 - two lanes have the same identity, compared the same way.
 
@@ -76,7 +76,7 @@ A lane's job may not declare `needs`. Hugi does not run upstream jobs and does n
 
 Promotion is one commit in the repository and one change to its settings.
 
-The commit moves the lane's job out of GitHub's workflow into a **Hugi workflow**: a workflow-syntax file directly under `.github/hugi/`, which GitHub never runs. The Hugi workflow carries the job under the same id, with the same expanded rows, so every lane keeps its identity. It also carries the original workflow's `on:` block and the workflow-level `env` and `defaults` the job reads, and it stays a complete workflow that the lane reader accepts. The same commit repoints the lane's `hugi.yaml` entry at the Hugi workflow, and makes two changes to GitHub's workflow:
+The commit moves the lane's job out of GitHub's workflow into a **Hugi workflow**: a workflow-syntax file directly under `.github/hugi/`, which GitHub never runs. The Hugi workflow carries the job under the same id, with the same expanded rows, so every lane keeps its identity. It also carries the workflow-level `env` and `defaults` the job reads, and an `on:` block, normally the original workflow's, less any path filter on pull requests (see Consequences), and it stays a complete workflow that the lane reader accepts. The same commit repoints the lane's `hugi.yaml` entry at the Hugi workflow, and makes two changes to GitHub's workflow:
 
 - GitHub's workflow no longer produces a macOS combination of the job. For a matrix job, that means removing the macOS value from its axis and every `include` entry that resolves to a macOS runner, then checking the expanded matrix.
 - Jobs in GitHub's workflow that `needs` the moved job drop it, because GitHub rejects a workflow whose `needs` names a job it does not contain. Expressions in those jobs that read the moved job's `result` or `outputs` go with it, or they would read an empty value on every run.
