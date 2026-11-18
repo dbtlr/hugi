@@ -8,16 +8,30 @@ import type { ReadRepoFile, ToolchainResolution } from './types';
 export { ToolchainResolutionError, UnsupportedActionError } from './errors';
 export type { ActionResolution, ReadRepoFile, ToolchainResolution } from './types';
 
+/**
+ * Every action's resolution, or the first failure in step order. All of them settle first, so
+ * every repository read has finished, and been seen by the reader, whichever fails.
+ */
+async function resolveActions(plan: StepPlan, readRepoFile: ReadRepoFile) {
+  const settled = await Promise.allSettled(
+    plan.steps
+      .filter((step) => step.kind === 'action')
+      .map((step) => resolveAction(step, readRepoFile)),
+  );
+  return settled.map((outcome) => {
+    if (outcome.status === 'rejected') {
+      throw outcome.reason;
+    }
+    return outcome.value;
+  });
+}
+
 /** Resolve the entire lane before exposing tools to the VM runner. */
 export async function resolveToolchains(
   plan: StepPlan,
   readRepoFile: ReadRepoFile,
 ): Promise<ToolchainResolution> {
-  const actions = await Promise.all(
-    plan.steps
-      .filter((step) => step.kind === 'action')
-      .map((step) => resolveAction(step, readRepoFile)),
-  );
+  const actions = await resolveActions(plan, readRepoFile);
   const pins: Pins = new Map();
   for (const action of actions) {
     if (action.kind === 'tools') {

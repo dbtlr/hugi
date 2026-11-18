@@ -16,10 +16,12 @@
  * remaining step is skipped, `always` steps included.
  */
 import type { PlanStep, RunStep, StepWhen } from '../lane/step-plan';
+import { buildWorkspaceScript, checkoutStepIndex } from './checkout';
 import { withDeadline } from './deadline';
 import {
   githubEnvironment,
   parseEnvFile,
+  parseOutputFile,
   parsePathFile,
   prependPaths,
   stepEnvironment,
@@ -28,7 +30,7 @@ import {
 import type { Environment } from './guest-env';
 import { stepFiles } from './guest-paths';
 import type { StepFiles } from './guest-paths';
-import { bounded, killProcessGroup, readGuestFile } from './housekeeping';
+import { copyGuestFile, killProcessGroup, readGuestFile } from './housekeeping';
 import type { GuestCall } from './housekeeping';
 import { openLogFile, stepLogName } from './logs';
 import type { RunRequest, StepResult } from './run-request';
@@ -64,8 +66,17 @@ export type PlanOutcome = {
   readonly detail?: string;
 };
 
-/** What ended a step, if anything other than its own exit. */
-type StepEnd = 'exited' | 'step-timeout' | 'job-timeout' | 'interrupted' | 'vm-lost';
+/**
+ * What ended a step, if anything other than its own exit. `infrastructure` is a step the runner
+ * performs itself, the checkout, failing.
+ */
+type StepEnd =
+  | 'exited'
+  | 'step-timeout'
+  | 'job-timeout'
+  | 'interrupted'
+  | 'vm-lost'
+  | 'infrastructure';
 
 /** Values earlier steps handed to later ones. */
 type CarriedState = { readonly fromGithubEnv: Environment; readonly extraPath: readonly string[] };
@@ -94,14 +105,18 @@ const guestCall = (ctx: StepRunContext): GuestCall => ({
 /** Start the step in the guest; a launcher that fails or does not answer is an infrastructure error. */
 async function launch(ctx: StepRunContext, step: RunStep, stdin: string): Promise<void> {
   let output = '';
-  const started = await bounded(ctx.clock, ctx.tuning.housekeepingMs, (signal) =>
-    ctx.tart.exec(ctx.vm, ['bash', '-s'], {
-      onOutput: (chunk) => {
-        output += chunk;
-      },
-      signal,
-      stdin,
-    }),
+  const started = await withDeadline(
+    ctx.clock,
+    ctx.tuning.housekeepingMs,
+    (signal) =>
+      ctx.tart.exec(ctx.vm, ['bash', '-s'], {
+        onOutput: (chunk) => {
+          output += chunk;
+        },
+        signal,
+        stdin,
+      }),
+    { waitForWork: false },
   );
   const why = started.ok
     ? started.value.exitCode !== 0 && `exit code ${started.value.exitCode}: ${output.trim()}`
@@ -148,8 +163,8 @@ async function waitForExit(
 }
 
 /**
- * Copy the step's guest log into its host log file, followed by `epilogue`, a
- * note of Hugi's own; a failed copy leaves a note in the log's place.
+ * Stream the step's guest log into its host log file, followed by `epilogue`, a
+ * note of Hugi's own; a failed copy adds a note after whatever had arrived.
  */
 async function copyLog(
   ctx: StepRunContext,
@@ -159,12 +174,10 @@ async function copyLog(
 ): Promise<string> {
   const log = await openLogFile(ctx.request.logDir, stepLogName(step.index, step.name));
   try {
-    const text = await readGuestFile(guestCall(ctx), files.log);
-    if (text.ok) {
-      log.write(text.value);
-    } else {
-      ctx.warn(`could not copy the log of step ${step.index} from ${ctx.vm}: ${text.why}`);
-      log.write(`hugi: could not copy this step's log from the VM (${text.why})\n`);
+    const copied = await copyGuestFile(guestCall(ctx), files.log, log.write);
+    if (!copied.ok) {
+      ctx.warn(`could not copy the log of step ${step.index} from ${ctx.vm}: ${copied.why}`);
+      log.write(`hugi: could not copy this step's log from the VM (${copied.why})\n`);
     }
     log.write(epilogue);
   } finally {
@@ -182,7 +195,10 @@ async function readCommandFile(ctx: StepRunContext, step: RunStep, path: string)
   return text.value;
 }
 
-/** Parse the step's `GITHUB_ENV` and `GITHUB_PATH` into the carried state, or say why they are invalid. */
+/**
+ * Parse the step's `GITHUB_ENV` and `GITHUB_PATH` into the carried state and check its
+ * `GITHUB_OUTPUT`, or say why one of them is invalid.
+ */
 async function applyCommandFiles(
   ctx: StepRunContext,
   step: RunStep,
@@ -191,9 +207,13 @@ async function applyCommandFiles(
 ): Promise<{ readonly carried: CarriedState } | { readonly error: string }> {
   const envText = await readCommandFile(ctx, step, files.env);
   const pathText = await readCommandFile(ctx, step, files.path);
+  const outputError = parseOutputFile(await readCommandFile(ctx, step, files.output));
   const env = parseEnvFile(envText);
   if ('error' in env) {
     return { error: env.error };
+  }
+  if (outputError !== undefined) {
+    return { error: outputError };
   }
   return {
     carried: {
@@ -201,6 +221,62 @@ async function applyCommandFiles(
       fromGithubEnv: { ...carried.fromGithubEnv, ...env.env },
     },
   };
+}
+
+/**
+ * The checkout step: materialize the workspace from the staging repository, bounded by the job
+ * deadline. Anything but a clean exit ends the run, since the failure lies outside the lane.
+ */
+async function runCheckoutStep(
+  ctx: StepRunContext,
+  step: PlanStep,
+  remainingMs: number,
+): Promise<{ readonly result: StepResult; readonly end: Exclude<StepEnd, 'step-timeout'> }> {
+  const log = await openLogFile(ctx.request.logDir, stepLogName(step.index, step.name));
+  const began = ctx.clock.now();
+  try {
+    const checkout = await withDeadline(
+      ctx.clock,
+      remainingMs,
+      (signal) =>
+        ctx.tart.exec(ctx.vm, ['bash', '-s'], {
+          onOutput: (chunk) => log.write(chunk),
+          signal,
+          stdin: buildWorkspaceScript(ctx.request),
+        }),
+      { parent: AbortSignal.any([ctx.interrupt, ctx.vmLost]), waitForWork: true },
+    );
+    const base = {
+      index: step.index,
+      logFile: log.path,
+      name: step.name,
+      seconds: (ctx.clock.now() - began) / 1000,
+    };
+    const failed = (end: 'vm-lost' | 'interrupted' | 'infrastructure', error: string) => ({
+      end,
+      result: { ...base, error, outcome: 'failure' as const },
+    });
+    if (ctx.vmLost.aborted) {
+      return failed('vm-lost', 'the VM exited during the checkout');
+    }
+    if (ctx.interrupt.aborted) {
+      return failed('interrupted', 'interrupted during the checkout');
+    }
+    if (checkout.timedOut) {
+      return { end: 'job-timeout', result: { ...base, outcome: 'timeout' } };
+    }
+    if (!checkout.ok) {
+      return failed('infrastructure', `the checkout failed: ${checkout.why}`);
+    }
+    const { exitCode } = checkout.value;
+    if (exitCode !== 0) {
+      return failed('infrastructure', `the checkout failed with exit code ${exitCode}`);
+    }
+    const note = `checked out ${ctx.request.event.sha}`;
+    return { end: 'exited', result: { ...base, exitCode, note, outcome: 'success' } };
+  } finally {
+    await log.close();
+  }
 }
 
 type StepRun = {
@@ -240,12 +316,19 @@ async function runOneStep(
   await launch(ctx, step, buildStepLauncher({ env, extraPath: carried.extraPath, files, step }));
 
   const stopWaiting = AbortSignal.any([ctx.interrupt, ctx.vmLost]);
-  const { value: waited, timedOut } = await withDeadline(
+  const watched = await withDeadline(
     ctx.clock,
     limitMs,
-    stopWaiting,
     (signal) => waitForExit(ctx, files, signal),
+    {
+      parent: stopWaiting,
+      waitForWork: true,
+    },
   );
+  if (!watched.ok) {
+    throw new Error(`could not watch step ${step.index} "${step.name}" (${watched.why})`);
+  }
+  const { value: waited, timedOut } = watched;
   const seconds = (ctx.clock.now() - began) / 1000;
   const base = { index: step.index, name: step.name, seconds };
 
@@ -343,10 +426,12 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
   const steps: readonly PlanStep[] = install
     ? [install, ...ctx.request.plan.steps]
     : ctx.request.plan.steps;
+  const checkoutIndex = checkoutStepIndex(ctx.request.plan);
 
   for (const step of steps) {
     const remainingMs = ctx.jobDeadline - ctx.clock.now();
-    if (stop || step.kind === 'action' || !shouldRun(step.when, failed)) {
+    const performed = step.kind === 'run' || step.index === checkoutIndex;
+    if (stop || !performed || !shouldRun(step.when, failed)) {
       results.push(skipped(step));
       continue;
     }
@@ -361,6 +446,15 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
         reason: 'timeout',
       };
       results.push(skipped(step));
+      continue;
+    }
+    if (step.kind === 'action') {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      const checkout = await runCheckoutStep(ctx, step, remainingMs);
+      results.push(checkout.result);
+      if (checkout.end !== 'exited') {
+        stop = stopFor(ctx, checkout.end, checkout.result);
+      }
       continue;
     }
     // oxlint-disable-next-line no-await-in-loop -- sequential by design

@@ -1,3 +1,5 @@
+import { posix } from 'node:path';
+
 import type { ReadRepoFile } from './types';
 
 /** Read the single Bun entry from an asdf-style version file. */
@@ -21,7 +23,8 @@ export async function bunVersion(
   ) {
     throw new Error('bun-version-file must be a repository-relative path without parent traversal');
   }
-  const text = await readRepoFile(path);
+  // The repository reader takes git's spelling of a path, without `./` segments.
+  const text = await readRepoFile(posix.normalize(path));
   if (text === undefined) {
     throw new Error(`bun-version-file "${path}" was not found`);
   }

@@ -1,10 +1,229 @@
-import { Command, FatalError } from '@loomcli/core';
+import { resolve } from 'node:path';
 
-/** Placeholder: Loom requires one command. It will run one CI lane in a VM. */
-export function runCommand() {
-  return new Command('run', {
-    description: 'Run one CI lane in a throwaway VM (not implemented yet).',
-  }).action(() => {
-    throw new FatalError('hugi run is not implemented yet.');
-  });
+import { Command, FatalError } from '@loomcli/core';
+import type { Host, View } from '@loomcli/core';
+import { json } from '@loomcli/plugins/format';
+import { helpCommand } from '@loomcli/plugins/help/extension';
+
+import { openHostSource } from '../source/host-source';
+import { createRunDirectory, resolveCacheDir, resolveRunsDir } from '../source/locations';
+import { parseRepository, RepositorySpecError } from '../source/repository-spec';
+import type { ActionResolution } from '../toolchain/resolver';
+import { createTartCli, runInVm, systemClock } from '../vm';
+import { parseLaneArgument, parseMatrix, parseNeeds, RunUsageError } from './run-args';
+import { exitCodeForVerdict, runLane } from './run-lane';
+import type { LaneReport, ReportStep, RunLaneDeps } from './run-lane';
+
+const DESCRIPTION =
+  'Run one lane of a repository at a commit in a throwaway VM and report its verdict.';
+
+const DETAILS = `<repository> is \`owner/name\` (public, on GitHub) or a path to a local git repository, starting with \`./\`, \`../\`, \`/\`, or \`~\`. <commit> is a sha, a branch, or a tag; a name that is both a branch and a tag is refused, so pass its sha with --ref-type and --ref-name. <lane> is \`<workflow>:<job>\`, such as \`ci.yml:build\`.
+
+Exit codes:
+
+- 0: pass. The lane's steps succeeded.
+- 1: fail. A step failed or timed out, or the lane could not be read or its tools resolved.
+- 2: usage error, including a lane selection that picks nothing to run: a missing job, --matrix values that select no single combination, a needed upstream output not given with --needs, a --needs entry for a job outside the job's needs, or a job whose if: makes it skipped for the event (no verdict).
+- 3: no verdict. The VM failed to clone or boot or was lost mid-run, or the source could not be fetched or read.
+- 130 (143 for SIGTERM): interrupted. The VM is deleted and the report, with no verdict, is printed before Hugi exits. A second Ctrl-C exits at once, and Hugi exits anyway if cleanup takes more than three minutes; either can leave the VM behind. Remove a leftover \`hugi-run-*\` VM with \`tart delete\`.`;
+
+/** Exit 1, raised after the report is printed: the lane's verdict is fail. */
+class FailVerdictError extends FatalError {
+  override readonly name = 'FailVerdictError';
+  static override readonly exitCode = 1;
+}
+
+/** Exit 3, raised after the report is printed: the run produced no verdict. */
+class NoVerdictError extends FatalError {
+  override readonly name = 'NoVerdictError';
+  static override readonly exitCode = 3;
+}
+
+type Runner = Pick<Host, 'env' | 'home' | 'cwd' | 'spawn'>;
+
+const EVENTS = ['push', 'pull_request'] as const;
+const REF_TYPES = ['branch', 'tag'] as const;
+
+function oneOf<const Allowed extends readonly string[]>(
+  flag: string,
+  value: string | undefined,
+  allowed: Allowed,
+): Allowed[number] | undefined {
+  if (value !== undefined && !allowed.includes(value)) {
+    throw new RunUsageError(`${flag} must be one of ${allowed.join(', ')}.`);
+  }
+  return value;
+}
+
+/** What an action resolved to: its tools with any notes, or the no-op and its reason. */
+function describeAction(action: ActionResolution): string {
+  if (action.kind === 'noop') {
+    return `no-op: ${action.reason}`;
+  }
+  const notes = action.notes.length === 0 ? '' : ` (${action.notes.join(' ')})`;
+  return `${action.tools.join(', ')}${notes}`;
+}
+
+function renderStep(step: ReportStep): string {
+  if (step.outcome === 'resolved') {
+    return `${step.outcome.padEnd(8)} ${''.padStart(8)}  ${step.name}: ${describeAction(step.action)}`;
+  }
+  const log = step.logFile === undefined ? '' : `  ${step.logFile}`;
+  const note = step.note === undefined ? '' : `: ${step.note}`;
+  return `${step.outcome.padEnd(8)} ${step.seconds.toFixed(1).padStart(7)}s  ${step.name}${note}${log}`;
+}
+
+/** One line per step, the toolchain notes, then the verdict, its reason, and where the logs are. */
+export function renderReport(report: LaneReport): string {
+  const lines = report.steps.map(renderStep);
+  for (const note of report.toolchain?.notes ?? []) {
+    lines.push(`note: ${note}`);
+  }
+  const reason = report.detail === undefined ? report.reason : `${report.reason}: ${report.detail}`;
+  lines.push(`verdict: ${report.verdict} (${reason})`);
+  if (report.logDir !== undefined) {
+    lines.push(`logs: ${report.logDir}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+const textView: View<LaneReport> = { render: renderReport };
+
+/** Seams a test replaces; production uses the real VM runner and host git. */
+export type RunCommandOverrides = {
+  readonly runInVm?: RunLaneDeps['runInVm'];
+  readonly openSource?: RunLaneDeps['openSource'];
+};
+
+export function runCommand(overrides: RunCommandOverrides = {}) {
+  return new Command('run', { description: DESCRIPTION })
+    .extend(helpCommand({ details: DETAILS }))
+    .argument('repository', {
+      description: 'owner/name on GitHub, or a local git repository path.',
+      required: true,
+    })
+    .argument('commit', {
+      description: 'A sha (short or full), a branch, or a tag.',
+      required: true,
+    })
+    .argument('lane', { description: '<workflow>:<job>, such as ci.yml:build.', required: true })
+    .option('matrix', {
+      description: 'A matrix value of the lane, key=value; repeat for each axis.',
+      multiple: true,
+      type: 'string',
+    })
+    .option('needs', {
+      description: 'An upstream job output, <job>.outputs.<name>=value; repeatable.',
+      multiple: true,
+      type: 'string',
+    })
+    .option('event', {
+      description: 'The event the run stands in for: push (default) or pull_request.',
+      type: 'string',
+    })
+    .option('ref-type', {
+      description: 'branch (default) or tag. Inferred from <commit> when that names a tag.',
+      type: 'string',
+    })
+    .option('ref-name', {
+      description: 'The branch or tag name; defaults to <commit> when that names one.',
+      type: 'string',
+    })
+    .option('image', {
+      default: 'hugi-golden',
+      description: 'The tart image to clone for the run.',
+      type: 'string',
+    })
+    .option('logs', {
+      description:
+        'Directory for the step logs; default a new directory under the XDG state directory.',
+      type: 'string',
+    })
+    .option('cache-dir', {
+      description: 'Directory for cached repository clones; also HUGI_CACHE_DIR.',
+      type: 'string',
+    })
+    .result<LaneReport>({ views: { json: json(), text: textView } })
+    .views({ text: textView }, { default: 'text' })
+    .action(async ({ args, host, options, out, signal }) => {
+      const runner: Runner = host;
+      const request = buildRequest(args, options, runner);
+      const report = await runLane(request, {
+        newLogDir: (sha) =>
+          createRunDirectory(resolveRunsDir(host.env, host.home), new Date(), sha),
+        openSource:
+          overrides.openSource ??
+          ((spec, commit) =>
+            openHostSource(spec, commit, {
+              cacheDir: resolveCacheDir(options['cache-dir'], host.env, host.home),
+              cwd: host.cwd,
+              env: host.env,
+              spawn: host.spawn,
+              tempDir: host.tmpdir,
+              uid: host.uid,
+            })),
+        runInVm:
+          overrides.runInVm ??
+          ((vmRequest) =>
+            runInVm(vmRequest, {
+              clock: systemClock,
+              interrupt: signal,
+              newId: () => crypto.randomUUID().slice(0, 8),
+              tart: createTartCli(host.spawn),
+              warn: (message) => void out.warn(message),
+            })),
+        warn: (message) => void out.warn(message),
+      });
+      await out.results(report);
+      const code = exitCodeForVerdict(report.verdict);
+      if (code !== 0) {
+        throw new (code === 1 ? FailVerdictError : NoVerdictError)(
+          `The run's verdict is ${report.verdict}.`,
+        );
+      }
+    });
+}
+
+function buildRequest(
+  args: { repository: string; commit: string; lane: string },
+  options: {
+    matrix: string[] | undefined;
+    needs: string[] | undefined;
+    event: string | undefined;
+    'ref-type': string | undefined;
+    'ref-name': string | undefined;
+    image: string;
+    logs: string | undefined;
+  },
+  runner: Runner,
+) {
+  if (options['ref-name'] === '') {
+    throw new RunUsageError('--ref-name must not be empty.');
+  }
+  let repository;
+  try {
+    repository = parseRepository(args.repository, runner.cwd, runner.home);
+  } catch (error) {
+    if (error instanceof RepositorySpecError) {
+      throw new RunUsageError(error.message);
+    }
+    throw error;
+  }
+  return {
+    commit: args.commit,
+    event: oneOf('--event', options.event, EVENTS) ?? 'push',
+    image: options.image,
+    lane: parseLaneArgument(args.lane),
+    matrix: parseMatrix(options.matrix ?? []),
+    needs: parseNeeds(options.needs ?? []),
+    repository,
+    ...(options.logs === undefined ? {} : { logDir: resolve(runner.cwd, options.logs) }),
+    ...(options['ref-name'] === undefined ? {} : { refName: options['ref-name'] }),
+    ...refTypeOption(options['ref-type']),
+  };
+}
+
+function refTypeOption(value: string | undefined) {
+  const refType = oneOf('--ref-type', value, REF_TYPES);
+  return refType === undefined ? {} : { refType };
 }

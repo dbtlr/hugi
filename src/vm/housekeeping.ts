@@ -4,6 +4,8 @@
  * a short deadline of its own, so a wedged guest agent or tart process cannot
  * hold a run open; a call that misses its deadline counts as failed.
  */
+import { withDeadline } from './deadline';
+import type { Deadlined } from './deadline';
 import type { Clock, Tart } from './tart';
 
 /** The marker argument that names each guest command, for `ps` and for the test fake. */
@@ -35,48 +37,6 @@ export function killGroupArgv(processGroupFile: string): string[] {
   return ['sh', '-c', script, KILL_GROUP_MARKER, processGroupFile];
 }
 
-export type Bounded<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly why: string };
-
-/**
- * Run `work` for at most `milliseconds`. Its signal aborts at the deadline, or
- * when `parent` aborts; the result does not wait on a call that ignores its
- * signal. A throw or a missed deadline is `ok: false` with the reason.
- */
-export async function bounded<T>(
-  clock: Clock,
-  milliseconds: number,
-  work: (signal: AbortSignal) => Promise<T>,
-  parent?: AbortSignal,
-): Promise<Bounded<T>> {
-  const call = new AbortController();
-  const timer = new AbortController();
-  const abortCall = (): void => call.abort();
-  if (parent?.aborted) {
-    abortCall();
-  }
-  parent?.addEventListener('abort', abortCall, { once: true });
-  const attempt = async (): Promise<Bounded<T>> => {
-    try {
-      return { ok: true, value: await work(call.signal) };
-    } catch (error) {
-      return { ok: false, why: error instanceof Error ? error.message : String(error) };
-    }
-  };
-  const deadline = async (): Promise<Bounded<T>> => {
-    const elapsed = await clock.sleep(milliseconds, timer.signal);
-    call.abort();
-    return { ok: false, why: elapsed ? `no answer within ${milliseconds / 1000}s` : 'cancelled' };
-  };
-  try {
-    return await Promise.race([attempt(), deadline()]);
-  } finally {
-    timer.abort();
-    parent?.removeEventListener('abort', abortCall);
-  }
-}
-
 /** The pieces a guest housekeeping call needs. */
 export type GuestCall = {
   readonly tart: Tart;
@@ -86,45 +46,68 @@ export type GuestCall = {
 };
 
 /**
- * Read a guest file: its text, `''` when it does not exist, or `ok: false` when
- * the guest agent failed to answer in time.
+ * Copy a guest file to `write` as it arrives, so a large log is never held whole: nothing is
+ * written when it does not exist, and `ok: false` when the guest agent failed to answer in time.
  */
-export async function readGuestFile(
+export async function copyGuestFile(
   call: GuestCall,
   path: string,
+  write: (chunk: string) => void,
   parent?: AbortSignal,
-): Promise<Bounded<string>> {
-  return bounded(
+): Promise<Deadlined<void>> {
+  return withDeadline(
     call.clock,
     call.deadlineMs,
     async (signal) => {
-      let text = '';
       const { exitCode } = await call.tart.exec(call.vm, readFileArgv(path), {
-        onOutput: (chunk) => {
-          text += chunk;
-        },
+        onOutput: write,
         signal,
       });
       if (exitCode !== 0) {
         throw new Error(`reading ${path} exited ${exitCode}`);
       }
-      return text;
+    },
+    { parent, waitForWork: false },
+  );
+}
+
+/**
+ * Read a small guest file, such as a status or command file: its text, `''` when it does not
+ * exist, or `ok: false` when the guest agent failed to answer in time.
+ */
+export async function readGuestFile(
+  call: GuestCall,
+  path: string,
+  parent?: AbortSignal,
+): Promise<Deadlined<string>> {
+  let text = '';
+  const copied = await copyGuestFile(
+    call,
+    path,
+    (chunk) => {
+      text += chunk;
     },
     parent,
   );
+  return copied.ok ? { ...copied, value: text } : copied;
 }
 
 /** Kill the process group a step recorded; `ok: false` when the guest did not confirm it in time. */
 export async function killProcessGroup(
   call: GuestCall,
   processGroupFile: string,
-): Promise<Bounded<void>> {
-  return bounded(call.clock, call.deadlineMs, async (signal) => {
-    const { exitCode } = await call.tart.exec(call.vm, killGroupArgv(processGroupFile), {
-      signal,
-    });
-    if (exitCode !== 0) {
-      throw new Error(`the kill exited ${exitCode}`);
-    }
-  });
+): Promise<Deadlined<void>> {
+  return withDeadline(
+    call.clock,
+    call.deadlineMs,
+    async (signal) => {
+      const { exitCode } = await call.tart.exec(call.vm, killGroupArgv(processGroupFile), {
+        signal,
+      });
+      if (exitCode !== 0) {
+        throw new Error(`the kill exited ${exitCode}`);
+      }
+    },
+    { waitForWork: false },
+  );
 }

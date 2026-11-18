@@ -25,7 +25,7 @@ The first build downloads the base image (about 33 GB) and takes roughly 15 to 3
 | Node, pnpm, Bun, Rust (with clippy and rustfmt), PowerShell | [`tools.toml`](tools.toml), installed by mise as the global config |
 | Warm package caches | [`warm.tsv`](warm.tsv): one install per enrolled lane, then the clone is deleted |
 
-The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash_profile` and `.bashrc`, so zsh and login or interactive bash find the pinned tools ahead of the base image's Homebrew copies. A plain `tart exec` command or a non-interactive, non-login bash (`bash -c`) reads none of these files and finds the Homebrew copies first, so Hugi's VM runner puts the shims directory first on `PATH` for every step. The image holds no secrets.
+The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash_profile` and `.bashrc`, so zsh and login or interactive bash find the pinned tools ahead of the base image's Homebrew copies. A plain `tart exec` command or a non-interactive, non-login bash (`bash -c`) reads none of these files and finds the Homebrew copies first, so Hugi's VM runner puts the shims directory first on `PATH` for every step, unless the workflow sets `PATH` itself. The image holds no secrets.
 
 ### Enrolled lanes
 
@@ -44,8 +44,14 @@ The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash
 ## Check an image
 
 ```sh
-tart clone hugi-golden hugi-check
-tart run hugi-check --no-graphics &
-tart exec hugi-check zsh -lc 'cargo --version && node --version && bun --version && pnpm --version'
-tart stop hugi-check; tart delete hugi-check
+vm="hugi-check-$$"
+if tart clone hugi-golden "$vm"; then
+  tart run "$vm" --no-graphics &
+  # Wait up to five minutes for the guest agent before checking the tools.
+  for _ in $(seq 60); do tart exec "$vm" true 2>/dev/null && break; sleep 5; done
+  tart exec "$vm" zsh -lc 'cargo --version && node --version && bun --version && pnpm --version'
+  tart stop "$vm"; tart delete "$vm"
+fi
 ```
+
+A fresh name per check means a VM left by an earlier check is never reused or deleted by mistake.

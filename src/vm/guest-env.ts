@@ -1,7 +1,8 @@
 /**
  * The GitHub environment the lanes read: the variables a runner sets, and the
- * `GITHUB_ENV` / `GITHUB_PATH` files steps append to for later steps. Each step
- * gets fresh, empty command files; the runner parses them once the step exits.
+ * `GITHUB_ENV` / `GITHUB_PATH` / `GITHUB_OUTPUT` files steps append to. Each
+ * step gets fresh, empty command files; the runner parses them once the step
+ * exits, and a malformed file fails the step as it does on GitHub.
  */
 import type { EventContext } from '../lane/step-plan';
 import { GUEST_COMMAND_FILES, GUEST_RUNNER_PATHS } from './guest-paths';
@@ -25,7 +26,6 @@ export function githubEnvironment(event: EventContext): Environment {
     RUNNER_OS: 'macOS',
     RUNNER_ARCH: 'ARM64',
     RUNNER_TEMP: GUEST_RUNNER_PATHS.temp,
-    GITHUB_OUTPUT: GUEST_COMMAND_FILES.output,
     GITHUB_STEP_SUMMARY: GUEST_COMMAND_FILES.stepSummary,
     // Lets mise read the checked-out repository's config, and keeps brew quick.
     MISE_TRUSTED_CONFIG_PATHS: GUEST_RUNNER_PATHS.workspace,
@@ -36,6 +36,17 @@ export function githubEnvironment(event: EventContext): Environment {
 /** A parsed `GITHUB_ENV` file, or the error GitHub's runner reports for it. */
 export type EnvFileParse = { readonly env: Environment } | { readonly error: string };
 
+/** The phrases GitHub's runner uses for one kind of command file's errors. */
+type Wording = { readonly format: string; readonly name: string; readonly value: string };
+
+const ENV_WORDING: Wording = {
+  format: 'Invalid environment variable format',
+  name: 'Environment variable name',
+  value: 'Invalid environment variable value',
+};
+
+const OUTPUT_WORDING: Wording = { format: 'Invalid format', name: 'Name', value: 'Invalid value' };
+
 /**
  * Parse the content of a `GITHUB_ENV` file as GitHub's runner does: `KEY=value`
  * lines and `KEY<<DELIMITER` blocks that run to a line equal to the delimiter,
@@ -45,6 +56,22 @@ export type EnvFileParse = { readonly env: Environment } | { readonly error: str
  * step, with GitHub's wording.
  */
 export function parseEnvFile(content: string): EnvFileParse {
+  return parseKeyValueFile(content, ENV_WORDING);
+}
+
+/**
+ * Check a `GITHUB_OUTPUT` file against the `GITHUB_ENV` grammar: `undefined`
+ * when it is valid, else the error GitHub's runner fails the step with. The
+ * values go nowhere, since the lane reader refuses `steps.*.outputs`.
+ */
+export function parseOutputFile(content: string): string | undefined {
+  const parsed = parseKeyValueFile(content, OUTPUT_WORDING);
+  return 'error' in parsed
+    ? `Unable to process file command 'output' successfully. ${parsed.error}`
+    : undefined;
+}
+
+function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
   const parsed: Record<string, string> = {};
   const lines = content.split('\n').map((line) => line.replace(/\r$/, ''));
   for (let at = 0; at < lines.length; at += 1) {
@@ -57,26 +84,27 @@ export function parseEnvFile(content: string): EnvFileParse {
     if (equals !== -1 && (heredoc === -1 || equals < heredoc)) {
       if (equals === 0) {
         return {
-          error: `Invalid environment variable format '${line}'. Environment variable name must not be empty`,
+          error: `${wording.format} '${line}'. ${wording.name} must not be empty`,
         };
       }
       parsed[line.slice(0, equals)] = line.slice(equals + 1);
       continue;
     }
     if (heredoc === -1) {
-      return { error: `Invalid environment variable format '${line}'` };
+      return { error: `${wording.format} '${line}'` };
     }
     const key = line.slice(0, heredoc);
     const delimiter = line.slice(heredoc + 2);
     if (key === '' || delimiter === '') {
       return {
-        error: `Invalid environment variable format '${line}'. Environment variable name must not be empty and delimiter must not be empty`,
+        error: `${wording.format} '${line}'. ${wording.name} must not be empty and delimiter must not be empty`,
       };
     }
-    const end = lines.findIndex((candidate, offset) => offset > at && candidate === delimiter);
+    // Searched from the opening line, so each line is visited once however many blocks there are.
+    const end = lines.indexOf(delimiter, at + 1);
     if (end === -1) {
       return {
-        error: `Invalid environment variable value. Matching delimiter not found '${delimiter}'`,
+        error: `${wording.value}. Matching delimiter not found '${delimiter}'`,
       };
     }
     parsed[key] = lines.slice(at + 1, end).join('\n');

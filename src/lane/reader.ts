@@ -8,6 +8,7 @@ import {
   workflowEnvScope,
 } from './contexts';
 import type { LaneValues } from './contexts';
+import { JobSkippedError, LaneReadError, LaneSelectionError, withContext } from './errors';
 import { expand } from './expressions';
 import type { Context } from './expressions';
 import { checkJobKeys, checkStepKeys, checkStrategyKeys, rejectMergeKeys } from './keys';
@@ -21,13 +22,13 @@ import {
   runnerLabels,
   shell,
   timeout,
+  workflowRunDefaults,
   workingDirectory,
 } from './settings';
 import type { EventContext, LaneRef, PlanStep, RunnerPaths, StepPlan } from './step-plan';
+import { neededJobs } from './workflow';
 
-export class LaneReadError extends Error {
-  override readonly name = 'LaneReadError';
-}
+export { JobSkippedError, LaneReadError, LaneSelectionError } from './errors';
 
 function readStep(
   value: unknown,
@@ -73,18 +74,18 @@ function readStep(
       ...(directory === undefined ? {} : { workingDirectory: workingDirectory(directory, ctx) }),
     };
   } catch (cause) {
-    throw new Error(
-      `step ${index} "${name}": ${cause instanceof Error ? cause.message : String(cause)}`,
-      { cause },
-    );
+    throw withContext(`step ${index} "${name}"`, cause);
   }
 }
 
-function neededJobs(value: unknown): string[] {
-  if (value === undefined) {
-    return [];
+/** Upstream values supplied for a job outside the lane's `needs:` would go unread, so refuse them. */
+function refuseUnneededJobs(event: EventContext, needs: readonly string[]) {
+  const listed = needs.length === 0 ? 'none' : needs.join(', ');
+  for (const job of Object.keys(event.needs ?? {})) {
+    if (!needs.includes(job)) {
+      throw new LaneSelectionError(`"${job}" is not in the job's needs (${listed})`);
+    }
   }
-  return (Array.isArray(value) ? value : [value]).map((job) => scalar(job, 'needs'));
 }
 
 /** Fail unless the job-level `if:` holds, given the upstream results the caller supplied. */
@@ -100,7 +101,7 @@ function requireJobRuns(
     anyFailed: results.includes('failure'),
   };
   if (!jobRuns(condition, jobIfScope(lane), upstream)) {
-    throw new Error('job does not run for this event');
+    throw new JobSkippedError('job does not run for this event');
   }
 }
 
@@ -131,13 +132,14 @@ export function readLane(
       checkStrategyKeys(mapping(job.strategy, 'strategy'));
     }
     const needs = neededJobs(job.needs);
+    refuseUnneededJobs(event, needs);
     const values = laneValues(event, paths, selectCombination(job.strategy, lane.matrix), needs);
     requireJobRuns(job.if, values, needs, event);
     const settings = jobSettingScope(values);
     runnerLabels(job['runs-on'], settings);
     const env = laneEnvironment(workflow.env, job.env, values);
     const defaults = {
-      ...runDefaults(workflow.defaults, 'defaults'),
+      ...workflowRunDefaults(workflow.defaults),
       ...runDefaults(job.defaults, 'job defaults'),
     };
     if (!Array.isArray(job.steps)) {
@@ -156,9 +158,6 @@ export function readLane(
       timeoutMinutes: timeout(job['timeout-minutes'] ?? 360, settings),
     };
   } catch (cause) {
-    throw new LaneReadError(
-      `job "${lane.job}": ${cause instanceof Error ? cause.message : String(cause)}`,
-      { cause },
-    );
+    throw withContext(`job "${lane.job}"`, cause, LaneReadError);
   }
 }

@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { ActionStep, StepPlan } from '../lane/step-plan';
 import { resolveToolchains, ToolchainResolutionError, UnsupportedActionError } from './resolver';
@@ -590,4 +591,46 @@ test('run steps add no tools and are not interpreted as setup actions', async ()
     readNothing,
   );
   expect(result).toEqual({ actions: [], notes: [], tools: [] });
+});
+
+test('resolution waits for every action before failing, so a slower read failure is still seen', async () => {
+  let slowReadSettled = false;
+  const resolution = resolveToolchains(
+    plan(
+      action('oven-sh/setup-bun@v2', { 'bun-version-file': '.tool-versions' }, 1),
+      action('pnpm/action-setup@v6', {}, 2),
+    ),
+    async (path) => {
+      if (path === '.tool-versions') {
+        return 'bun latest\n';
+      }
+      await delay(20);
+      slowReadSettled = true;
+      throw new Error(`cannot read ${path}`);
+    },
+  );
+  (await expectFailure(resolution)).toThrow(/step 1/);
+  expect(slowReadSettled).toBe(true);
+});
+
+test('artifact upload without a path fails, as the action requires one', async () => {
+  const resolution = resolveToolchains(
+    plan(action('actions/upload-artifact@v7', { name: 'build' })),
+    readNothing,
+  );
+  (await expectFailure(resolution)).toThrow(UnsupportedActionError);
+  (await expectFailure(resolution)).toThrow(/path/);
+});
+
+test('a bun-version-file written with a leading ./ reads the same repository file', async () => {
+  const requested: string[] = [];
+  const result = await resolveToolchains(
+    plan(action('oven-sh/setup-bun@v2', { 'bun-version-file': './.tool-versions' })),
+    async (path) => {
+      requested.push(path);
+      return path === '.tool-versions' ? 'bun 1.4.4\n' : undefined;
+    },
+  );
+  expect(result.tools).toEqual(['bun@1.4.4']);
+  expect(requested).toContain('.tool-versions');
 });

@@ -1,7 +1,7 @@
 /**
  * Builds the shell text that starts one step in the guest. The host feeds it to
  * `bash -s` over `tart exec -i`. It writes the step's script and a supervisor
- * to the guest, gives the step fresh `GITHUB_ENV` / `GITHUB_PATH` files, sets
+ * to the guest, gives the step fresh command files, sets
  * the step's environment, and starts the supervisor detached in a new session,
  * then returns at once.
  *
@@ -117,10 +117,11 @@ export function buildStepLauncher(input: LauncherInput): string {
     `mkdir -p ${shellQuote(directory)}`,
     ...writeFile(files.script, step.script),
     ...writeFile(supervisorPath, supervisorScript(step, files)),
-    ...[files.env, files.path, files.log].map((file) => `: > ${shellQuote(file)}`),
+    ...[files.env, files.path, files.output, files.log].map((file) => `: > ${shellQuote(file)}`),
     ...exports,
     `export GITHUB_ENV=${shellQuote(files.env)}`,
     `export GITHUB_PATH=${shellQuote(files.path)}`,
+    `export GITHUB_OUTPUT=${shellQuote(files.output)}`,
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
     // A failure to start the session lands in the step's log.
     `${START_SESSION} /bin/bash ${shellQuote(supervisorPath)} >> ${shellQuote(files.log)} 2>&1 < /dev/null &`,

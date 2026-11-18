@@ -1,20 +1,21 @@
 /**
- * One run in one throwaway VM: clone the image, boot, check out, run the plan,
- * and delete the VM on every exit path (ADR-0003). The host never executes a
- * step; it drives tart and reads logs.
+ * One run in one throwaway VM: clone the image, boot, fetch the source, run
+ * the plan, and delete the VM on every exit path (ADR-0003). The host never
+ * executes a step; it drives tart and reads logs. The workspace stays empty
+ * until the plan's checkout step (see `./checkout`).
  *
  * The job's `timeout-minutes` starts once the VM answers and covers the
- * checkout and every step, as on GitHub; a checkout still running at the
+ * source fetch and every step, as on GitHub; a fetch still running at the
  * deadline is `infrastructure`, since it lies outside the lane's steps. After
  * boot the runner watches the `tart run` process, and a VM that exits ends the
  * run as `infrastructure`. Every housekeeping call (status polls, log copies,
  * kills, `tart stop`) has a short deadline of its own, so teardown always
  * reaches `tart delete`.
  */
+import { messageOf } from '../errors';
 import { buildCheckoutScript } from './checkout';
 import { withDeadline } from './deadline';
 import { LOCAL_SOURCE_SHARE_NAME } from './guest-paths';
-import { bounded } from './housekeeping';
 import { openLogFile } from './logs';
 import type { RunReason, RunRequest, RunResult, StepResult } from './run-request';
 import { runSteps } from './step-executor';
@@ -59,6 +60,8 @@ export type RunDeps = {
 
 /** What the run did before it ended, for assembling the result and for teardown. */
 type RunState = {
+  /** `tart clone` was started; it can fail after creating the VM. */
+  cloneStarted: boolean;
   vmCloned: boolean;
   vmProcess?: VmProcess;
   cloneSeconds: number;
@@ -84,10 +87,9 @@ async function waitForGuest(
   };
   void watchExit();
 
-  const { value, timedOut } = await withDeadline(
+  const watched = await withDeadline(
     deps.clock,
     tuning.bootTimeoutMs,
-    deps.interrupt,
     async (signal) => {
       while (!signal.aborted) {
         if (exitCode !== undefined) {
@@ -103,7 +105,12 @@ async function waitForGuest(
       }
       return 'aborted' as const;
     },
+    { parent: deps.interrupt, waitForWork: true },
   );
+  if (!watched.ok) {
+    throw new Error(`could not wait for the guest agent: ${watched.why}`);
+  }
+  const { value, timedOut } = watched;
   if (value === 'ready') {
     return undefined;
   }
@@ -126,10 +133,10 @@ async function waitForGuest(
 }
 
 /**
- * Clone the source into the guest at the event's sha; undefined on success.
+ * Fetch the commit into the guest's staging repository; undefined on success.
  * Bounded by the job deadline, and cut short when the VM exits.
  */
-async function checkOut(
+async function fetchSource(
   deps: RunDeps,
   request: RunRequest,
   vm: string,
@@ -138,30 +145,33 @@ async function checkOut(
 ): Promise<Ending | undefined> {
   const log = await openLogFile(request.logDir, '00-checkout.log');
   try {
-    const { value, timedOut } = await withDeadline(
+    const fetched = await withDeadline(
       deps.clock,
       jobDeadline - deps.clock.now(),
-      AbortSignal.any([deps.interrupt, vmLost]),
       (signal) =>
         deps.tart.exec(vm, ['bash', '-s'], {
           onOutput: (chunk) => log.write(chunk),
           signal,
           stdin: buildCheckoutScript(request),
         }),
+      { parent: AbortSignal.any([deps.interrupt, vmLost]), waitForWork: true },
     );
     if (vmLost.aborted) {
-      return { detail: 'the VM exited during checkout', reason: 'infrastructure' };
+      return { detail: 'the VM exited while fetching the source', reason: 'infrastructure' };
     }
     if (deps.interrupt.aborted) {
-      return { detail: 'interrupted during checkout', reason: 'interrupted' };
+      return { detail: 'interrupted while fetching the source', reason: 'interrupted' };
     }
-    if (timedOut) {
-      return { detail: 'checkout timed out', reason: 'infrastructure' };
+    if (fetched.timedOut) {
+      return { detail: 'fetching the source timed out', reason: 'infrastructure' };
     }
-    return value.exitCode === 0
+    if (!fetched.ok) {
+      return { detail: fetched.why, reason: 'infrastructure' };
+    }
+    return fetched.value.exitCode === 0
       ? undefined
       : {
-          detail: `checkout of ${request.event.sha} failed with exit code ${value.exitCode} (see ${log.path})`,
+          detail: `fetching ${request.event.sha} failed with exit code ${fetched.value.exitCode} (see ${log.path})`,
           reason: 'infrastructure',
         };
   } finally {
@@ -194,6 +204,7 @@ async function perform(
   }
 
   const cloneStart = clock.now();
+  state.cloneStarted = true;
   await tart.clone(request.image, vm);
   state.vmCloned = true;
   await tart.setResources(vm, VM_RESOURCES);
@@ -216,9 +227,9 @@ async function perform(
 
   const vmLost = watchVm(state.vmProcess);
   const jobDeadline = clock.now() + request.plan.timeoutMinutes * 60_000;
-  const checkoutFailure = await checkOut(deps, request, vm, jobDeadline, vmLost);
-  if (checkoutFailure) {
-    return checkoutFailure;
+  const fetchFailure = await fetchSource(deps, request, vm, jobDeadline, vmLost);
+  if (fetchFailure) {
+    return fetchFailure;
   }
 
   return runSteps(
@@ -280,7 +291,8 @@ async function exitsWithinGrace(
 }
 
 /**
- * Stop the VM if it was started, then delete it if it was cloned. A stop that
+ * Stop the VM if it was started, then delete it if it was cloned, or try once if its clone
+ * failed part-way. A stop that
  * fails or misses its deadline, or a VM that keeps running after it, gets the
  * `tart run` process killed, so the delete is always attempted. Never throws.
  */
@@ -291,8 +303,11 @@ async function teardown(
   state: RunState,
 ): Promise<void> {
   if (state.vmProcess) {
-    const stopped = await bounded(deps.clock, tuning.housekeepingMs, (signal) =>
-      deps.tart.stop(vm, { signal }),
+    const stopped = await withDeadline(
+      deps.clock,
+      tuning.housekeepingMs,
+      (signal) => deps.tart.stop(vm, { signal }),
+      { waitForWork: false },
     );
     if (!stopped.ok) {
       deps.warn(`could not stop ${vm}; killing its tart run process: ${stopped.why}`);
@@ -306,6 +321,19 @@ async function teardown(
   }
   if (state.vmCloned) {
     await deleteVm(deps, tuning, vm);
+  } else if (state.cloneStarted) {
+    await deleteCloneLeftover(deps, vm);
+  }
+}
+
+/** One delete of the VM a failed `tart clone` may have created before it failed. */
+async function deleteCloneLeftover(deps: RunDeps, vm: string): Promise<void> {
+  try {
+    await deps.tart.delete(vm);
+  } catch (error) {
+    deps.warn(
+      `the failed clone may have left ${vm} behind; if \`tart list\` shows it, run \`tart delete ${vm}\`: ${String(error)}`,
+    );
   }
 }
 
@@ -326,7 +354,13 @@ export async function runInVm(request: RunRequest, deps: RunDeps): Promise<RunRe
   const tuning = { ...DEFAULT_TUNING, ...deps.tuning };
   const began = deps.clock.now();
   const vm = `${VM_NAME_PREFIX}${deps.newId()}`;
-  const state: RunState = { bootSeconds: 0, cloneSeconds: 0, steps: [], vmCloned: false };
+  const state: RunState = {
+    bootSeconds: 0,
+    cloneSeconds: 0,
+    cloneStarted: false,
+    steps: [],
+    vmCloned: false,
+  };
   let ending: Ending;
   try {
     ending = await perform(deps, tuning, request, vm, state);
@@ -334,7 +368,7 @@ export async function runInVm(request: RunRequest, deps: RunDeps): Promise<RunRe
     ending = deps.interrupt.aborted
       ? { detail: 'interrupted', reason: 'interrupted' }
       : {
-          detail: error instanceof Error ? error.message : String(error),
+          detail: messageOf(error),
           reason: 'infrastructure',
         };
   }

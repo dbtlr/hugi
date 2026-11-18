@@ -1,5 +1,6 @@
 /** The real `Tart` port: drives the `tart` command-line tool through the run's `host.spawn`. */
 import { Writable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 
 import type { Host } from '@loomcli/core';
 
@@ -10,11 +11,25 @@ type Spawn = Host['spawn'];
 const OUTPUT_TAIL_BYTES = 8192;
 const UNSTARTED_EXIT_CODE = 127;
 
-/** A writable that hands each chunk to `onText`. */
-function textSink(onText: (text: string) => void): Writable {
+/**
+ * A writable that hands its bytes to `onText` as UTF-8 text. One decoder per stream holds back a
+ * character split across two chunks until the rest arrives.
+ */
+export function textSink(onText: (text: string) => void): Writable {
+  const decoder = new StringDecoder('utf8');
   return new Writable({
-    write(chunk, _encoding, done) {
-      onText(String(chunk));
+    final(done) {
+      const rest = decoder.end();
+      if (rest !== '') {
+        onText(rest);
+      }
+      done();
+    },
+    write(chunk: Buffer | string, _encoding, done) {
+      const text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      if (text !== '') {
+        onText(text);
+      }
       done();
     },
   });

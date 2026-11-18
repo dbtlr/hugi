@@ -1,0 +1,100 @@
+/**
+ * The one way Hugi starts `git` on the host. Every invocation is hardened so that neither the
+ * repository being read nor the host's own git setup can make git run a program or use a
+ * credential (ADR-0002):
+ *
+ * - Every inherited `GIT_*` variable is dropped, so none can point git at another repository
+ *   (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`, ...) or name a program (`GIT_SSH_COMMAND`,
+ *   `GIT_PROXY_COMMAND`, ...).
+ * - `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` ignore the system and user config, so
+ *   an `insteadOf` rewrite, a helper, or an `uploadpack` setting there never applies.
+ * - `protocol.allow=never` with only the remote transport (`https`) allowed, and every known
+ *   transport named explicitly, so a repository's own `protocol.<name>.allow` cannot re-enable
+ *   `file`, `ssh`, or `ext`. A `remote.*.uploadpack` or `core.sshCommand` only runs over those
+ *   refused transports; `core.sshCommand` is also overridden.
+ * - `credential.helper=`, `http.extraHeader=`, `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS=true`: no
+ *   credential, header, or prompt. `HOME=/dev/null`, so libcurl finds no `.netrc` to log in with.
+ * - `GIT_NO_REPLACE_OBJECTS=1`, so a replacement ref cannot make a read see another commit than
+ *   the one the snapshot carries.
+ * - `core.hooksPath=/dev/null`, `core.fsmonitor=false`, and `core.alternateRefsCommand=true`: no
+ *   hook, monitor, or alternate-refs command runs.
+ * - `GIT_NO_LAZY_FETCH=1` for a local repository, so a partial clone's promisor remote is never
+ *   contacted: a missing object is a read failure, not a fetch.
+ */
+import type { Host } from '@loomcli/core';
+
+/** The transport a remote source fetches over: https in production; tests serve fixtures over file. */
+export type GitTransport = 'file' | 'https';
+
+export type GitOptions = {
+  /** The run's `host.spawn`, the only way this module starts a program. */
+  readonly spawn: Host['spawn'];
+  /** The run's `host.env`, from which git's environment is built. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly cwd: string;
+  /** The one transport git may use. */
+  readonly transport: GitTransport;
+  /** False for a local repository: its promisor remote, if any, is never fetched from. */
+  readonly lazyFetch: boolean;
+};
+
+export type GitOutcome = { readonly ok: boolean; readonly stdout: string; readonly stderr: string };
+
+/** Starts `git`, scoped to `gitDir` when given; a failure to start counts as a failed command. */
+export type Git = (gitDir: string | undefined, args: readonly string[]) => Promise<GitOutcome>;
+
+/** Every transport git ships with; each one but the allowed transport is refused by name. */
+const TRANSPORTS = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'] as const;
+
+/** The `-c` settings every invocation carries; command-line config wins over the repository's. */
+export function hardenedConfig(transport: GitTransport): string[] {
+  const settings = [
+    'credential.helper=',
+    'http.extraHeader=',
+    'core.sshCommand=false',
+    'core.hooksPath=/dev/null',
+    'core.fsmonitor=false',
+    'core.alternateRefsCommand=true',
+    'protocol.allow=never',
+    ...TRANSPORTS.map(
+      (name) => `protocol.${name}.allow=${name === transport ? 'always' : 'never'}`,
+    ),
+  ];
+  return settings.flatMap((setting) => ['-c', setting]);
+}
+
+/** The host's environment without any `GIT_*` variable or home, plus the hardening variables. */
+export function hardenedEnv(
+  inherited: Readonly<Record<string, string | undefined>>,
+  lazyFetch: boolean,
+): Record<string, string | undefined> {
+  const env = Object.fromEntries(
+    Object.entries(inherited).filter(([name]) => !name.startsWith('GIT_')),
+  );
+  return {
+    ...env,
+    GIT_ASKPASS: 'true',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_NO_REPLACE_OBJECTS: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    HOME: '/dev/null',
+    ...(lazyFetch ? {} : { GIT_NO_LAZY_FETCH: '1' }),
+  };
+}
+
+export function createGit(options: GitOptions): Git {
+  const env = hardenedEnv(options.env, options.lazyFetch);
+  const config = hardenedConfig(options.transport);
+  return async (gitDir, args) => {
+    const scoped = gitDir === undefined ? [] : ['--git-dir', gitDir];
+    const exit = await options.spawn('git', [...config, ...scoped, ...args], {
+      cwd: options.cwd,
+      env,
+    }).exited;
+    if (exit.kind === 'unstarted') {
+      return { ok: false, stderr: exit.error.message, stdout: '' };
+    }
+    return { ok: exit.code === 0, stderr: exit.stderr.text, stdout: exit.stdout.text };
+  };
+}

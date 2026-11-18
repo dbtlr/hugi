@@ -82,6 +82,8 @@ export type StepBehavior = {
   /** Text the step appends to its `GITHUB_ENV` / `GITHUB_PATH` file. */
   readonly appendsEnv?: string;
   readonly appendsPath?: string;
+  /** Text the step appends to its `GITHUB_OUTPUT` file. */
+  readonly appendsOutput?: string;
   /** Runs until killed, like a step that never ends. */
   readonly hangs?: boolean;
   /** Virtual milliseconds the step takes. */
@@ -101,6 +103,8 @@ export type FakeGuest = {
   checkoutExitCode?: number;
   /** The checkout never finishes, like a stalled clone. */
   checkoutHangs?: boolean;
+  /** The exit code of the checkout step's workspace script. */
+  materializeExitCode?: number;
   /** Probe failures before the guest agent answers; `Infinity` means never. */
   probeFailures?: number;
   vmExitsOnBoot?: number;
@@ -195,6 +199,11 @@ export class FakeTart implements Tart {
     if (stdin.startsWith('# hugi-checkout')) {
       return this.checkout(options);
     }
+    if (stdin.startsWith('# hugi-workspace')) {
+      this.events.push('materialize');
+      options.onOutput?.('checked out abc123\n');
+      return { exitCode: this.guest.materializeExitCode ?? 0 };
+    }
     const index = Number(/^# hugi-step (\d+)/.exec(stdin)?.[1]);
     return this.launch(index);
   }
@@ -264,6 +273,7 @@ export class FakeTart implements Tart {
     this.files.set(files.log, behavior.output ?? '');
     this.files.set(files.env, behavior.appendsEnv ?? '');
     this.files.set(files.path, behavior.appendsPath ?? '');
+    this.files.set(files.output, behavior.appendsOutput ?? '');
     this.files.set(files.processGroup, `${1000 + index}\n`);
     if (behavior.hangs) {
       return;

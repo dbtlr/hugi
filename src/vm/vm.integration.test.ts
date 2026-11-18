@@ -13,7 +13,9 @@ import { join } from 'node:path';
 import { processHandle } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
 
-import type { RunStep, StepPlan } from '../lane/step-plan';
+import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan';
+import { openHostSource } from '../source/host-source';
+import type { GuestSource } from '../source/host-source';
 import { systemClock } from './clock';
 import { runInVm, VM_NAME_PREFIX } from './lifecycle';
 import type { RunRequest } from './run-request';
@@ -102,6 +104,18 @@ const step = (index: number, script: string, overrides: Partial<RunStep> = {}): 
   ...overrides,
 });
 
+/** The lane's `actions/checkout` step, which materializes the workspace. */
+const checkout = (index: number): ActionStep => ({
+  continueOnError: false,
+  env: {},
+  index,
+  kind: 'action',
+  name: 'actions/checkout@v4',
+  uses: 'actions/checkout@v4',
+  when: 'success',
+  with: {},
+});
+
 const logOf = (req: RunRequest, file: string): string =>
   readFileSync(join(req.logDir, file), 'utf8');
 
@@ -115,8 +129,9 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   let scratch: string;
   let repo: string;
   let sha: string;
+  let snapshot: GuestSource;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     scratch = mkdtempSync(join(tmpdir(), 'hugi-vm-it-'));
     repo = join(scratch, 'repo');
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
@@ -141,12 +156,26 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
     git(repo, 'add', '.');
     commit('second');
     sha = git(repo, 'rev-parse', 'HEAD');
+    // An untracked secret the lane must not see (ADR-0002): only the snapshot is shared.
+    writeFileSync(join(repo, '.env'), 'HUGI_TEST_SECRET=1\n');
+    const source = await openHostSource({ kind: 'local', path: repo }, sha, {
+      cacheDir: join(scratch, 'cache'),
+      cwd: scratch,
+      env: handle.env,
+      spawn,
+      tempDir: scratch,
+      uid: handle.uid,
+    });
+    snapshot = await source.guestSource();
   });
-  afterAll(() => rmSync(scratch, { force: true, recursive: true }));
+  afterAll(async () => {
+    await snapshot.release();
+    rmSync(scratch, { force: true, recursive: true });
+  });
 
   const request = (
     name: string,
-    steps: RunStep[],
+    steps: PlanStep[],
     overrides: Partial<RunRequest> = {},
     timeoutMinutes = 15,
   ): RunRequest => {
@@ -162,7 +191,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       image: process.env.HUGI_TEST_IMAGE ?? DEFAULT_IMAGE,
       logDir: join(scratch, 'logs', name),
       plan,
-      source: { kind: 'local', path: repo },
+      source: snapshot.location,
       tools: [],
       ...overrides,
     };
@@ -173,25 +202,46 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
     async () => {
       await waitForFreeSlot();
       const req = request('pass', [
-        step(1, 'echo "HUGI_VALUE=carried" >> "$GITHUB_ENV"\ncat hello.txt'),
+        checkout(1),
+        // Wiping RUNNER_TEMP must not take the runner's own files with it.
         step(
           2,
-          'test "$HUGI_VALUE" = carried && test "$PLAN_VAR" = from-plan && echo "env ok $CI $RUNNER_OS $GITHUB_REF"\ngit rev-parse HEAD\necho "commits=$(git rev-list --count HEAD) tags=[$(git tag)]"',
+          'echo "HUGI_VALUE=carried" >> "$GITHUB_ENV"\ncat hello.txt\ntest -n "$RUNNER_TEMP" && rm -rf "$RUNNER_TEMP"/*',
+        ),
+        step(
+          3,
+          'test "$HUGI_VALUE" = carried && test "$PLAN_VAR" = from-plan && echo "env ok $CI $RUNNER_OS $GITHUB_REF"\ngit rev-parse HEAD\necho "commits=$(git rev-list --count HEAD) tags=[$(git tag)]"\nif grep -rqs HUGI_TEST_SECRET . "/Volumes/My Shared Files"; then echo "secret visible"; else echo "no secret"; fi',
         ),
       ]);
       const deps = realDeps();
       const result = await runInVm(req, deps);
       expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
-      expect(result.steps.map((s) => s.outcome)).toEqual(['success', 'success']);
-      expect(readFileSync(join(req.logDir, '01-step-1.log'), 'utf8')).toContain(
+      expect(result.steps.map((s) => s.outcome)).toEqual(['success', 'success', 'success']);
+      expect(result.steps[0]!.note).toBe(`checked out ${sha}`);
+      expect(readFileSync(join(req.logDir, '02-step-2.log'), 'utf8')).toContain(
         'hello from the repo',
       );
-      const second = readFileSync(join(req.logDir, '02-step-2.log'), 'utf8');
+      const second = readFileSync(join(req.logDir, '03-step-3.log'), 'utf8');
       expect(second).toContain('env ok true macOS refs/heads/main');
       expect(second).toContain(sha);
       expect(second).toContain('commits=1 tags=[]');
+      expect(second).toContain('no secret');
       expect(readdirSync(req.logDir)).toContain('00-checkout.log');
       expect(result.timings.cloneSeconds).toBeGreaterThan(0);
+      expect(vmRemains(deps.vm)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    'the workspace is empty until the checkout step',
+    async () => {
+      await waitForFreeSlot();
+      const req = request('no-checkout-yet', [step(1, 'ls -A; test -f hello.txt'), checkout(2)]);
+      const deps = realDeps();
+      const result = await runInVm(req, deps);
+      expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+      expect(result.steps.map((s) => s.outcome)).toEqual(['failure', 'skipped']);
       expect(vmRemains(deps.vm)).toBe(false);
     },
     TEST_TIMEOUT_MS,

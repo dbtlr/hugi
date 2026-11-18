@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PlanStep, RunStep, StepPlan } from '../lane/step-plan';
+import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan';
 import { advanceUntilSettled, FakeClock, FakeTart, settle } from './fake-tart';
 import type { FakeGuest } from './fake-tart';
 import { stepFiles } from './guest-paths';
@@ -118,10 +118,10 @@ test('a passing plan clones, sizes, boots, checks out, runs every step, and dele
   expect(result.timings.totalSeconds).toBeGreaterThanOrEqual(2);
 });
 
-test('a local source mounts the host repository read-only; a remote source mounts nothing', async () => {
+test('a local source mounts its snapshot read-only; a remote source mounts nothing', async () => {
   const local = harness();
-  await run(local, requestOf([], { source: { kind: 'local', path: '/mock/repo' } }));
-  expect(local.tart.shares).toEqual([[{ hostPath: '/mock/repo', name: 'source' }]]);
+  await run(local, requestOf([], { source: { kind: 'local', path: '/mock/snapshot' } }));
+  expect(local.tart.shares).toEqual([[{ hostPath: '/mock/snapshot', name: 'source' }]]);
 
   const remote = harness();
   await run(remote, requestOf([]));
@@ -172,6 +172,22 @@ test('an invalid GITHUB_ENV fails its step as on GitHub, and later steps see non
   expect(h.tart.launcherFor(2)).not.toContain('GOOD');
 });
 
+test("an invalid GITHUB_OUTPUT fails its step with GitHub's wording", async () => {
+  const h = harness({
+    steps: { 1: { appendsOutput: 'files=a\nb\n' }, 2: { appendsOutput: 'ok=1\n' } },
+  });
+  const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
+  expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+  expect(result.steps.map((step) => step.outcome)).toEqual(['failure', 'success']);
+  expect(result.steps[0]!.error).toBe(
+    "Unable to process file command 'output' successfully. Invalid format 'b'",
+  );
+  expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
+    "Error: Unable to process file command 'output' successfully.",
+  );
+  expect(h.tart.launcherFor(2)).toContain(`export GITHUB_OUTPUT='${stepFiles(2).output}'`);
+});
+
 test('steps run in their working directory with the right shell', async () => {
   const h = harness();
   await run(
@@ -217,21 +233,77 @@ test('a PATH from the plan env, a step env, or GITHUB_ENV replaces the base PATH
   expect(h.tart.launcherFor(4)).toContain('export PATH="/added:/from/step"');
 });
 
-test('action steps are skipped, never executed', async () => {
+const actionStep = (
+  index: number,
+  uses: string,
+  overrides: Partial<ActionStep> = {},
+): ActionStep => ({
+  continueOnError: false,
+  env: {},
+  index,
+  kind: 'action',
+  name: uses,
+  uses,
+  when: 'success',
+  with: {},
+  ...overrides,
+});
+
+test('action steps other than the checkout are skipped, never executed', async () => {
   const h = harness();
-  const action: PlanStep = {
-    continueOnError: false,
-    env: {},
-    index: 1,
-    kind: 'action',
-    name: 'actions/checkout',
-    uses: 'actions/checkout@v4',
-    when: 'success',
-    with: {},
-  };
-  const result = await run(h, requestOf([action, runStep(2)]));
+  const result = await run(h, requestOf([actionStep(1, 'Swatinem/rust-cache@v2'), runStep(2)]));
   expect(result.reason).toBe('passed');
   expect(result.steps[0]).toMatchObject({ index: 1, outcome: 'skipped' });
+  expect(h.tart.events).not.toContain('materialize');
+});
+
+test('the workspace stays empty until the first checkout step, which materializes it', async () => {
+  const h = harness({ steps: { 1: {}, 3: {} } });
+  const result = await run(
+    h,
+    requestOf([
+      runStep(1),
+      actionStep(2, 'actions/checkout@v4'),
+      runStep(3),
+      actionStep(4, 'actions/checkout@v4'),
+    ]),
+  );
+  expect(result.reason).toBe('passed');
+  expect(h.tart.events.filter((event) => !event.includes(vmName))).toEqual([
+    'checkout',
+    'step 1',
+    'materialize',
+    'step 3',
+  ]);
+  expect(result.steps[1]).toMatchObject({
+    index: 2,
+    note: 'checked out abc123',
+    outcome: 'success',
+  });
+  expect(readFileSync(result.steps[1]!.logFile!, 'utf8')).toContain('checked out abc123');
+  // A second checkout of the same commit has nothing left to do.
+  expect(result.steps[3]).toMatchObject({ index: 4, outcome: 'skipped' });
+});
+
+test('a checkout step after a failure is skipped, so the workspace stays empty', async () => {
+  const h = harness({ steps: { 1: { exitCode: 1 } } });
+  const result = await run(h, requestOf([runStep(1), actionStep(2, 'actions/checkout@v4')]));
+  expect(result.reason).toBe('step-failed');
+  expect(result.steps[1]).toMatchObject({ outcome: 'skipped' });
+  expect(h.tart.events).not.toContain('materialize');
+});
+
+test('a checkout step that fails is infrastructure, and no later step runs', async () => {
+  const h = harness({ materializeExitCode: 128, steps: {} });
+  const result = await run(
+    h,
+    requestOf([actionStep(1, 'actions/checkout@v4'), runStep(2, { when: 'always' })]),
+  );
+  expect(result).toMatchObject({ reason: 'infrastructure', verdict: 'none' });
+  expect(result.detail).toContain('exit code 128');
+  expect(result.steps.map((step) => step.outcome)).toEqual(['failure', 'skipped']);
+  expect(h.tart.events).not.toContain('step 2');
+  expect(deleted(h)).toBe(true);
   expect(h.tart.events).not.toContain('step 1');
 });
 
@@ -309,7 +381,7 @@ test('a checkout that outlasts the job deadline is infrastructure, and the VM is
   const h = harness({ checkoutHangs: true, steps: {} });
   const result = await run(h, requestOf([runStep(1)], {}, { timeoutMinutes: 1 }));
   expect(result).toMatchObject({
-    detail: 'checkout timed out',
+    detail: 'fetching the source timed out',
     reason: 'infrastructure',
     verdict: 'none',
   });
@@ -363,13 +435,21 @@ test('a wedged tart stop is cut off, the tart run process killed, and the VM sti
   expect(h.warnings.some((warning) => warning.includes('leaked'))).toBe(false);
 });
 
-test('a clone failure is infrastructure, boots nothing, and has no VM to delete', async () => {
+test('a clone failure is infrastructure, boots nothing, and deletes any VM the clone left', async () => {
   const h = harness({ cloneError: 'no such image', steps: {} });
   const result = await run(h, requestOf([runStep(1)]));
   expect(result).toMatchObject({ reason: 'infrastructure', verdict: 'none' });
   expect(result.detail).toContain('no such image');
   expect(h.tart.events.some((event) => event.startsWith('run'))).toBe(false);
-  expect(deleted(h)).toBe(false);
+  // tart clone can fail after it has created the VM, so the run tries once to delete it.
+  expect(h.tart.events.filter((event) => event === `delete ${vmName}`)).toHaveLength(1);
+});
+
+test('a VM a failed clone may have left that cannot be deleted is a warning naming it', async () => {
+  const h = harness({ cloneError: 'prune failed', deleteErrors: 1, steps: {} });
+  const result = await run(h, requestOf([runStep(1)]));
+  expect(result).toMatchObject({ reason: 'infrastructure', verdict: 'none' });
+  expect(h.warnings.some((warning) => warning.includes(vmName))).toBe(true);
 });
 
 test('a VM that exits during boot is infrastructure and is cleaned up', async () => {

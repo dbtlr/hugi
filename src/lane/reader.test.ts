@@ -4,7 +4,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { stringify } from 'yaml';
 
-import { LaneReadError, readLane } from './reader';
+import { messageOf } from '../errors';
+import { JobSkippedError, LaneReadError, LaneSelectionError, readLane } from './reader';
 import type { EventContext, LaneRef } from './step-plan';
 
 const lane: LaneRef = { job: 'build', matrix: {}, workflow: '.github/workflows/ci.yml' };
@@ -21,17 +22,26 @@ function read(text: string, selected: LaneRef = lane) {
   return readLane(text, selected, event, paths);
 }
 
+/** A job that only exists for the lane to need it. */
+const UPSTREAM = { 'runs-on': 'ubuntu-latest', steps: [{ run: 'true' }] };
+
 function workflow(job: Record<string, unknown>, top: Record<string, unknown> = {}) {
-  return stringify({ ...top, jobs: { build: { 'runs-on': 'macos-latest', steps: [], ...job } } });
+  const needed = job.needs === undefined ? [] : [job.needs].flat().map(String);
+  const upstream = Object.fromEntries(needed.map((name) => [name, UPSTREAM]));
+  return stringify({
+    on: 'push',
+    ...top,
+    jobs: { ...upstream, build: { 'runs-on': 'macos-latest', steps: [], ...job } },
+  });
 }
 
 test('a missing job fails with a typed lane read error naming the job', () => {
-  expect(() => read('jobs: {}')).toThrow(LaneReadError);
-  expect(() => read('jobs: {}')).toThrow(/job "build".*missing/);
+  expect(() => read('on: push\njobs: {}')).toThrow(LaneReadError);
+  expect(() => read('on: push\njobs: {}')).toThrow(/job "build".*no job named "build"/);
 });
 
 test('a lane must resolve to a macOS runner label', () => {
-  expect(() => read('jobs: {build: {runs-on: ubuntu-latest, steps: []}}')).toThrow(
+  expect(() => read('on: push\njobs: {build: {runs-on: ubuntu-latest, steps: []}}')).toThrow(
     /job "build".*runs-on.*ubuntu-latest/,
   );
 });
@@ -160,7 +170,7 @@ test('workflow, job, and step environments layer with run defaults and limits', 
       'timeout-minutes': 25,
     },
     {
-      defaults: { run: { shell: 'bash', 'working-directory': '${{ github.workspace }}/default' } },
+      defaults: { run: { shell: 'bash', 'working-directory': 'default' } },
       env: { BASE: '${{ github.workspace }}', ROOT: 'workflow' },
     },
   );
@@ -320,10 +330,10 @@ test('caller-supplied upstream outputs and results resolve without running upstr
 });
 
 test('malformed YAML and malformed steps fail atomically with lane diagnostics', () => {
-  expect(() => read('jobs: [')).toThrow(LaneReadError);
-  expect(() => read('jobs: {build: {runs-on: macos-latest, runs-on: ubuntu-latest}}')).toThrow(
-    /job "build"/,
-  );
+  expect(() => read('on: push\njobs: [')).toThrow(LaneReadError);
+  expect(() =>
+    read('on: push\njobs: {build: {runs-on: macos-latest, runs-on: ubuntu-latest}}'),
+  ).toThrow(/job "build"/);
   expect(() =>
     read(workflow({ steps: [{ name: 'Ambiguous', run: 'true', uses: 'actions/checkout@v7' }] })),
   ).toThrow(/step 1 "Ambiguous".*exactly one of run or uses/);
@@ -487,6 +497,37 @@ test('matrix values select a combination by GitHub equality and keep the workflo
   );
 });
 
+test('a boolean matrix value is selected by its written text, as --matrix supplies it', () => {
+  const text = workflow({
+    steps: [{ if: 'matrix.enabled', name: 'Enabled', run: 'true' }],
+    strategy: { matrix: { enabled: [true, false] } },
+  });
+  expect(read(text, { ...lane, matrix: { enabled: 'true' } }).steps).toHaveLength(1);
+  expect(read(text, { ...lane, matrix: { enabled: 'false' } }).steps).toEqual([]);
+});
+
+test('a matrix larger than 256 combinations fails before its rows are built', () => {
+  const huge = workflow({
+    strategy: {
+      matrix: {
+        first: Array.from({ length: 256 }, (_, i) => i),
+        second: Array.from({ length: 20_000 }, (_, i) => i),
+      },
+    },
+  });
+  expect(() => read(huge, { ...lane, matrix: { first: '0', second: '0' } })).toThrow(
+    /matrix has 5120000 combinations, more than 256/,
+  );
+});
+
+test('rows that include entries add count toward the 256-combination limit', () => {
+  const include = Array.from({ length: 257 }, (_, i) => ({ shard: i }));
+  const text = workflow({ strategy: { matrix: { include } } });
+  expect(() => read(text, { ...lane, matrix: { shard: '0' } })).toThrow(
+    /matrix has 257 combinations, more than 256/,
+  );
+});
+
 test.each([
   ['if', { if: "env.FLAG == 'on'", run: 'true' }],
   ['run', { run: 'echo ${{ env.FLAG }}' }],
@@ -576,6 +617,14 @@ test('a run step with no shell gets the default shell; an explicit bash stays ba
   expect(shellsOf()).toEqual(['default', 'bash']);
   expect(shellsOf({ run: { shell: 'bash' } })).toEqual(['bash', 'bash']);
 });
+
+test.each(['vars.FLAG', 'inputs.flag'])(
+  'a job-level if that reads %s fails as a context Hugi cannot supply, which GitHub allows there',
+  (expression) => {
+    const text = workflow({ if: `${expression} == 'x'` });
+    expect(() => read(text)).toThrow(/Hugi cannot supply the (vars|inputs) context/);
+  },
+);
 
 test.each(['matrix.os', 'env.FLAG', 'runner.os', 'vars.FLAG', 'inputs.flag'])(
   'a job-level if that reads %s fails, because only github and needs are available there',
@@ -675,6 +724,7 @@ test.each([
 
 test('a YAML merge key anywhere in the job fails the read', () => {
   const text = `
+on: push
 jobs:
   build:
     runs-on: macos-latest
@@ -725,4 +775,232 @@ test('a malformed with input is labelled with its with key', () => {
       workflow({ steps: [{ name: 'Setup', uses: 'actions/checkout@v7', with: { list: [1] } }] }),
     ),
   ).toThrow(/step 1 "Setup".*with\.list must be/);
+});
+
+describe('a selection the caller made that picks no runnable lane is a selection error, not a read error', () => {
+  const matrixJob = workflow({ strategy: { matrix: { os: ['macos-latest'], shard: [0, 1] } } });
+  const needsJob = workflow({
+    needs: 'changes',
+    steps: [{ run: 'echo ${{ needs.changes.outputs.code }}' }],
+  });
+
+  test.each([
+    ['a missing job', 'on: push\njobs: {}', lane, event, /job "build".*no job named "build"/],
+    [
+      'matrix values that select no combination',
+      matrixJob,
+      { ...lane, matrix: { os: 'macos-latest', shard: 'zero' } },
+      event,
+      /matrix values do not select a combination/,
+    ],
+    [
+      'matrix values that select more than one combination',
+      workflow({
+        strategy: { matrix: { include: [{ os: 'macos-latest' }, { os: 'macos-latest' }] } },
+      }),
+      { ...lane, matrix: { os: 'macos-latest' } },
+      event,
+      /matrix values select more than one combination/,
+    ],
+    [
+      'matrix values for a job with no matrix',
+      workflow({}),
+      { ...lane, matrix: { os: 'macos-latest' } },
+      event,
+      /matrix values supplied for a job with no matrix/,
+    ],
+    [
+      'an upstream output the caller did not supply',
+      needsJob,
+      lane,
+      event,
+      /missing upstream value needs.changes.outputs.code.*--needs/,
+    ],
+    [
+      'an upstream output for a job not in needs',
+      needsJob,
+      lane,
+      { ...event, needs: { changes: { outputs: { code: '1' } }, other: { outputs: { x: '1' } } } },
+      /"other" is not in the job's needs \(changes\)/,
+    ],
+  ] as const)('%s', (_name, text, selected, supplied, message) => {
+    let failure: unknown;
+    try {
+      readLane(text, selected, supplied, paths);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(LaneSelectionError);
+    expect(messageOf(failure)).toMatch(message);
+  });
+
+  test('a job whose if: is false is skipped for this event', () => {
+    const skipped = workflow({ if: "github.event_name == 'pull_request'" });
+    expect(() => read(skipped)).toThrow(JobSkippedError);
+    expect(() => read(skipped)).toThrow(LaneSelectionError);
+  });
+
+  test('unsupported workflow content stays a plain lane read error', () => {
+    let failure: unknown;
+    try {
+      read('on: push\njobs: {build: {runs-on: ubuntu-latest, steps: []}}');
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(LaneReadError);
+    expect(failure).not.toBeInstanceOf(LaneSelectionError);
+  });
+
+  test('a needs value for a job outside the needs list is unsupported content, not a selection', () => {
+    const text = workflow({ steps: [{ run: 'echo ${{ needs.elsewhere.outputs.x }}' }] });
+    let failure: unknown;
+    try {
+      read(text);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(LaneReadError);
+    expect(failure).not.toBeInstanceOf(LaneSelectionError);
+    expect(messageOf(failure)).toMatch(/needs.elsewhere is not in the job's needs/);
+  });
+
+  test('a missing upstream value in a step condition is still a selection error', () => {
+    const text = workflow({
+      needs: 'changes',
+      steps: [{ if: "needs.changes.outputs.code == 'true'", run: 'true' }],
+    });
+    expect(() => read(text)).toThrow(LaneSelectionError);
+  });
+});
+
+/** The error reading `document` throws, checked to be a read error and not a selection one. */
+function rejection(document: Record<string, unknown>): string {
+  let failure: unknown;
+  try {
+    read(stringify(document));
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(LaneReadError);
+  expect(failure).not.toBeInstanceOf(LaneSelectionError);
+  return messageOf(failure);
+}
+
+describe('a workflow GitHub would reject is a fail verdict before the lane is read', () => {
+  const build = { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] };
+  const valid = { jobs: { build }, on: 'push' };
+
+  test('the valid baseline reads', () => {
+    expect(read(stringify(valid)).steps).toHaveLength(1);
+  });
+
+  test.each([
+    ['no on:', { jobs: { build } }, /invalid workflow: .*on/],
+    ['an unknown top-level key', { ...valid, triggers: 'push' }, /invalid workflow: .*triggers/],
+    [
+      'an invalid job id',
+      { ...valid, jobs: { '1st': build, build } },
+      /invalid workflow: .*job id "1st"/,
+    ],
+    [
+      'a needs target that does not exist',
+      { ...valid, jobs: { build: { ...build, needs: 'ghost' } } },
+      /invalid workflow: .*"ghost"/,
+    ],
+    [
+      'a needs cycle among sibling jobs',
+      {
+        ...valid,
+        jobs: {
+          a: { needs: 'b', 'runs-on': 'ubuntu-latest', steps: [{ run: 'true' }] },
+          b: { needs: ['a'], 'runs-on': 'ubuntu-latest', steps: [{ run: 'true' }] },
+          build,
+        },
+      },
+      /invalid workflow: .*cycle/,
+    ],
+    [
+      'an invalid step id in a sibling job',
+      {
+        ...valid,
+        jobs: { build, other: { 'runs-on': 'ubuntu-latest', steps: [{ id: '9x', run: 'true' }] } },
+      },
+      /invalid workflow: .*step id "9x"/,
+    ],
+    [
+      'a duplicate step id in the lane',
+      {
+        ...valid,
+        jobs: {
+          build: {
+            ...build,
+            steps: [
+              { id: 'one', run: 'true' },
+              { id: 'one', run: 'true' },
+            ],
+          },
+        },
+      },
+      /invalid workflow: .*"one".*more than once/,
+    ],
+    ['an on: that is not a trigger', { ...valid, on: false }, /invalid workflow: .*on/],
+    [
+      'a sibling job with neither runs-on nor uses',
+      { ...valid, jobs: { broken: { name: 'Broken' }, build } },
+      /invalid workflow: .*job "broken".*runs-on or uses/,
+    ],
+    [
+      'an expression in the workflow-level run defaults',
+      { ...valid, defaults: { run: { 'working-directory': '${{ github.workspace }}/x' } } },
+      /expressions are not allowed in workflow defaults/,
+    ],
+    [
+      'a sibling job key GitHub does not know',
+      { ...valid, jobs: { build, other: { 'runs-on': 'ubuntu-latest', stepz: [] } } },
+      /invalid workflow: .*stepz/,
+    ],
+  ])('%s', (_name, document, message) => {
+    expect(rejection(document)).toMatch(message);
+  });
+
+  test('sibling jobs may use any key GitHub accepts, such as a container or a reusable workflow', () => {
+    const document = {
+      ...valid,
+      jobs: {
+        build,
+        linux: {
+          container: 'node:22',
+          'continue-on-error': true,
+          environment: 'ci',
+          'runs-on': 'ubuntu-latest',
+          services: { db: { image: 'postgres' } },
+          snapshot: 'linux-image',
+          steps: [{ id: 'first-step_1', run: 'true' }],
+        },
+        reuse: {
+          needs: ['linux'],
+          secrets: 'inherit',
+          uses: './.github/workflows/x.yml',
+          with: { a: 1 },
+        },
+      },
+    };
+    expect(read(stringify(document)).steps).toHaveLength(1);
+  });
+
+  test.each([['push'], [['push', 'pull_request']], [{ push: { branches: ['main'] } }]])(
+    'on: may be an event, a list of events, or a mapping (%j)',
+    (on) => {
+      expect(read(stringify({ ...valid, on })).steps).toHaveLength(1);
+    },
+  );
+
+  test("the lane's own job keeps the stricter supported key set", () => {
+    const document = { ...valid, jobs: { build: { ...build, container: 'node:22' } } };
+    expect(rejection(document)).toMatch(/unsupported key in the job: container/);
+  });
+
+  test('an invalid workflow wins over a missing job', () => {
+    expect(rejection({ jobs: { other: build } })).toMatch(/invalid workflow/);
+  });
 });

@@ -1,8 +1,10 @@
 /**
  * What the VM runner takes and returns. A run clones the golden image, boots
- * it, checks out the source at the commit (shallow, as `actions/checkout`
- * does), installs the lane's tools, executes the plan's `run:` steps, collects
- * logs, and deletes the VM on every exit path.
+ * it, fetches the commit into a staging repository, installs the lane's tools,
+ * executes the plan's `run:` steps, materializes the workspace (shallow, as
+ * `actions/checkout` does) at the plan's first `actions/checkout` step, collects
+ * logs, and tries to delete the VM on every exit path. Deletion is best effort: when every
+ * attempt fails, the runner warns with the VM's name and still returns the result.
  */
 import type { EventContext, StepPlan } from '../lane/step-plan';
 
@@ -10,7 +12,10 @@ import type { EventContext, StepPlan } from '../lane/step-plan';
 export type SourceLocation =
   /** A public repository, fetched inside the guest over HTTPS. */
   | { readonly kind: 'remote'; readonly cloneUrl: string }
-  /** A git repository on the host, mounted read-only into the guest and fetched from there. */
+  /**
+   * A bare snapshot repository on the host that holds only the commit, shared read-only with the
+   * guest and fetched from there. Never a working tree: its untracked files would reach the lane.
+   */
   | { readonly kind: 'local'; readonly path: string };
 
 export type RunRequest = {
@@ -37,6 +42,8 @@ export type StepResult = {
   readonly logFile?: string;
   /** Why the step failed when its exit code does not say: an invalid `GITHUB_ENV`, a lost VM. */
   readonly error?: string;
+  /** What a step the runner performs itself did, such as `checked out <sha>` for the checkout step. */
+  readonly note?: string;
 };
 
 /**
@@ -46,8 +53,8 @@ export type StepResult = {
  * are skipped while its `always` and `failure` steps still run. A job timeout
  * skips every remaining step, `always` steps included (unlike GitHub, which
  * still runs them). `infrastructure` (the VM failed to clone or boot, exited or
- * stopped answering mid-run, or the source could not be fetched before the
- * job deadline) and `interrupted` (Hugi was stopped) yield no verdict, because
+ * stopped answering mid-run, the source could not be fetched before the job
+ * deadline, or the checkout step could not materialize the workspace) and `interrupted` (Hugi was stopped) yield no verdict, because
  * the failure lies outside the lane's steps.
  */
 export type RunReason = 'passed' | 'step-failed' | 'timeout' | 'infrastructure' | 'interrupted';

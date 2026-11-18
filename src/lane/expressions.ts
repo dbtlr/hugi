@@ -1,3 +1,4 @@
+import { LaneSelectionError } from './errors';
 import { scalar } from './parse';
 
 /** A workflow expression value, typed as GitHub's expression language types it. */
@@ -26,8 +27,15 @@ export function resolve(expression: string, ctx: Context): Value {
   if (Object.hasOwn(ctx.values, expression)) {
     return ctx.values[expression]!;
   }
-  if (/^needs\.[\w-]+\.(?:outputs\.[\w-]+|result)$/u.test(expression)) {
-    throw new Error(`missing upstream value ${expression}`);
+  const upstream = /^needs\.([\w-]+)\.(?:outputs\.[\w-]+|result)$/u.exec(expression);
+  if (upstream) {
+    // Every job in `needs:` has a result, so a job without one is not in the list.
+    if (!Object.hasOwn(ctx.values, `needs.${upstream[1]}.result`)) {
+      throw new Error(`needs.${upstream[1]} is not in the job's needs`);
+    }
+    throw new LaneSelectionError(
+      `missing upstream value ${expression}; supply it with --needs ${expression.slice('needs.'.length)}=<value>`,
+    );
   }
   throw new Error(`unsupported expression: ${expression}`);
 }
