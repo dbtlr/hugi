@@ -9,7 +9,7 @@ Hugi runs a repository's macOS CI lanes in throwaway VMs on its own host and rep
 ## Running
 
 **Lane**:
-One job in a repository's workflow file, with its matrix values fixed, that Hugi runs on macOS. The workflow file is the lane's only definition.
+One job, with its matrix values fixed, that a repository's lane declaration names for Hugi to run on macOS. The job's workflow file, GitHub's or a Hugi workflow, is the lane's only definition.
 _Avoid_: Job (when Hugi's unit is meant), pipeline, check
 
 **Step plan**:
@@ -28,6 +28,10 @@ _Avoid_: Result, status (except for the GitHub commit status that carries a verd
 The outcome of the same lane at the same commit on GitHub's hosted runners, which shadow compares verdicts against.
 _Avoid_: Hosted verdict
 
+**Hugi workflow**:
+A workflow-syntax file under `.github/hugi/` that holds a repository's promoted lanes. GitHub never runs it, and Hugi ignores its `on:` block, though the file must still be a valid workflow.
+_Avoid_: Shadow workflow, private workflow
+
 **Golden image**:
 The VM image every run is cloned from, holding the toolchains and warm package caches the enrolled lanes need.
 _Avoid_: Base image, template, snapshot
@@ -37,6 +41,10 @@ _Avoid_: Base image, template, snapshot
 **Enrolment**:
 The admission of a repository to Hugi, recorded outside the repository.
 _Avoid_: Registration, onboarding, subscription
+
+**Lane declaration**:
+The repository's `.github/hugi.yaml`, read at the commit under test, which points at the workflow jobs and matrix values that are its lanes.
+_Avoid_: Lane list, manifest, hugi config
 
 **Allowlist**:
 The authors, recorded outside the repositories, whose pull requests Hugi runs. Commits on an enrolled repository's default branch run without it.
@@ -49,5 +57,5 @@ The period in which an enrolled repository's verdicts are posted as advisory sta
 _Avoid_: Dry run, trial, beta
 
 **Promotion**:
-The change that makes a repository's verdict a required check and turns off its hosted macOS job for pull requests, after the verdicts matched through shadow.
+The change that makes a repository's verdict a required check and moves its lanes' jobs out of GitHub's workflow into a Hugi workflow, so GitHub no longer runs them, after the verdicts matched through shadow.
 _Avoid_: Graduation, cutover
