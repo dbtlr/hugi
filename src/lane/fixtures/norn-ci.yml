@@ -1,0 +1,340 @@
+# PR/main functional gate lane.
+#
+# CI is two-tier: structure and counters gate correctness, clocks trend in
+# certify.yml.
+# No wall-clock pass/fail ever runs in this lane — see docs/architecture.md.
+# "Counters" names the measurement gates in the correctness tier; a
+# gate that asserts structure rather than a number belongs here too, on the
+# same terms.
+#
+# The timeout-minutes below are not an exception to that. A timeout is a
+# runaway guard: it bounds what a hung job can cost, and it is set loose
+# enough that a job approaching it is broken rather than slow. The deadlines
+# the suites here carry in-test — how long a child process may run, how long
+# an attachment may take to converge — are the same species, set the same way
+# and reported the same way: a run that reaches one is stuck rather than slow,
+# and it fails naming what it last saw instead of naming a duration.
+# Performance clocks — the bars that fail when a number drifts — live in
+# certify.yml.
+#
+# **Every suite here runs through the flake tripwire.** This is the lane a
+# failure gets rerun on, and a rerun of a failure this workspace has already
+# ruled on leaves nothing behind. `.github/scripts/flake-tripwire.sh` runs the
+# suite, matches a failing run's output against the entries in
+# `.github/flake-ledger`, and writes each match into the run as an annotation
+# and a job-summary block naming the ruling. It changes no verdict and retries
+# nothing: the suite's own exit status is the step's.
+#
+# A step that reaches its suite through another script is wrapped on the
+# outside of it. `lane-suite.sh` runs `cargo test -- --ignored` and fails a step
+# that ran no case, so it is a suite step like any other and its output — the
+# suite's, and the script's own error — is what the tripwire scans.
+#
+# The dormant soak tier does not wrap its steps the same way. Every one of its
+# suite logs is kept and its record is a typed artifact, so a recurrence there
+# is already written down; what the wrapper removes is the quiet rerun, which
+# is this lane's hazard.
+#
+# A job whose name carries a "(placeholder — ...)" suffix is structure only:
+# it passes trivially so the lane exists, triggers, and is reviewable before
+# it has teeth, and it is filled by whatever its comment names — a task where
+# one exists, and otherwise the layer that brings the missing subject.
+# The suffix drops when the real gate lands, so a green check on a job
+# without one is a gate that actually ran.
+#
+# Dedicated full fault suites, compiled audits, counter matrices and memory
+# bars run only in regression.yml among the active workflows. This gate keeps
+# ordinary functional coverage and focused macOS filesystem evidence, including
+# the folding-root spelling bar. docs/ci.md governs cadence and the required
+# checks in the `main` ruleset.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # A run stuck in a GitHub incident can be requeued by hand rather than by an
+  # empty commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR pushes are cancellable; gate runs on main are not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The workspace compiles clean; ordinary tests and doctests outside the named
+  # shard pass. The corpus suite is dormant — no command is activated —
+  # while its data and the registry's structure remain checked here.
+  # Compiled registry carriers and inventory reconciliation run in full
+  # regression: keeping that build/listing work there avoids rebuilding and
+  # listing every cited test target inside this job's workspace test step.
+  build:
+    name: build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The toolchain comes from rust-toolchain.toml, which rustup honors.
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --locked --workspace
+      - name: Test
+        run: .github/scripts/flake-tripwire.sh cargo test --locked --workspace --exclude norn-host --exclude norn-testkit --exclude norn-serve
+
+  # `build and test (norn-host and norn-testkit)` is a required check in the `main` ruleset,
+  # and the name predates the job's current packages: norn-host is tested in
+  # `host-functional` below, once, with `induced-failure` on. The named packages and
+  # catch-all exclusions must match exactly. Each package's ordinary tests and
+  # doctests run in exactly one PR job; new crates join the catch-all automatically.
+  # norn-serve runs here: its tokio and hyper switch features on in mio and
+  # smallvec, which norn-host's graph links, so the shard needs it to build those
+  # with the whole-workspace feature set (`norn-testkit --test shards`). Without
+  # norn-host selected, norn-serve's development dependencies on norn-fs and
+  # norn-store keep the fault features those two (and norn-db) get from
+  # norn-host's own development dependencies in a whole-workspace run. The check
+  # keeps its required name.
+  build-host:
+    name: build and test (norn-host and norn-testkit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+      # cargo test builds every selected target before running tests and doctests.
+      - name: Test
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-testkit -p norn-serve
+
+  # `lint and document` is a required check in the `main` ruleset.
+  # Its 30-minute timeout is a runaway guard, under the same doctrine above.
+  lint:
+    name: lint and document
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Lint the performance worker
+        run: cargo clippy --locked -p norn-host --test performance -- -D warnings
+      - name: Lint startup profiling
+        run: cargo clippy --locked -p norn-host --test performance --features induced-failure -- -D warnings
+      - name: Test the performance harness
+        run: python3 -m unittest discover -s scripts/performance -v
+      # The lint above never sees norn-db's, norn-fs's or norn-store's library
+      # with the feature off. norn-fs and norn-store are each their own
+      # dev-dependency with `induced-failure` on, and norn-store forwards the
+      # feature to norn-db, so `--all-targets` pulls the dev graph in and cargo
+      # unifies the feature to on for every target in the run — including the
+      # libraries. The shipped build is the feature-off one, and the items each
+      # fault seam leaves behind there are held clean by `cfg_attr` allows that
+      # nothing else checks. This step is the lane that checks them: the
+      # libraries alone, no dev targets, no feature.
+      - name: Lint the shipped libraries
+        run: cargo clippy --locked -p norn-db -p norn-fs -p norn-store --lib -- -D warnings
+      # The workspace lint above builds norn-host's targets with its
+      # `induced-failure` feature off, and that crate's lockdown, soak-load and
+      # crash-convergence suites are whole files behind the feature: with it off
+      # they compile to nothing, so no lint ever reads them. This step is the
+      # lane that does — the same reason the test job below names the feature
+      # for that crate.
+      - name: Lint the induced-failure targets
+        run: cargo clippy --locked -p norn-host --all-targets --features induced-failure -- -D warnings
+      # The `counters` feature compiles the counters route into norn-serve and
+      # the token counter bar into the `norn` package's tests; with it off,
+      # both compile to nothing, so neither the lint above nor the build job
+      # reads them. These three steps are the lane that does: the lint, the
+      # bar, the wire route's counter bars and its host-time header, and
+      # norn-serve's unit tests of the counters route, named exactly.
+      # test-suite.sh rejects a run that executes no case, which is what a
+      # missing feature or a renamed test would produce.
+      - name: Lint the counters build
+        run: cargo clippy --locked --workspace --all-targets --features norn/counters -- -D warnings
+      - name: Token counter bar
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn --features counters --test serve_counters
+      - name: Counters route
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-serve --features counters --lib http::tests::the_counters_route_answers_the_token_counters_behind_the_bearer -- --exact
+      - name: Wire counter bars
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn --features counters --test serve_wire
+      - name: Wire host time
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-serve --features counters --lib http::tests::wire::every_wire_answer_carries_the_host_time_under_the_counters_feature -- --exact
+      - name: Serving memory bars
+        run: .github/scripts/flake-tripwire.sh .github/scripts/lane-suite.sh norn serve_memory --nocapture --test-threads=1
+      # rustdoc is its own compiler pass: a public doc that links a private
+      # item, or an intra-doc link that resolves to nothing, is a warning only
+      # this pass sees, and no lint above reads it. Denied here so the doc
+      # lane cannot drift red on main between reviews.
+      - name: Document
+        run: cargo doc --locked --workspace --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Four crates declare an `induced-failure` feature, and the workspace test
+  # in the build job reaches three of them. norn-fs and norn-store each turn
+  # their own on through a self dev-dependency, and norn-store forwards it to
+  # norn-db, so their lockdown and environment suites already run there.
+  # norn-host needs an explicit feature selection: it compiles the fault-seam
+  # targets and exposes the accounts ordinary churn and rolling-heal cases
+  # assert over. Without it, those files or assertions would be absent.
+  #
+  # This is the only PR job that runs norn-host's ordinary tests and doctests.
+  # Every case the feature-off run executes also runs here (2,197 cases in both,
+  # none only in the feature-off run), so a second run on PRs only repeated
+  # them. The feature-off build stays proven on every PR by compilation: the
+  # build job builds the shipped graph and the workspace clippy compiles
+  # norn-host's targets with the feature off. regression.yml still runs the
+  # default-feature host suite nightly.
+  #
+  # Select the whole package so every current and future ordinary host target
+  # and case joins PR coverage automatically. A list of targets or a --skip
+  # would silently leave newly added functional coverage behind. Only lockdown
+  # and kill_recovery move out of this ordinary suite into the fault lane:
+  # their dedicated fault/recovery targets are adopted wholesale in full
+  # regression. Existing ignored counter, memory and soak cases keep their
+  # own lanes; ordinary feature-enabled cases elsewhere still run here.
+  # The four Linux build, lint and test jobs run in parallel, so their contribution
+  # to the PR critical path is the longest job rather than their sum.
+  host-functional:
+    name: host functional (induced-failure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The cache key separates this job's cache from the ones saved before the
+      # flag below, so the optimized SQLite object is saved.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sqlite-opt3
+      # `--config profile.dev.package.libsqlite3-sys.opt-level=3` builds the bundled
+      # SQLite at opt-level 3 for this job's functional tests. Cargo does not read
+      # a per-package profile override from the environment, so the flag is how a
+      # single run sets it. The workflow reader accepts this one exact flag and
+      # value and no other `--config`. The other PR jobs do not pass it because it
+      # did not shorten them on hosted runners.
+      - name: Host functional suite
+        run: .github/scripts/flake-tripwire.sh cargo test --locked --config profile.dev.package.libsqlite3-sys.opt-level=3 -p norn-host --features induced-failure
+
+  # A targeted second-architecture gate. The three Linux test jobs above cover
+  # the full workspace on x86_64; this job holds contracts whose answers can
+  # drift with architecture or filesystem behavior without duplicating the
+  # complete host suite: embedding determinism, norn-fs contracts, Obsidian
+  # parity, exact rename/refusal cases, and the folding-root spelling bar.
+  # Case-insensitive rename convergence needs a case-insensitive filesystem —
+  # APFS's default here, and no other active CI platform. Pin the image rather
+  # than following macos-latest, and assert the machine architecture so a future
+  # runner-label migration refuses instead of silently weakening the gate.
+  #
+  # The host steps name `induced-failure` because lockdown's revoked-mode
+  # refusals are filesystem behavior too, and that target compiles to zero
+  # tests without it. Churn also reads work accounts exposed by the feature;
+  # a featureless run would omit those assertions. Exact native cases include
+  # ignored tests so the fault-lane move cannot skip the two refusal cases.
+  # test-suite.sh rejects an exact selection that executes nothing.
+  #
+  # Full macOS host coverage and the complete folding-root counter matrix run
+  # in regression.yml. The spelling bar stays here as focused PR evidence for
+  # stored-name queries on a real folding root, with its account enabled by
+  # LANE_FEATURES. Its suite refuses a distinct macOS scratch volume.
+  platform:
+    name: determinism and filesystem (macOS ARM64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Assert architecture
+        run: test "$(uname -m)" = arm64
+      - uses: Swatinem/rust-cache@v2
+      - name: Embedding determinism
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-embed --test determinism
+      - name: Filesystem contracts
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-fs
+      # The measuring launcher's pre-main initializer and spawn path are
+      # platform-specific; this runs its process tests on macOS on every PR.
+      - name: Measuring launcher
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-testkit --lib process
+      - name: Host library contracts
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --lib
+      # test-suite.sh judges one libtest target's summary, so each target is its own step.
+      - name: Early host reads
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test early_reads
+      - name: Provisional host registration
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test provisional_registration
+      - name: Obsidian parity
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-host --features induced-failure --test obsidian_parity
+      # --exact alone succeeds on a typo. test-suite.sh rejects zero matches.
+      - name: Case-only rename convergence
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test churn a_case_flip_converges_on_a_build_from_zero -- --exact --include-ignored
+      - name: Parent rename over a save
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test churn a_case_renamed_parent_over_a_save_converges_on_a_build_from_zero -- --exact --include-ignored
+      - name: Unreadable document recovery
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test lockdown an_unreadable_document_is_marked_broken_and_the_heal_reaches_ready -- --exact --include-ignored
+      - name: Unreadable subtree is withheld and marked
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test lockdown an_unreadable_subtree_is_withheld_and_marked_and_the_heal_reaches_ready -- --exact --include-ignored
+      # The host process's port probe binds through BSD socket semantics that
+      # differ from Linux's (a wildcard listener beside a loopback bind, a
+      # socket in TIME_WAIT), and crates/norn-serve/src/sys.rs builds only on
+      # a Unix host. Named exactly: test-suite.sh rejects a selection that
+      # executes nothing.
+      - name: Port probe on macOS
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-serve --lib -- --exact start::tests::the_probe_refuses_a_listener_on_loopback_or_the_wildcard start::tests::the_probe_passes_a_socket_in_time_wait
+      - name: Wildcard-held port refuses the start
+        run: .github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn --test serve a_port_held_on_the_wildcard_address_refuses_the_start -- --exact
+      - name: Folding-root spelling bar
+        run: .github/scripts/flake-tripwire.sh .github/scripts/lane-suite.sh norn-host folding_cost --nocapture --test-threads=1
+        env:
+          LANE_FEATURES: induced-failure
+
+  # The architecture gate: it reads `cargo metadata` once per entry in the
+  # pinned feature matrix and asserts the workspace normal-dependency graph
+  # against the allowlist in docs/architecture.md; it asserts the transcribed
+  # allowlist and crate list against the tables in that document; it refuses a
+  # local crate the workspace does not hold as a member; and it holds the
+  # invariant-to-mechanism mapping to the boundary lints configured in
+  # clippy.toml. The lints themselves bind in the lint job, where clippy runs.
+  # The shard certification beside it holds the three PR test jobs to testing
+  # every package exactly once, and the two package-shard jobs to building every
+  # package's tests with the whole-workspace feature set.
+  #
+  # It also lints the workflows themselves with actionlint, whose image carries
+  # shellcheck for every `run:` script: an unknown runner label, a bad
+  # expression or a shell error in a workflow fails here, on the PR that
+  # introduces it. Self-hosted runner labels are declared in
+  # .github/actionlint.yaml. The lint reads files, not a suite's run, so it does
+  # not go through the flake tripwire.
+  architecture:
+    name: architecture gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Workflow lint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      - uses: Swatinem/rust-cache@v2
+      - name: Gate
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-testkit --test architecture
+      - name: Shard certification
+        run: .github/scripts/flake-tripwire.sh cargo test --locked -p norn-testkit --test shards

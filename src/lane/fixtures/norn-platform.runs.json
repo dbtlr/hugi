@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Assert architecture",
+    "script": "test \"$(uname -m)\" = arm64"
+  },
+  {
+    "name": "Embedding determinism",
+    "script": ".github/scripts/flake-tripwire.sh cargo test --locked -p norn-embed --test determinism"
+  },
+  {
+    "name": "Filesystem contracts",
+    "script": ".github/scripts/flake-tripwire.sh cargo test --locked -p norn-fs"
+  },
+  {
+    "name": "Measuring launcher",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-testkit --lib process"
+  },
+  {
+    "name": "Host library contracts",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --lib"
+  },
+  {
+    "name": "Early host reads",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test early_reads"
+  },
+  {
+    "name": "Provisional host registration",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test provisional_registration"
+  },
+  {
+    "name": "Obsidian parity",
+    "script": ".github/scripts/flake-tripwire.sh cargo test --locked -p norn-host --features induced-failure --test obsidian_parity"
+  },
+  {
+    "name": "Case-only rename convergence",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test churn a_case_flip_converges_on_a_build_from_zero -- --exact --include-ignored"
+  },
+  {
+    "name": "Parent rename over a save",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test churn a_case_renamed_parent_over_a_save_converges_on_a_build_from_zero -- --exact --include-ignored"
+  },
+  {
+    "name": "Unreadable document recovery",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test lockdown an_unreadable_document_is_marked_broken_and_the_heal_reaches_ready -- --exact --include-ignored"
+  },
+  {
+    "name": "Unreadable subtree is withheld and marked",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-host --features induced-failure --test lockdown an_unreadable_subtree_is_withheld_and_marked_and_the_heal_reaches_ready -- --exact --include-ignored"
+  },
+  {
+    "name": "Port probe on macOS",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn-serve --lib -- --exact start::tests::the_probe_refuses_a_listener_on_loopback_or_the_wildcard start::tests::the_probe_passes_a_socket_in_time_wait"
+  },
+  {
+    "name": "Wildcard-held port refuses the start",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/test-suite.sh cargo test --locked -p norn --test serve a_port_held_on_the_wildcard_address_refuses_the_start -- --exact"
+  },
+  {
+    "name": "Folding-root spelling bar",
+    "script": ".github/scripts/flake-tripwire.sh .github/scripts/lane-suite.sh norn-host folding_cost --nocapture --test-threads=1"
+  }
+]
