@@ -13,6 +13,8 @@
     "hugi": "bun run src/main.ts",
     "check": "vp check",
     "test": "bun test src",
+    "test:vm": "HUGI_VM_TESTS=1 bun test src/vm",
+    "test:vm:golden": "HUGI_VM_TESTS=1 HUGI_GOLDEN_TESTS=1 bun test src/vm",
     "build": "loom build --out dist/hugi"
   },
   "dependencies": {
