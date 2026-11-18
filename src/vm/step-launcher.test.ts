@@ -90,13 +90,17 @@ test('the step starts detached in a session of its own, with its output and stat
   expect(launcher.trimEnd()).toEndWith(`>> '${files.log}' 2>&1 < /dev/null &`);
 });
 
-test('each step starts with fresh, empty GITHUB_ENV and GITHUB_PATH files', () => {
+test('each step starts with fresh, empty GITHUB_ENV, GITHUB_PATH, and GITHUB_OUTPUT files', () => {
   const files = stepFiles(7);
   const launcher = launch();
-  expect(launcher).toContain(`: > '${files.env}'`);
-  expect(launcher).toContain(`: > '${files.path}'`);
-  expect(launcher).toContain(`export GITHUB_ENV='${files.env}'`);
-  expect(launcher).toContain(`export GITHUB_PATH='${files.path}'`);
+  for (const [name, file] of [
+    ['GITHUB_ENV', files.env],
+    ['GITHUB_PATH', files.path],
+    ['GITHUB_OUTPUT', files.output],
+  ] as const) {
+    expect(launcher).toContain(`: > '${file}'`);
+    expect(launcher).toContain(`export ${name}='${file}'`);
+  }
 });
 
 test('a missing working directory fails the step rather than the launcher', () => {

@@ -37,6 +37,17 @@ export function runDefaults(value: unknown, where: string): Record<string, unkno
   return run;
 }
 
+/** Workflow-level `defaults.run`, where GitHub allows no context, so no expression either. */
+export function workflowRunDefaults(value: unknown): Record<string, unknown> {
+  const run = runDefaults(value, 'defaults');
+  for (const [key, setting] of Object.entries(run)) {
+    if (typeof setting === 'string' && setting.includes('${{')) {
+      throw new Error(`expressions are not allowed in workflow defaults.run.${key}`);
+    }
+  }
+  return run;
+}
+
 export function timeout(value: unknown, ctx: Context): number {
   const expanded = expand(value, ctx, 'timeout-minutes');
   const minutes = Number(expanded);

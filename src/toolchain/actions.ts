@@ -1,3 +1,4 @@
+import { messageOf } from '../errors';
 import type { ActionStep } from '../lane/step-plan';
 import { bunVersion } from './bun';
 import { UnsupportedActionError } from './errors';
@@ -31,6 +32,9 @@ async function mapAction(step: ActionStep, readRepoFile: ReadRepoFile): Promise<
     }
     case 'actions/upload-artifact': {
       validateInputs(step, ['name', 'path', 'if-no-files-found']);
+      if (!step.with.path?.trim()) {
+        throw new Error('upload-artifact needs a path');
+      }
       const ifNoFiles = step.with['if-no-files-found'];
       if (ifNoFiles !== undefined && !['error', 'ignore', 'warn'].includes(ifNoFiles)) {
         throw new Error(`unsupported if-no-files-found "${ifNoFiles}"`);
@@ -77,6 +81,6 @@ export async function resolveAction(step: ActionStep, readRepoFile: ReadRepoFile
     if (cause instanceof UnsupportedActionError) {
       throw cause;
     }
-    throw new UnsupportedActionError(step, cause instanceof Error ? cause.message : String(cause));
+    throw new UnsupportedActionError(step, messageOf(cause));
   }
 }

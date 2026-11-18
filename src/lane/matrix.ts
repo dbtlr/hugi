@@ -1,4 +1,5 @@
 import { equal } from './conditions';
+import { LaneSelectionError } from './errors';
 import type { Value } from './expressions';
 import { mapping } from './parse';
 import type { LaneRef } from './step-plan';
@@ -48,12 +49,18 @@ function matches(combination: Combination, partial: Combination) {
  * include added), or appended as a new combination when it merges into none.
  */
 function combinations(matrix: Record<string, unknown>) {
-  const axes = Object.entries(matrix).filter(([key]) => key !== 'include' && key !== 'exclude');
+  const axes = Object.entries(matrix)
+    .filter(([key]) => key !== 'include' && key !== 'exclude')
+    .map(([key, values]): [string, unknown[]] => {
+      if (!Array.isArray(values) || values.length === 0) {
+        throw new Error(`matrix.${key} must be a nonempty list`);
+      }
+      return [key, values];
+    });
+  // Checked before any row is built, so a huge axis costs nothing.
+  checkSize(axes.reduce((product, [, values]) => product * values.length, 1));
   let originals: Combination[] = [{}];
   for (const [key, values] of axes) {
-    if (!Array.isArray(values) || values.length === 0) {
-      throw new Error(`matrix.${key} must be a nonempty list`);
-    }
     const expanded: Combination[] = [];
     for (const row of originals) {
       for (const value of values) {
@@ -61,9 +68,6 @@ function combinations(matrix: Record<string, unknown>) {
       }
     }
     originals = expanded;
-    if (originals.length > 256) {
-      throw new Error('matrix exceeds 256 combinations');
-    }
   }
   const excluded = entries(matrix.exclude, 'matrix.exclude');
   originals =
@@ -87,15 +91,32 @@ function combinations(matrix: Record<string, unknown>) {
       expanded.push(include);
     }
   }
+  checkSize(expanded.length);
   return expanded;
 }
 
-/** The selected values name every key of the combination, each equal by GitHub's rules. */
+/** GitHub runs at most 256 jobs from one matrix, counting rows that `include` adds. */
+function checkSize(count: number) {
+  if (count > 256) {
+    throw new Error(`matrix has ${count} combinations, more than 256`);
+  }
+}
+
+/**
+ * A selected value equals the row's by GitHub's rules. A boolean also matches its written text,
+ * since `--matrix enabled=true` supplies a string that GitHub's numeric coercion would never
+ * equate with `true`.
+ */
+function matchesValue(value: Scalar, wanted: Scalar): boolean {
+  return equal(value, wanted) || (typeof value === 'boolean' && String(value) === String(wanted));
+}
+
+/** The selected values name every key of the combination, each matching its value. */
 function selects(row: Combination, selected: LaneRef['matrix']) {
   const keys = Object.keys(selected);
   return (
     keys.length === Object.keys(row).length &&
-    keys.every((key) => Object.hasOwn(row, key) && equal(row[key]!, selected[key]!))
+    keys.every((key) => Object.hasOwn(row, key) && matchesValue(row[key]!, selected[key]!))
   );
 }
 
@@ -110,7 +131,7 @@ export function selectCombination(
   const matrix = strategy === undefined ? undefined : mapping(strategy, 'strategy').matrix;
   if (matrix === undefined) {
     if (Object.keys(selected).length !== 0) {
-      throw new Error('matrix values supplied for a job with no matrix');
+      throw new LaneSelectionError('matrix values supplied for a job with no matrix');
     }
     return {};
   }
@@ -118,10 +139,14 @@ export function selectCombination(
     selects(row, selected),
   );
   if (rows.length === 0) {
-    throw new Error(`matrix values do not select a combination: ${JSON.stringify(selected)}`);
+    throw new LaneSelectionError(
+      `matrix values do not select a combination: ${JSON.stringify(selected)}`,
+    );
   }
   if (rows.length > 1) {
-    throw new Error(`matrix values select more than one combination: ${JSON.stringify(selected)}`);
+    throw new LaneSelectionError(
+      `matrix values select more than one combination: ${JSON.stringify(selected)}`,
+    );
   }
   return rows[0]!;
 }

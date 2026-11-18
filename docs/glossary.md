@@ -21,7 +21,7 @@ One execution of a lane at a commit, in its own VM.
 _Avoid_: Build, attempt
 
 **Verdict**:
-The pass or fail Hugi reports for a lane at a commit, with its logs. A lane that cannot be read, a failing step, and a timeout are all fail verdicts. A run that Hugi interrupts, or that fails to clone or boot its VM or to fetch the source, yields no verdict, because the failure lies outside the lane's steps.
+The pass or fail Hugi reports for a lane at a commit, with its logs. A lane that cannot be read, a lane whose tools cannot be resolved, a failing step, and a timeout are all fail verdicts. A run that Hugi interrupts, that fails to clone or boot its VM, that loses its VM mid-run, or that cannot fetch or read the source yields no verdict, because the failure lies outside the lane's steps. A lane selection that picks nothing to run, such as a missing job or a job whose `if:` is false for the event, is a usage error and yields no verdict either.
 _Avoid_: Result, status (except for the GitHub commit status that carries a verdict)
 
 **Hosted result**:

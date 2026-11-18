@@ -74,17 +74,25 @@ export function laneValues(
   };
 }
 
+/**
+ * `disallowed` names the contexts GitHub refuses in `where`; `unsupplied`, the ones GitHub allows
+ * there but Hugi has no values for.
+ */
 function scope(
   lane: LaneValues,
   values: readonly Values[],
   where: string,
   disallowed: readonly string[],
+  unsupplied: readonly string[] = [],
 ): Context {
   return {
     unavailable: {
       ...lane.githubGaps,
       ...Object.fromEntries(
         disallowed.map((name) => [name, `GitHub does not allow the ${name} context in ${where}`]),
+      ),
+      ...Object.fromEntries(
+        unsupplied.map((name) => [name, `Hugi cannot supply the ${name} context in ${where}`]),
       ),
     },
     values: Object.assign({}, lane.github, ...values),
@@ -106,20 +114,16 @@ export function workflowEnvScope(lane: LaneValues): Context {
 }
 
 export function jobIfScope(lane: LaneValues): Context {
-  return scope(lane, [lane.needs], 'a job-level if', [
-    'env',
-    'inputs',
-    'job',
-    'matrix',
-    'runner',
-    'secrets',
-    'steps',
-    'strategy',
-    'vars',
-  ]);
+  return scope(
+    lane,
+    [lane.needs],
+    'a job-level if',
+    ['env', 'job', 'matrix', 'runner', 'secrets', 'steps', 'strategy'],
+    ['inputs', 'vars'],
+  );
 }
 
-/** Job env may also read the workflow env above it. */
+/** Job env may read needs, matrix, and github, but not the workflow env: GitHub refuses `env` there. */
 export function jobEnvScope(lane: LaneValues): Context {
   return scope(lane, [lane.needs, lane.matrix], 'job env', ['env', 'job', 'runner', 'steps']);
 }

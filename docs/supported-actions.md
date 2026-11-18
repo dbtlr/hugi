@@ -2,7 +2,7 @@
 
 `resolveToolchains(plan, readRepoFile)` in `src/toolchain/resolver.ts` resolves a whole step plan before the VM runner receives any tools. The file-reading port reads repository files at the same commit as the workflow and returns `undefined` for missing files. Resolution never reads the host's working copy or executes an action.
 
-The result contains deduplicated mise specs in `tools`, an entry for each action in `actions`, and repository toolchain notes in `notes`. Each action entry retains its step index, name, and `uses` reference. It contains either one or more tool specs with any mapping notes, or a no-op reason. The caller can pass `tools` directly to `RunRequest.tools`.
+The result contains deduplicated mise specs in `tools`, an entry for each action in `actions`, and repository toolchain notes in `notes`. Each action entry retains its step index, name, and `uses` reference. It contains either one or more tool specs with any mapping notes, or a no-op reason. The caller can pass `tools` directly to `RunRequest.tools`. `hugi run` shows each action step in its report as the tools it resolved to or its no-op reason, followed by the notes.
 
 ## Action mappings
 
@@ -12,12 +12,12 @@ Every accepted input is listed below. Any other input fails the entire resolutio
 
 | Action | Accepted inputs | Resolution and reason |
 | --- | --- | --- |
-| `actions/checkout` | `persist-credentials` | No-op. The runner checks out the commit itself without credentials. The action's credential persistence input has no effect. |
+| `actions/checkout` | `persist-credentials` | No tools. The runner performs it without credentials: the workspace is empty until the plan's first `actions/checkout` step, which checks the commit out detached, at depth 1, with no tags. A later `actions/checkout` step is a no-op. The action's credential persistence input has no effect. |
 | `actions/setup-node` | `node-version`, `cache` | `node@<node-version>`. A missing version is unpinned and fails. `cache` accepts only `pnpm`, `npm`, or `yarn`. Each is a recorded no-op because the golden image holds warm package caches. |
 | `oven-sh/setup-bun` | `bun-version`, `bun-version-file` | `bun@<version>`. An explicit version and a version file are mutually exclusive. With neither input, the action defaults to `latest`, which fails as unpinned. Version files use the `.tool-versions` format described below. |
-| `pnpm/action-setup` | `version` | `pnpm@<version>`. Resolution reads root `package.json` through the port. Without `version`, it uses the pnpm `devEngines.packageManager` version when present, else the `packageManager` pin. If both specify a version, they must agree. A missing or invalid pin fails. |
+| `pnpm/action-setup` | `version` | `pnpm@<version>`. Resolution reads root `package.json` through the port. Without `version`, it uses the pnpm `devEngines.packageManager` version when present, as the action does, without checking `packageManager`; else the `packageManager` pin. If the action's `version` and `packageManager` both specify a version, they must agree. A missing or invalid pin fails. |
 | `Swatinem/rust-cache` | None | No-op. The golden image holds warm Rust caches. |
-| `actions/upload-artifact` | `name`, `path`, `if-no-files-found` | No-op. Hugi publishes no artifacts, following [ADR-0002: verification only](decisions/0002-verification-only.md). `if-no-files-found` must be `warn`, `ignore`, or `error`, as GitHub requires; any other value fails. With `error`, the no-op reason records that the artifact path existence check is skipped. |
+| `actions/upload-artifact` | `name`, `path`, `if-no-files-found` | No-op. `path` is required, as the action requires it. Hugi publishes no artifacts, following [ADR-0002: verification only](decisions/0002-verification-only.md). `if-no-files-found` must be `warn`, `ignore`, or `error`, as GitHub requires; any other value fails. With `error`, the no-op reason records that the artifact path existence check is skipped. |
 
 **Known gap:** Hugi does not check that the uploaded `path` exists. A lane whose build produces no output passes in Hugi where GitHub's `if-no-files-found: error` setting would fail the step.
 
@@ -27,13 +27,13 @@ Every accepted input is listed below. Any other input fails the entire resolutio
 
 Numeric versions, including partial versions such as `22` and `22.23`, pass through as written. Numeric versions can have a leading `v`, a prerelease suffix, or build metadata. A prerelease suffix must contain a digit to pin a specific build, such as `1.2.0-rc.1`. Bare moving aliases such as `22-nightly`, `22-rc`, and `1.2-canary` fail as unpinned. Digits in build metadata do not make a prerelease suffix pinned. Other aliases and ranges such as `latest`, `lts/*`, `x`, `22.x`, `^22`, and `>=22` also fail. Two different strings for the same tool conflict, even when one could include the other, such as `22` and `22.23.2`. Repeated identical pins install once. Tools retain their first-use order.
 
-`bun-version-file` is a repository-relative path without parent traversal. Its contents must have exactly one `bun` entry and exactly one version on that entry, in asdf-style `.tool-versions` format. Other tool entries and comments are ignored. A missing file, missing Bun entry, duplicate Bun entry, or unpinned version fails. For example:
+`bun-version-file` is a repository-relative path without parent traversal. A leading `./` is accepted and dropped. Its contents must have exactly one `bun` entry and exactly one version on that entry, in asdf-style `.tool-versions` format. Other tool entries and comments are ignored. A missing file, missing Bun entry, duplicate Bun entry, or unpinned version fails. For example:
 
 ```text
 bun 1.4.4
 ```
 
-The pnpm resolver reads only the root `package.json`, even when the action supplies `version`. If present, `packageManager` must be a string such as `pnpm@12.16.1`. A Corepack integrity suffix such as `+sha512.abcdef1234` is accepted and removed before comparison and from the mise spec. An explicit action `version` and a `packageManager` version must match exactly. A mismatch fails with `Multiple versions of pnpm specified`. An explicit `version` works when the manifest or `packageManager` is absent. A malformed manifest or invalid `packageManager` fails even with an explicit `version`.
+The pnpm resolver reads only the root `package.json`, even when the action supplies `version`. If present, `packageManager` must be a string such as `pnpm@12.16.1`. A Corepack integrity suffix such as `+sha512.abcdef1234` is accepted and removed before comparison and from the mise spec. An explicit action `version` and a `packageManager` version must match exactly. A mismatch fails with `Multiple versions of pnpm specified`. An explicit `version` works when the manifest or `packageManager` is absent. A malformed manifest fails. An invalid `packageManager` fails, even with an explicit `version`, unless `devEngines.packageManager` supplies the version.
 
 Resolution also reads root Rust toolchain files for every lane, even when no action mentions Rust, because Cargo honors them. Following rustup's precedence, `rust-toolchain` takes priority over `rust-toolchain.toml` when both exist. Only the selected file is parsed. An invalid `rust-toolchain` fails without falling back to `rust-toolchain.toml`.
 
@@ -41,7 +41,7 @@ The legacy `rust-toolchain` file accepts a plain one-line channel, optionally en
 
 ## Failures
 
-Resolution rejects with a `ToolchainResolutionError` and returns no partial result. Action failures use its `UnsupportedActionError` subtype and name the step index, step name, action reference, and reason. Conflicting pins name both versions and their source steps. Repository Rust errors name the selected `rust-toolchain` or `rust-toolchain.toml` file. A caller must treat a resolution failure as a fail verdict, consistent with the [glossary](glossary.md).
+Resolution rejects with a `ToolchainResolutionError` and returns no partial result. Action failures use its `UnsupportedActionError` subtype and name the step index, step name, action reference, and reason. Conflicting pins name both versions and their source steps. Repository Rust errors name the selected `rust-toolchain` or `rust-toolchain.toml` file. A resolution failure is a fail verdict, with one exception: when the file-reading port cannot read a repository file at all (a source read failure, as opposed to a missing or invalid file), the run yields no verdict, because the failure lies outside the lane. `hugi run` tells the two apart; see the [glossary](glossary.md).
 
 ## Fixture sources
 

@@ -1,3 +1,4 @@
+import { withContext } from './errors';
 import { resolve, text } from './expressions';
 import type { Context, Value } from './expressions';
 import { scalar } from './parse';
@@ -162,10 +163,7 @@ function evaluate(value: unknown, ctx: Context, status: StatusFunctions) {
 }
 
 function conditionError(source: string, cause: unknown) {
-  return new Error(
-    `unsupported condition "${source}": ${cause instanceof Error ? cause.message : String(cause)}`,
-    { cause },
-  );
+  return withContext(`unsupported condition "${source}"`, cause);
 }
 
 /** Reduce a step's `if:` to the run-time state the plan can express, or null to drop the step. */

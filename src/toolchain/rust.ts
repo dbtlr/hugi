@@ -1,3 +1,4 @@
+import { messageOf } from '../errors';
 import { ToolchainResolutionError } from './errors';
 import type { ReadRepoFile } from './types';
 import { pinnedVersion } from './versions';
@@ -40,9 +41,6 @@ export async function resolveRust(readRepoFile: ReadRepoFile) {
       tool: pinnedVersion('rust', rustChannel(source, text)),
     };
   } catch (cause) {
-    throw new ToolchainResolutionError(
-      `${source}: ${cause instanceof Error ? cause.message : String(cause)}`,
-      { cause },
-    );
+    throw new ToolchainResolutionError(`${source}: ${messageOf(cause)}`, { cause });
   }
 }

@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import {
   githubEnvironment,
   parseEnvFile,
+  parseOutputFile,
   parsePathFile,
   prependPaths,
   stepEnvironment,
@@ -37,6 +38,23 @@ test('the runner environment mirrors GitHub for a branch push', () => {
   // Each step gets its own command files, so the runner layer names none.
   expect(env.GITHUB_ENV).toBeUndefined();
   expect(env.GITHUB_PATH).toBeUndefined();
+  expect(env.GITHUB_OUTPUT).toBeUndefined();
+});
+
+test('GITHUB_OUTPUT accepts the GITHUB_ENV grammar', () => {
+  expect(parseOutputFile('a=1\nfiles<<EOF\nx\ny\nEOF\n')).toBeUndefined();
+  expect(parseOutputFile('')).toBeUndefined();
+});
+
+test("malformed GITHUB_OUTPUT content is an error in GitHub's wording", () => {
+  // `echo "files=$(printf 'a\nb')"` writes a bare second line.
+  expect(parseOutputFile('files=a\nb\n')).toBe(
+    "Unable to process file command 'output' successfully. Invalid format 'b'",
+  );
+  expect(parseOutputFile('x<<EOF\nno end\n')).toBe(
+    "Unable to process file command 'output' successfully. Invalid value. Matching delimiter not found 'EOF'",
+  );
+  expect(parseOutputFile('=v\n')).toContain('Name must not be empty');
 });
 
 test('a tag event gets a refs/tags ref', () => {
@@ -110,4 +128,12 @@ test('step env beats GITHUB_ENV, which beats plan env, which beats the runner', 
     step: { D: 'step' },
   });
   expect(env).toEqual({ A: 'runner', B: 'plan', C: 'file', D: 'step' });
+});
+
+test('a long file of heredoc entries parses in time linear in its length', () => {
+  const records = Array.from({ length: 60_000 }, (_, i) => `K${i}<<EOF\nv${i}\nEOF`).join('\n');
+  const started = performance.now();
+  const parsed = parseEnvFile(`${records}\n`);
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect('env' in parsed && parsed.env.K59999).toBe('v59999');
 });
