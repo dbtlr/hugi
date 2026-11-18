@@ -55,6 +55,7 @@ bun run build     # build the binary to dist/hugi
 
 - [Architecture decisions](docs/decisions/README.md): the decisions that bind the design, starting with [GitHub never schedules](docs/decisions/0001-github-never-schedules.md), [verification only](docs/decisions/0002-verification-only.md), and [one throwaway VM per run](docs/decisions/0003-one-throwaway-vm-per-run.md).
 - [Glossary](docs/glossary.md): the terms Hugi uses for lanes, runs, verdicts, and authority.
+- [Supported actions](docs/supported-actions.md): accepted setup inputs, toolchain mappings, and documented no-ops.
 
 ## License
 
