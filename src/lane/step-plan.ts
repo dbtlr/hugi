@@ -13,11 +13,20 @@ export type LaneRef = {
   readonly workflow: string;
   /** The job's key under `jobs:`. */
   readonly job: string;
-  /** One value per matrix axis; empty for a job with no matrix. */
-  readonly matrix: Readonly<Record<string, string>>;
+  /**
+   * One value per matrix axis plus any keys an `include` entry adds, typed as
+   * the workflow wrote them; empty for a job with no matrix.
+   */
+  readonly matrix: Readonly<Record<string, string | number | boolean>>;
 };
 
-/** The event a run stands in for, as the workflow's `github.*` context sees it. */
+/**
+ * The event a run stands in for, as the workflow's `github.*` context sees it.
+ * The caller owns matching the workflow's `on:` triggers to the event; the
+ * reader does not check them. For `pull_request`, `github.ref` and
+ * `github.ref_name` are not available (the contract lacks the PR number) and
+ * reading them fails.
+ */
 export type EventContext = {
   /** `owner/name` on GitHub. */
   readonly repository: string;
@@ -25,6 +34,16 @@ export type EventContext = {
   readonly event: 'push' | 'pull_request';
   readonly refType: 'branch' | 'tag';
   readonly refName: string;
+  /** Caller-supplied upstream facts; Hugi runs the lane alone, not its dependencies. */
+  readonly needs?: Readonly<
+    Record<
+      string,
+      {
+        readonly outputs: Readonly<Record<string, string>>;
+        readonly result?: 'success' | 'failure' | 'skipped';
+      }
+    >
+  >;
 };
 
 /** Guest paths the reader substitutes for `github.workspace` and `runner.temp`. */
@@ -56,7 +75,12 @@ type StepBase = {
 export type RunStep = StepBase & {
   readonly kind: 'run';
   readonly script: string;
-  readonly shell: 'bash' | 'sh';
+  /**
+   * `default` is a step with no `shell:` (and no `defaults.run.shell`), which
+   * GitHub runs on macOS as `bash -e {0}`; `bash` is an explicit `shell: bash`,
+   * run as `bash --noprofile --norc -eo pipefail {0}`; `sh` is `sh -e {0}`.
+   */
+  readonly shell: 'default' | 'bash' | 'sh';
   /** Relative to the workspace; absent means the workspace itself. */
   readonly workingDirectory?: string;
 };

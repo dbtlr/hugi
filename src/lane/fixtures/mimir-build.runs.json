@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Install dependencies",
+    "script": "bun install --frozen-lockfile"
+  },
+  {
+    "name": "Test source",
+    "script": "if [ \"$GITHUB_EVENT_NAME\" = pull_request ]; then\n  bun run test:native\nelse\n  bun run test\nfi\n"
+  },
+  {
+    "name": "Stamp the build version",
+    "script": "set -euo pipefail\nif [ \"$GITHUB_REF_TYPE\" = tag ]; then\n  version=\"${GITHUB_REF_NAME#v}\"\nelse\n  version=$(bun -e 'import { VERSION } from \"./packages/cli/src/version.ts\"; console.log(VERSION)')\nfi\nbun -e 'const file = \"packages/cli/package.json\"; const pkg = await Bun.file(file).json(); pkg.version = process.argv[1]; await Bun.write(file, JSON.stringify(pkg, null, 2) + \"\\n\")' \"$version\"\n"
+  },
+  {
+    "name": "Compile",
+    "script": "mkdir -p dist\nbun run --cwd packages/cli loom build --release \\\n  --target \"bun-${ASSET#mimir-}\" --out \"$GITHUB_WORKSPACE/dist/$ASSET\"\n"
+  },
+  {
+    "name": "Test compiled CLI and MCP",
+    "script": "bun test packages/sandbox/src/mcp-binding.integration.test.ts"
+  }
+]

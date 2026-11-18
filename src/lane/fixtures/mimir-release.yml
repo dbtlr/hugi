@@ -1,0 +1,358 @@
+name: Release
+
+# Tag-driven releases. A `vX.Y.Z` tag builds standalone binaries (one per
+# platform, each on its native runner so there is no cross-compile) and
+# publishes a GitHub Release with notes from packages/cli/CHANGELOG.md (a
+# prerelease lists its pending fragments). The build matrix also runs on pull
+# requests (build-only, no publish) so the release path is validated before a
+# tag is ever cut.
+#
+# Publication is staged (MMR-387): the release is created as a draft, every
+# asset is uploaded with bounded retries and verified by digest, and only the
+# exact complete set flips the draft public after the host image is pushed
+# and verified for anonymous pulls on both architectures. A failed publish
+# leaves the draft behind; re-running `publish` resumes with the same build
+# artifacts — no rebuild, no tag change.
+on:
+  push:
+    tags: ['v*']
+  # The prerelease tagger pushes vX.Y.Z-next.N tags with GITHUB_TOKEN, which
+  # GitHub's anti-recursion guard blocks from triggering the `push: tags` event
+  # above. It dispatches this workflow at the new tag instead (workflow_dispatch
+  # via GITHUB_TOKEN is the documented exception that DOES start a run). The
+  # build/publish steps read github.ref_name/ref_type, which resolve from the
+  # dispatched --ref exactly as they do for a pushed tag (MMR-57).
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packages/**'
+      - 'skills/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/release.yml'
+      - '.tool-versions'
+      - 'install.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, asset: mimir-darwin-arm64 }
+          - { os: ubuntu-latest, asset: mimir-linux-x64 }
+          - { os: ubuntu-24.04-arm, asset: mimir-linux-arm64 }
+          # darwin-x64 (Intel mac) is deferred — the macOS x64 runner is scarce
+          # and bun's cross-compile is unreliable from an arm64 host. Intel-mac
+          # users install from source (`bun add -g github:dbtlr/mimir`).
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # CI runs the full PR suite on Linux. Repeat only native boundaries here;
+      # release events retain the complete suite on every target platform.
+      - name: Test source
+        id: tests
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            bun run test:native
+          else
+            bun run test
+          fi
+
+      # Stamp the build's version into packages/cli/package.json, which
+      # `loom build --release` bakes into the binary's release facts, which
+      # `mimir version` and self-update read (MMR-57, MMR-555). A tag build
+      # stamps the tag minus its leading v, so the binary reports the release it
+      # was cut for. PR build-validation runs on a branch ref and stamps the
+      # CLI's development version, the one a source build reports, because
+      # package.json holds the last release between cuts; those binaries are
+      # never published.
+      - name: Stamp the build version
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(bun -e 'import { VERSION } from "./packages/cli/src/version.ts"; console.log(VERSION)')
+          fi
+          bun -e 'const file = "packages/cli/package.json"; const pkg = await Bun.file(file).json(); pkg.version = process.argv[1]; await Bun.write(file, JSON.stringify(pkg, null, 2) + "\n")' "$version"
+
+      # Loom's release build: one binary per native runner, named for its asset
+      # (mimir-<os>-<arch>), with the release facts baked in. Only explicit
+      # installation grants access to live state.
+      - name: Compile
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist
+          bun run --cwd packages/cli loom build --release \
+            --target "bun-${ASSET#mimir-}" --out "$GITHUB_WORKSPACE/dist/$ASSET"
+
+      - name: Test compiled CLI and MCP
+        id: native-smoke
+        env:
+          MIMIR_SANDBOX_LIFECYCLE_TEST: '1'
+          MIMIR_TEST_BINARY: ${{ github.workspace }}/dist/${{ matrix.asset }}
+        run: bun test packages/sandbox/src/mcp-binding.integration.test.ts
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  host-image:
+    name: host image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Serialize registry writes, including reruns. Version comparison below also
+    # handles older jobs entering the queue after newer jobs have already run.
+    concurrency:
+      group: host-image-${{ startsWith(github.ref, 'refs/tags/v') && 'publication' || github.run_id }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Determine image version and tags
+        id: metadata
+        run: |
+          set -euo pipefail
+          # An untagged build reports the CLI's development version, the one
+          # a source build of the binary reports (packages/cli/src/version.ts).
+          version=$(bun -e 'import { VERSION } from "./packages/cli/src/version.ts"; console.log(VERSION)')
+          channel=
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            channel=latest
+            case "$version" in *-*) channel=next ;; esac
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build host image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ghcr.io/dbtlr/mimir-host:${{ steps.metadata.outputs.version }}
+          build-args: MIMIR_BUILD_VERSION=${{ steps.metadata.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          annotations: index:org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+
+      # No registry credentials: fleet must be able to pull the package publicly.
+      # A newly created private GHCR package keeps the release unpublished until
+      # its owner changes package visibility to public and re-runs this job.
+      - name: Verify published image architectures and anonymous access
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE_VERSION: ${{ steps.metadata.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/dbtlr/mimir-host
+          actual=$(docker buildx imagetools inspect "$image:$IMAGE_VERSION" --format '{{.Manifest.Digest}}')
+          test "$actual" = "$IMAGE_DIGEST"
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          docker manifest inspect "$image:$IMAGE_VERSION" > "$DOCKER_CONFIG/version.json"
+          docker manifest inspect "$image@$IMAGE_DIGEST" > "$DOCKER_CONFIG/digest.json"
+          cmp "$DOCKER_CONFIG/version.json" "$DOCKER_CONFIG/digest.json"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$DOCKER_CONFIG/version.json"
+
+      - name: Promote the highest verified version to its channel
+        id: promote
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE_CHANNEL: ${{ steps.metadata.outputs.channel }}
+          IMAGE_VERSION: ${{ steps.metadata.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/dbtlr/mimir-host
+          channel="$IMAGE_CHANNEL"
+          temporary=$(mktemp -d)
+          trap 'rm -rf "$temporary"' EXIT
+          if docker buildx imagetools inspect "$image:$channel" --raw > "$temporary/current.json" 2> "$temporary/error"; then
+            current=$(jq -er '.annotations["org.opencontainers.image.version"]' "$temporary/current.json")
+          elif grep -Fq "$image:$channel: not found" "$temporary/error"; then
+            current="$IMAGE_VERSION"
+          else
+            cat "$temporary/error" >&2
+            exit 1
+          fi
+          order=$(bun -e 'console.log(Bun.semver.order(process.argv[1], process.argv[2]))' "$IMAGE_VERSION" "$current")
+          if [ "$order" -lt 0 ]; then
+            echo "Retaining $channel at $current; $IMAGE_VERSION is older."
+            exit 0
+          fi
+          docker buildx imagetools create --tag "$image:$channel" "$image@$IMAGE_DIGEST"
+          actual=$(docker buildx imagetools inspect "$image:$channel" --format '{{.Manifest.Digest}}')
+          test "$actual" = "$IMAGE_DIGEST"
+
+  publish:
+    name: publish release
+    needs: [build, host-image]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Hard ceiling over the publisher's own bounds: it stops starting retries
+    # after a 60-minute budget and one in-flight request can overrun that by
+    # its 3-minute deadline, so 90 leaves room for setup and the prune step
+    # while guaranteeing a stalled upload never runs indefinitely.
+    timeout-minutes: 90
+    steps:
+      # Full history: `loom changelog notes` orders a prerelease's pending
+      # fragments by the commits that added them.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mimir-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum mimir-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Extract changelog notes
+        env:
+          IMAGE_VERSION: ${{ needs.host-image.outputs.version }}
+        # `loom changelog notes` prints a release's changelog section, or a
+        # prerelease's pending fragments once the package carries its version,
+        # which this discarded checkout takes from `changelog write --target`.
+        # Changelog links are relative to packages/cli/, and GitHub resolves a
+        # release body's links from the repository root, so drop the ../../.
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          case "$ver" in
+            *-*) bun run --cwd packages/cli loom changelog write --target "$ver" > /dev/null ;;
+          esac
+          bun run --cwd packages/cli loom changelog notes "$ver" \
+            | sed 's#](\.\./\.\./#](#g' > release-notes.md
+          # shellcheck disable=SC2016 # Markdown backticks are literal.
+          printf '\n### Host image\n\n`ghcr.io/dbtlr/mimir-host:%s` (linux/amd64, linux/arm64).\n' "$IMAGE_VERSION" >> release-notes.md
+          echo "--- release notes ---"; cat release-notes.md
+
+      # Draft → upload (retried, verified) → publish. Exit 1 keeps the draft
+      # for a re-run; see packages/cli/scripts/publish-release.ts.
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s failglob   # a missing binary fails here, not as a partial release
+          args=(--tag "$GITHUB_REF_NAME" --notes release-notes.md)
+          case "$GITHUB_REF_NAME" in *-*) args+=(--prerelease) ;; esac
+          bun packages/cli/scripts/publish-release.ts "${args[@]}" dist/mimir-* dist/SHA256SUMS
+
+      # Prune stale prerelease tags + Releases at an official cut (MMR-58).
+      # Lag-by-one retention: delete prereleases from cycles OLDER than the
+      # previous official (so the just-shipped cycle's trail survives one more
+      # release). Gated to official tags and best-effort, so a pruning hiccup
+      # never fails a real release. Enumerates via `gh` because the binaries
+      # live on the Releases.
+      #
+      # LIVE: deletes the prerelease Release + its tag. The dry-run was
+      # validated at the v0.7.0 cut (lag-by-one correct, 0 deletions, no
+      # cycles < the previous official yet) before enabling here (MMR-58).
+      - name: Prune stale prereleases
+        if: ${{ !contains(github.ref_name, '-') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cut="${GITHUB_REF_NAME#v}"   # X.Y.Z being cut (official)
+
+          # Previous official = highest non-prerelease version strictly < cut.
+          prev=""
+          while read -r v; do
+            [ "$v" = "$cut" ] && continue
+            [ "$(printf '%s\n%s\n' "$v" "$cut" | sort -V | tail -1)" = "$cut" ] && prev="$v"
+          done < <(gh release list --limit 500 --json tagName,isPrerelease \
+                     --jq '.[] | select(.isPrerelease == false) | .tagName' \
+                   | sed 's/^v//' | sort -V)
+
+          if [ -z "$prev" ]; then
+            echo "No previous official before $cut; nothing to prune."
+            exit 0
+          fi
+          echo "Cut $cut; previous official $prev — pruning prerelease cycles < $prev."
+
+          gh release list --limit 500 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+          | while read -r tag; do
+              base="${tag#v}"; base="${base%%-next.*}"   # cycle A.B.C
+              lowest="$(printf '%s\n%s\n' "$base" "$prev" | sort -V | head -1)"
+              if [ "$base" != "$prev" ] && [ "$lowest" = "$base" ]; then
+                echo "deleting prerelease $tag (cycle $base < $prev)"
+                gh release delete "$tag" --yes --cleanup-tag
+              else
+                echo "keep $tag (cycle $base >= $prev)"
+              fi
+            done

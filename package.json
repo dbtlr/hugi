@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@loomcli/core": "0.17.0",
-    "@loomcli/plugins": "0.17.0"
+    "@loomcli/plugins": "0.17.0",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@dbtlr/tooling": "0.6.0",
