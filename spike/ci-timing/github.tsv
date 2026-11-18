@@ -1,0 +1,16 @@
+repo	attempt	job	conclusion	runner	queue_s	run_s	created_at
+dbtlr/norn-next	1	determinism and filesystem (macOS ARM64)	success	GitHub Actions 1000044106	2	547	2026-11-17T05:55:16Z
+dbtlr/loomcli	1	bun / macos-latest	success	GitHub Actions 1000044272	4	349	2026-11-17T15:56:08Z
+dbtlr/loomcli	1	node / macos-latest	success	GitHub Actions 1000044284	305	475	2026-11-17T15:56:08Z
+dbtlr/norn-next	2	determinism and filesystem (macOS ARM64)	success	GitHub Actions 1000044404	3	562	2026-11-17T17:42:42Z
+dbtlr/loomcli	2	bun / macos-latest	cancelled		0	1025	2026-11-17T17:42:46Z
+dbtlr/loomcli	2	node / macos-latest	cancelled		0	901	2026-11-17T17:42:46Z
+dbtlr/norn-next	3	determinism and filesystem (macOS ARM64)	success	GitHub Actions 1000044422	303	421	2026-11-17T17:52:42Z
+dbtlr/loomcli	3	node / macos-latest	success	GitHub Actions 1000044444	303	502	2026-11-17T18:00:22Z
+dbtlr/loomcli	3	bun / macos-latest	success	GitHub Actions 1000044443	304	492	2026-11-17T18:00:22Z
+dbtlr/norn-next	4	determinism and filesystem (macOS ARM64)	success	GitHub Actions 1000044442	3	620	2026-11-17T18:05:17Z
+dbtlr/norn-next	5	determinism and filesystem (macOS ARM64)	success	GitHub Actions 1000044473	179	618	2026-11-17T18:15:53Z
+dbtlr/loomcli	4	bun / macos-latest	cancelled		0	1522	2026-11-17T18:14:26Z
+dbtlr/loomcli	4	node / macos-latest	success	GitHub Actions 1000044494	1290	516	2026-11-17T18:14:26Z
+dbtlr/loomcli	5	node / macos-latest	success	GitHub Actions 1000044518	604	395	2026-11-17T18:45:12Z
+dbtlr/loomcli	5	bun / macos-latest	success	GitHub Actions 1000044519	604	377	2026-11-17T18:45:12Z

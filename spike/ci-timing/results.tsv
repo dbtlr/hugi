@@ -1,0 +1,170 @@
+lane	run	condition	cache	step	seconds	rc	load1	sha
+norn-platform	R1	isolated	cold	checkout (local clone)	0.2	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Assert architecture	0.0	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Embedding determinism	3.8	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Filesystem contracts	38.3	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Measuring launcher	10.3	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Host library contracts	151.9	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Early host reads	89.5	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Provisional host registration	5.4	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Obsidian parity	2.1	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Case-only rename convergence	2.9	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Parent rename over a save	1.5	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Unreadable document recovery	1.6	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Unreadable subtree is withheld and marked	0.4	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Port probe on macOS	10.9	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Wildcard-held port refuses the start	11.4	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	Folding-root spelling bar	8.2	0	1.92	7e71dfe81
+norn-platform	R1	isolated	cold	TOTAL	338.4	0	1.92	7e71dfe81
+norn-platform	R2	isolated	warm	Assert architecture	0.0	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Embedding determinism	0.1	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Filesystem contracts	19.2	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Measuring launcher	2.8	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Host library contracts	125.1	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Early host reads	85.0	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Provisional host registration	4.3	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Obsidian parity	1.4	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Case-only rename convergence	1.7	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Parent rename over a save	1.3	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Unreadable document recovery	0.2	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Unreadable subtree is withheld and marked	0.4	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Port probe on macOS	0.1	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Wildcard-held port refuses the start	2.6	0	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	Folding-root spelling bar	3.0	101	3.35	7e71dfe81
+norn-platform	R2	isolated	warm	TOTAL	247.2	101	3.35	7e71dfe81
+loom-node	R1	isolated	cold	checkout (local clone)	0.2	0	2.66	90f72d52b
+loom-node	R1	isolated	cold	Install dependencies	6.1	0	2.66	90f72d52b
+loom-node	R1	isolated	cold	Install the programs the tests run	0.8	0	2.66	90f72d52b
+loom-node	R1	isolated	cold	Build, check types, and run process tests	112.0	0	2.66	90f72d52b
+loom-node	R1	isolated	cold	Run the packed consumer	15.8	0	2.66	90f72d52b
+loom-node	R1	isolated	cold	TOTAL	135.1	0	2.66	90f72d52b
+loom-node	R2	isolated	warm	Install dependencies	0.1	0	14.02	90f72d52b
+loom-node	R2	isolated	warm	Install the programs the tests run	0.7	0	14.02	90f72d52b
+loom-node	R2	isolated	warm	Build, check types, and run process tests	101.0	0	14.02	90f72d52b
+loom-node	R2	isolated	warm	Run the packed consumer	13.1	0	14.02	90f72d52b
+loom-node	R2	isolated	warm	TOTAL	115.0	0	14.02	90f72d52b
+loom-bun	R1	isolated	cold	checkout (local clone)	0.2	0	14.09	90f72d52b
+loom-bun	R1	isolated	cold	Install dependencies	1.7	0	14.09	90f72d52b
+loom-bun	R1	isolated	cold	Install the programs the tests run	0.5	0	14.09	90f72d52b
+loom-bun	R1	isolated	cold	Build, check types, and run the tests under Bun	93.5	0	14.09	90f72d52b
+loom-bun	R1	isolated	cold	Run the packed consumer	13.0	0	14.09	90f72d52b
+loom-bun	R1	isolated	cold	TOTAL	109.0	0	14.09	90f72d52b
+loom-bun	R2	isolated	warm	Install dependencies	0.2	0	16.60	90f72d52b
+loom-bun	R2	isolated	warm	Install the programs the tests run	0.7	0	16.60	90f72d52b
+loom-bun	R2	isolated	warm	Build, check types, and run the tests under Bun	91.1	0	16.60	90f72d52b
+loom-bun	R2	isolated	warm	Run the packed consumer	13.0	0	16.60	90f72d52b
+loom-bun	R2	isolated	warm	TOTAL	105.0	0	16.60	90f72d52b
+mimir-build	R1	isolated	cold	checkout (local clone)	0.2	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	Install dependencies	1.4	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	Test source	55.4	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	Stamp the build version	0.0	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	Compile	0.4	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	Test compiled CLI and MCP	2.8	0	21.05	810a1fb3f
+mimir-build	R1	isolated	cold	TOTAL	60.1	0	21.05	810a1fb3f
+mimir-build	R2	isolated	warm	Install dependencies	0.1	0	13.87	810a1fb3f
+mimir-build	R2	isolated	warm	Test source	48.9	0	13.87	810a1fb3f
+mimir-build	R2	isolated	warm	Stamp the build version	0.0	0	13.87	810a1fb3f
+mimir-build	R2	isolated	warm	Compile	0.4	0	13.87	810a1fb3f
+mimir-build	R2	isolated	warm	Test compiled CLI and MCP	2.7	0	13.87	810a1fb3f
+mimir-build	R2	isolated	warm	TOTAL	52.0	0	13.87	810a1fb3f
+norn-platform	R3	isolated	cold	checkout (local clone)	0.2	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Assert architecture	0.0	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Embedding determinism	2.5	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Filesystem contracts	35.4	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Measuring launcher	10.7	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Host library contracts	146.8	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Early host reads	86.0	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Provisional host registration	6.3	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Obsidian parity	2.1	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Case-only rename convergence	2.6	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Parent rename over a save	1.9	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Unreadable document recovery	1.6	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Unreadable subtree is withheld and marked	0.8	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Port probe on macOS	10.4	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Wildcard-held port refuses the start	10.9	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	Folding-root spelling bar	8.5	0	9.75	7e71dfe81
+norn-platform	R3	isolated	cold	TOTAL	326.9	0	9.75	7e71dfe81
+loom-node	R3	isolated	cold	checkout (local clone)	0.3	0	3.08	90f72d52b
+loom-node	R3	isolated	cold	Install dependencies	2.0	0	3.08	90f72d52b
+loom-node	R3	isolated	cold	Install the programs the tests run	0.7	0	3.08	90f72d52b
+loom-node	R3	isolated	cold	Build, check types, and run process tests	103.5	0	3.08	90f72d52b
+loom-node	R3	isolated	cold	Run the packed consumer	13.5	0	3.08	90f72d52b
+loom-node	R3	isolated	cold	TOTAL	120.1	0	3.08	90f72d52b
+loom-bun	R3	isolated	cold	checkout (local clone)	0.3	0	12.36	90f72d52b
+loom-bun	R3	isolated	cold	Install dependencies	1.7	0	12.36	90f72d52b
+loom-bun	R3	isolated	cold	Install the programs the tests run	0.6	0	12.36	90f72d52b
+loom-bun	R3	isolated	cold	Build, check types, and run the tests under Bun	91.3	0	12.36	90f72d52b
+loom-bun	R3	isolated	cold	Run the packed consumer	12.9	0	12.36	90f72d52b
+loom-bun	R3	isolated	cold	TOTAL	106.8	0	12.36	90f72d52b
+mimir-build	R3	isolated	cold	checkout (local clone)	0.2	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	Install dependencies	1.5	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	Test source	49.7	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	Stamp the build version	0.0	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	Compile	0.4	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	Test compiled CLI and MCP	2.7	0	15.94	810a1fb3f
+mimir-build	R3	isolated	cold	TOTAL	54.4	0	15.94	810a1fb3f
+mimir-build	R4	parallel	cold	checkout (local clone)	0.3	0	9.74	810a1fb3f
+norn-platform	R4	parallel	cold	checkout (local clone)	0.4	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Assert architecture	0.0	0	9.74	7e71dfe81
+loom-bun	R4	parallel	cold	checkout (local clone)	0.6	0	9.74	90f72d52b
+loom-node	R4	parallel	cold	checkout (local clone)	0.6	0	9.74	90f72d52b
+mimir-build	R4	parallel	cold	Install dependencies	2.3	0	9.74	810a1fb3f
+loom-node	R4	parallel	cold	Install dependencies	3.6	0	9.74	90f72d52b
+norn-platform	R4	parallel	cold	Embedding determinism	4.4	0	9.74	7e71dfe81
+loom-bun	R4	parallel	cold	Install dependencies	4.5	0	9.74	90f72d52b
+loom-node	R4	parallel	cold	Install the programs the tests run	1.7	0	9.74	90f72d52b
+loom-bun	R4	parallel	cold	Install the programs the tests run	1.7	0	9.74	90f72d52b
+norn-platform	R4	parallel	cold	Filesystem contracts	86.5	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Measuring launcher	102.9	0	9.74	7e71dfe81
+mimir-build	R4	parallel	cold	Test source	212.3	1	9.74	810a1fb3f
+mimir-build	R4	parallel	cold	TOTAL	215.0	1	9.74	810a1fb3f
+loom-bun	R4	parallel	cold	Build, check types, and run the tests under Bun	211.8	0	9.74	90f72d52b
+loom-bun	R4	parallel	cold	Run the packed consumer	15.5	0	9.74	90f72d52b
+loom-bun	R4	parallel	cold	TOTAL	234.1	0	9.74	90f72d52b
+loom-node	R4	parallel	cold	Build, check types, and run process tests	240.7	0	9.74	90f72d52b
+loom-node	R4	parallel	cold	Run the packed consumer	16.2	0	9.74	90f72d52b
+loom-node	R4	parallel	cold	TOTAL	262.8	0	9.74	90f72d52b
+norn-platform	R4	parallel	cold	Host library contracts	172.4	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Early host reads	85.2	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Provisional host registration	5.8	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Obsidian parity	1.9	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Case-only rename convergence	2.6	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Parent rename over a save	1.7	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Unreadable document recovery	1.6	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Unreadable subtree is withheld and marked	0.4	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Port probe on macOS	10.1	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Wildcard-held port refuses the start	10.9	0	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	Folding-root spelling bar	5.5	101	9.74	7e71dfe81
+norn-platform	R4	parallel	cold	TOTAL	492.3	101	9.74	7e71dfe81
+norn-platform	R5	parallel	warm	Assert architecture	0.0	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Embedding determinism	0.1	0	3.84	7e71dfe81
+mimir-build	R5	parallel	warm	Install dependencies	0.3	0	3.84	810a1fb3f
+loom-bun	R5	parallel	warm	Install dependencies	0.4	0	3.84	90f72d52b
+loom-node	R5	parallel	warm	Install dependencies	0.4	0	3.84	90f72d52b
+loom-bun	R5	parallel	warm	Install the programs the tests run	1.3	0	3.84	90f72d52b
+loom-node	R5	parallel	warm	Install the programs the tests run	1.3	0	3.84	90f72d52b
+norn-platform	R5	parallel	warm	Filesystem contracts	23.4	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Measuring launcher	4.9	0	3.84	7e71dfe81
+mimir-build	R5	parallel	warm	Test source	191.5	0	3.84	810a1fb3f
+mimir-build	R5	parallel	warm	Stamp the build version	0.0	0	3.84	810a1fb3f
+mimir-build	R5	parallel	warm	Compile	0.4	0	3.84	810a1fb3f
+loom-bun	R5	parallel	warm	Build, check types, and run the tests under Bun	191.6	0	3.84	90f72d52b
+mimir-build	R5	parallel	warm	Test compiled CLI and MCP	3.1	0	3.84	810a1fb3f
+mimir-build	R5	parallel	warm	TOTAL	195.3	0	3.84	810a1fb3f
+loom-bun	R5	parallel	warm	Run the packed consumer	13.9	0	3.84	90f72d52b
+loom-bun	R5	parallel	warm	TOTAL	207.2	0	3.84	90f72d52b
+loom-node	R5	parallel	warm	Build, check types, and run process tests	210.7	0	3.84	90f72d52b
+loom-node	R5	parallel	warm	Run the packed consumer	13.1	0	3.84	90f72d52b
+loom-node	R5	parallel	warm	TOTAL	225.4	0	3.84	90f72d52b
+norn-platform	R5	parallel	warm	Host library contracts	203.4	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Early host reads	81.3	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Provisional host registration	4.2	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Obsidian parity	1.1	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Case-only rename convergence	1.5	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Parent rename over a save	1.4	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Unreadable document recovery	0.4	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Unreadable subtree is withheld and marked	0.6	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Port probe on macOS	0.1	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Wildcard-held port refuses the start	2.7	0	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	Folding-root spelling bar	4.8	101	3.84	7e71dfe81
+norn-platform	R5	parallel	warm	TOTAL	329.8	101	3.84	7e71dfe81
