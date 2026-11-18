@@ -1,0 +1,35 @@
+{
+  "name": "hugi",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Runs macOS CI lanes in throwaway VMs and reports the verdicts to GitHub.",
+  "license": "MIT",
+  "repository": "github:dbtlr/hugi",
+  "bin": {
+    "hugi": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "hugi": "bun run src/main.ts",
+    "check": "vp check",
+    "test": "bun test src",
+    "build": "loom build --out dist/hugi"
+  },
+  "dependencies": {
+    "@loomcli/core": "0.17.0",
+    "@loomcli/plugins": "0.17.0"
+  },
+  "devDependencies": {
+    "@dbtlr/tooling": "0.6.0",
+    "@loomcli/eslint-plugin": "0.17.0",
+    "@loomcli/loom": "0.17.0",
+    "@loomcli/testing": "0.17.0",
+    "@types/bun": "^1.4.4",
+    "@types/node": "26.6.5",
+    "oxlint": "1.89.0",
+    "vite-plus": "^1.4.0"
+  },
+  "engines": {
+    "bun": "1.4.4"
+  }
+}

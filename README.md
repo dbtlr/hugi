@@ -4,7 +4,7 @@ Hugi runs macOS CI lanes on your own Mac and reports the verdicts to GitHub.
 
 It polls GitHub for new commits, runs each macOS lane in a throwaway virtual machine, and posts the verdict as a commit status. GitHub's hosted macOS runners are not involved, so a pull request cannot fail because a runner never arrived.
 
-> **Status:** design agreed, build not started. The only code here is the measurement spike in [`spike/ci-timing`](spike/ci-timing).
+> **Status:** design agreed, build started. The CLI scaffold is in place; the coordinator is not built yet. The measurement spike is in [`spike/ci-timing`](spike/ci-timing).
 
 ## Why
 
@@ -36,6 +36,18 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 2. Run the coordinator in shadow: polling, allowlist, queue, and advisory commit statuses.
 3. Compare verdicts with the hosted runners, then promote one repository at a time.
 4. Harden operations: scheduled image refresh, outage alerts, more repositories.
+
+## Development
+
+Hugi is a TypeScript CLI built on [Loom](https://www.npmjs.com/package/@loomcli/loom) and [Bun](https://bun.sh). `mise.toml` pins the toolchain; run `mise install` to get it.
+
+```sh
+bun install       # install dependencies
+bun run check     # format, lint and type check
+bun run test      # run the tests
+bun run build     # build the binary to dist/hugi
+./dist/hugi --version
+```
 
 ## Documentation
 
