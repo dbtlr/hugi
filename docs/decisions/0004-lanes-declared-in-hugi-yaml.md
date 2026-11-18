@@ -33,7 +33,7 @@ lanes:
     matrix: { os: macos-latest }
 ```
 
-The file is a YAML mapping with one key, `lanes`, a nonempty list of entries. Duplicate keys, merge keys (`<<`), anchors, aliases, and explicit YAML tags are refused. Each entry is a mapping with these keys and no others:
+The file is a YAML mapping with one key, `lanes`, a nonempty list of entries. It is read with the YAML 1.2 core schema, so `yes` and `no` are strings. Duplicate keys, merge keys (`<<`), anchors, aliases, and explicit YAML tags are refused. Each entry is a mapping with these keys and no others:
 
 - `workflow` (required, a string) names the file the jobs are in. A bare file name, without `/`, is read from `.github/workflows/`. A path containing `/` is relative to the repository root and must be canonical: no leading `/`, and no empty, `.`, or `..` segments. Either form must name a file directly in `.github/workflows/` or directly in `.github/hugi/`. Unlike `hugi run`, a declaration does not accept a leading `./`. Entries are compared by the path the name resolves to, so `ci.yml` and `.github/workflows/ci.yml` name the same file.
 - `jobs` (required) is a nonempty list of distinct job ids in that file.
@@ -43,7 +43,7 @@ Each entry points at jobs. It never restates them. The job in its workflow file 
 
 ### Lanes and their identity
 
-A listed job without a matrix is one lane, and its entry takes no `matrix` filter. For a job with a matrix, Hugi expands the matrix as GitHub does, with `include` and `exclude` applied. Each expanded row that matches the filter is a lane. A row matches when every key of the filter is present in the row with an equal value, compared as GitHub's `==` compares them, which is the rule `hugi run --matrix` uses. Keys the filter omits are free, and an entry with no filter selects every row. A filter applies to each job its entry lists.
+A listed job without a matrix is one lane, and its entry takes no `matrix` filter. For a job with a matrix, Hugi expands the matrix as GitHub does, with `include` and `exclude` applied. Each expanded row that matches the filter is a lane. A row matches when every key of the filter is present in the row with an equal value, compared as `hugi run --matrix` compares them: by GitHub's `==`, except that a boolean also matches its written text, `true` or `false`. Keys the filter omits are free, and an entry with no filter selects every row. A filter applies to each job its entry lists.
 
 A lane's identity is its job id with its complete expanded row: every matrix key, including keys an `include` entry adds. The workflow path is not part of it, so a lane keeps its identity when promotion moves its job to another file. The commit status for a lane is named from its identity alone. The format of that name belongs to the reporter.
 
@@ -56,10 +56,11 @@ Hugi refuses the whole declaration when:
 - a listed job does not exist, or declares `needs`;
 - a job's matrix cannot be expanded when the file is read, for example because it is built by an expression;
 - a filter key appears in no row of a job, or a filter selects no row of a job;
+- two rows of a listed job's expanded matrix are equal under the filter comparison, such as `version: [1, '1']`, so a complete row could not select exactly one;
 - a selected lane's `runs-on` does not resolve to a macOS label Hugi runs, so an entry that forgets the filter on an `[ubuntu-latest, macos-latest]` matrix is refused rather than run on Linux legs;
-- two lanes have the same identity.
+- two lanes have the same identity, compared the same way.
 
-A refused declaration is reported as one failure status on the commit, the declaration status, whose description names the cause. It is the commit's verdict: Hugi runs none of its lanes, and the poller treats the commit as decided. Everything the list above does not cover, such as a job's `if:`, its steps, its tools, and its timeout, belongs to the lane's run and yields that lane's verdict as `hugi run` does.
+A refused declaration is reported as one failure status on the commit, the declaration status, whose description names the cause. It settles the commit: Hugi runs none of its lanes, and the poller treats the commit as decided. Everything the list above does not cover, such as a job's `if:`, its steps, its tools, and its timeout, belongs to the lane's run and yields that lane's verdict as `hugi run` does.
 
 An enrolled repository whose commit has no `.github/hugi.yaml` has no lanes at that commit, and Hugi posts nothing for it.
 
@@ -78,7 +79,7 @@ Promotion is one commit in the repository and one change to its settings.
 The commit moves the lane's job out of GitHub's workflow into a **Hugi workflow**: a workflow-syntax file directly under `.github/hugi/`, which GitHub never runs. The Hugi workflow carries the job under the same id, with the same expanded rows, so every lane keeps its identity. It also carries the original workflow's `on:` block and the workflow-level `env` and `defaults` the job reads, and it stays a complete workflow that the lane reader accepts. The same commit repoints the lane's `hugi.yaml` entry at the Hugi workflow, and makes two changes to GitHub's workflow:
 
 - GitHub's workflow no longer produces a macOS combination of the job. For a matrix job, that means removing the macOS value from its axis and every `include` entry that resolves to a macOS runner, then checking the expanded matrix.
-- Jobs in GitHub's workflow that `needs` the moved job drop it, because GitHub rejects a workflow whose `needs` names a job it does not contain.
+- Jobs in GitHub's workflow that `needs` the moved job drop it, because GitHub rejects a workflow whose `needs` names a job it does not contain. Expressions in those jobs that read the moved job's `result` or `outputs` go with it, or they would read an empty value on every run.
 
 A job that GitHub also runs for events Hugi does not consider, such as a tag push, a schedule, or a manual dispatch, is split before promotion, so that moving the verification job leaves those events' jobs in GitHub's workflow. Tag-driven release builds stay on GitHub ([ADR-0002](0002-verification-only.md)).
 
@@ -158,4 +159,4 @@ If Loom kept the legs inside a matrix job without `needs` instead, the shadow en
 - A pull request that deletes `hugi.yaml` or drops a lane posts no status for it. After promotion that blocks the merge, because the required status never arrives.
 - The poller reads `.github/hugi.yaml` and evaluates trigger filters at every commit it considers, and reads changed files from GitHub for path filters.
 - The declaration reader expands a filter into complete rows. `hugi run` needs no change: it already takes a complete row with `--matrix`, and the path form of `<workflow>:<job>` already reaches a Hugi workflow.
-- Loom restructures its macOS legs before it enrols. Norn's `platform` job and Mimir's `release.yml` `build` job have no `needs` and can be declared for shadow as they are. Mimir's `build` job also produces release assets on tag pushes, so Mimir splits it before promotion.
+- Loom restructures its macOS legs before it enrols. Norn's `platform` job and Mimir's `release.yml` `build` job have no `needs` and can be declared for shadow as they are. Mimir's `build` job also produces release assets on tag pushes, and its workflow filters pull requests by path, so Mimir splits it before promotion: the tag-driven release build stays in GitHub's workflow, and the verification job it promotes has no path filter on pull requests.

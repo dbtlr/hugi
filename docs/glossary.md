@@ -43,7 +43,7 @@ The admission of a repository to Hugi, recorded outside the repository.
 _Avoid_: Registration, onboarding, subscription
 
 **Lane declaration**:
-The repository's `.github/hugi.yaml`, read at the commit under test, which points at the workflow jobs and matrix values that are its lanes. A declaration Hugi refuses is reported as one failure status on the commit, which is that commit's verdict.
+The repository's `.github/hugi.yaml`, read at the commit under test, which points at the workflow jobs and matrix values that are its lanes. A declaration Hugi refuses is reported as one failure status on the commit, the declaration status, and Hugi runs none of that commit's lanes.
 _Avoid_: Lane list, manifest, hugi config
 
 **Allowlist**:
