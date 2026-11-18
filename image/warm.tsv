@@ -1,0 +1,6 @@
+# Dependencies installed once while the image is built, so a run starts with warm package
+# caches. Each line: repository URL, revision, install command, separated by tabs.
+# The clone is deleted after its command runs; only the package-manager caches stay.
+https://github.com/dbtlr/norn-next.git	7e71dfe81	cargo fetch --locked
+https://github.com/dbtlr/loomcli.git	90f72d52b	pnpm install --frozen-lockfile
+https://github.com/dbtlr/mimir.git	v0.29.0	bun install --frozen-lockfile

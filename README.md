@@ -5,6 +5,8 @@ Hugi runs macOS CI lanes on your own Mac and reports the verdicts to GitHub.
 It polls GitHub for new commits, runs each macOS lane in a throwaway virtual machine, and posts the verdict as a commit status. GitHub's hosted macOS runners are not involved, so a pull request cannot fail because a runner never arrived.
 
 > **Status:** design agreed, build started. The CLI scaffold is in place; the coordinator is not built yet. The measurement spike is in [`spike/ci-timing`](spike/ci-timing).
+>
+> The golden VM image is built by [`image/build.sh`](image/README.md).
 
 ## Why
 
