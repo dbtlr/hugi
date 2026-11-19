@@ -529,9 +529,11 @@ test('a matrix larger than 256 combinations fails before its rows are built', ()
 });
 
 test('rows that include entries add count toward the 256-combination limit', () => {
-  const include = Array.from({ length: 257 }, (_, i) => ({ shard: i }));
-  const text = workflow({ strategy: { matrix: { include } } });
-  expect(() => read(text, { ...lane, matrix: { shard: '0' } })).toThrow(
+  // 200 rows from the axis, then 57 include entries that match none of them and so add rows.
+  const n = Array.from({ length: 200 }, (_, i) => i);
+  const include = Array.from({ length: 57 }, (_, i) => ({ n: 1000 + i }));
+  const text = workflow({ strategy: { matrix: { include, n } } });
+  expect(() => read(text, { ...lane, matrix: { n: '0' } })).toThrow(
     /matrix has 257 combinations, more than 256/,
   );
 });

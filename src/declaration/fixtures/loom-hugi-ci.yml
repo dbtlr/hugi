@@ -1,0 +1,30 @@
+name: CI (Hugi)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  NODE_COMPILE_CACHE: ${{ github.workspace }}/../node-compile-cache
+
+jobs:
+  node_macos:
+    name: node / macos-latest
+    runs-on: macos-latest
+    env:
+      LOOM_TEST_RUNTIME: node
+      LOOM_REQUIRE_SHELLS: '1'
+    steps:
+      - name: Test
+        run: echo node tests
+
+  bun_macos:
+    name: bun / macos-latest
+    runs-on: macos-latest
+    env:
+      LOOM_TEST_RUNTIME: bun
+      LOOM_REQUIRE_SHELLS: '1'
+    steps:
+      - name: Test
+        run: echo bun tests

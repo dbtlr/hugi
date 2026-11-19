@@ -1,6 +1,9 @@
 /** Parsing of `hugi run`'s lane, `--matrix`, and `--needs` arguments into the lane reader's inputs. */
 import { UsageError } from '@loomcli/core';
 
+import { readMatrixEntries } from '../lane/matrix';
+import type { MatrixEntryProblem } from '../lane/matrix';
+import { emptyMap, isPrototypeKey, workflowPath } from '../lane/names';
 import type { EventContext, LaneRef } from '../lane/step-plan';
 
 /** Exit 2: an argument of `hugi run` is malformed. */
@@ -26,8 +29,6 @@ export function parsePullRequestArgument(commit: string): number | undefined {
   return number;
 }
 
-const WORKFLOW_DIRECTORY = '.github/workflows';
-
 /** `<workflow>:<job>`, with a bare workflow file name read from `.github/workflows/`. */
 export function parseLaneArgument(text: string): Pick<LaneRef, 'job' | 'workflow'> {
   const split = text.lastIndexOf(':');
@@ -42,7 +43,7 @@ export function parseLaneArgument(text: string): Pick<LaneRef, 'job' | 'workflow
   if (path === '') {
     throw new RunUsageError(`The lane "${text}" names no workflow file, for example ci.yml:build.`);
   }
-  return { job, workflow: path.includes('/') ? path : `${WORKFLOW_DIRECTORY}/${path}` };
+  return { job, workflow: workflowPath(path) };
 }
 
 /** Split `key=value` at the first equals sign; both sides must be non-empty. */
@@ -54,34 +55,29 @@ function parsePair(entry: string, flag: string): [string, string] {
   return [entry.slice(0, equals), entry.slice(equals + 1)];
 }
 
-/** Names that would reach or shadow `Object.prototype` if a later reader used a plain object. */
-const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
-
 function refusePrototypeKey(key: string, flag: string, entry: string): void {
-  if (PROTOTYPE_KEYS.has(key)) {
+  if (isPrototypeKey(key)) {
     throw new RunUsageError(`${flag} "${entry}" uses the reserved name "${key}".`);
   }
 }
 
-/** A map with no prototype, so no key resolves to an inherited member. */
-function emptyMap<Value>(): Record<string, Value> {
-  const map: Record<string, Value> = {};
-  Object.setPrototypeOf(map, null);
-  return map;
+function matrixProblemText(problem: MatrixEntryProblem): string {
+  if (problem.kind === 'reserved-key') {
+    return `--matrix "${problem.entry}" uses the reserved name "${problem.key}".`;
+  }
+  if (problem.kind === 'repeated-key') {
+    return `--matrix names "${problem.key}" twice.`;
+  }
+  return `--matrix "${problem.entry}" is not key=value.`;
 }
 
 /** `--matrix key=value` entries. Values stay strings; the lane reader compares them as GitHub does. */
 export function parseMatrix(entries: readonly string[]): Record<string, string> {
-  const matrix = emptyMap<string>();
-  for (const entry of entries) {
-    const [key, value] = parsePair(entry, '--matrix');
-    refusePrototypeKey(key, '--matrix', entry);
-    if (Object.hasOwn(matrix, key)) {
-      throw new RunUsageError(`--matrix names "${key}" twice.`);
-    }
-    matrix[key] = value;
+  const result = readMatrixEntries(entries);
+  if ('matrix' in result) {
+    return result.matrix;
   }
-  return matrix;
+  throw new RunUsageError(matrixProblemText(result.problem));
 }
 
 type Needs = NonNullable<EventContext['needs']>;
