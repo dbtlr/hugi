@@ -485,6 +485,46 @@ describe('lane identity', () => {
   });
 });
 
+describe('status names', () => {
+  test('two rows of one job whose status names collide refuse the declaration', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({
+        build: { strategy: { matrix: { include: [{ extra: '2', os: '1' }], os: ['1, 2'] } } },
+      }),
+    });
+    expect(cause).toMatch(
+      /two lanes have the status name "hugi \/ build \(1, 2\)": job "build" with row \{"os":"1, 2"\} in \.github\/workflows\/ci\.yml and job "build" with row \{"os":"1","extra":"2"\}/,
+    );
+  });
+
+  test.each([
+    ['a comma', { v: '1, 2' }, { v: '1', w: '2' }],
+    ['parentheses', { v: 'x), (y' }, { v: 'x)', w: '(y' }],
+  ])(
+    'lanes in two workflows whose values hold %s and collide refuse the declaration',
+    async (_label, hosted, promoted) => {
+      const cause = await refusalOf(
+        'lanes:\n  - workflow: ci.yml\n    jobs: [build]\n  - workflow: .github/hugi/ci.yml\n    jobs: [build]\n',
+        {
+          '.github/hugi/ci.yml': workflow({ build: { strategy: { matrix: { include: [promoted] } } } }),
+          [CI]: workflow({ build: { strategy: { matrix: { include: [hosted] } } } }),
+        },
+      );
+      expect(cause).toMatch(/two lanes have the status name "hugi \/ build \(.*\)": job "build"/);
+      expect(cause).toContain('and job "build"');
+    },
+  );
+
+  test('lanes whose status names differ are accepted', async () => {
+    const result = await read('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({
+        build: { strategy: { matrix: { include: [{ extra: '3', os: '1' }], os: ['1, 2'] } } },
+      }),
+    });
+    expect(result.kind).toBe('lanes');
+  });
+});
+
 describe('the schema', () => {
   const valid = { [CI]: workflow({ a: {} }) };
 
