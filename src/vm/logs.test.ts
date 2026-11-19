@@ -43,3 +43,23 @@ test('a log file that cannot be opened fails at close, not as an unhandled error
     process.off('uncaughtException', record);
   }
 });
+
+test('output that arrives after close is dropped, not raised', async () => {
+  const unhandled: unknown[] = [];
+  const record = (error: unknown) => unhandled.push(error);
+  process.on('uncaughtException', record);
+  try {
+    const log = await openLogFile(scratch, '02-late.log');
+    log.write('before\n');
+    // A guest call aborted at its deadline can still deliver a chunk while, or after, the log closes.
+    const closing = log.close();
+    log.write('during\n');
+    await closing;
+    log.write('after\n');
+    await delay(20);
+    expect(unhandled).toEqual([]);
+    expect(await readFile(log.path, 'utf8')).toBe('before\n');
+  } finally {
+    process.off('uncaughtException', record);
+  }
+});

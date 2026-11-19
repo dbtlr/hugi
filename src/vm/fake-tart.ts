@@ -1,8 +1,20 @@
 /* oxlint-disable node/no-sync, promise/avoid-new, promise/prefer-await-to-then, typescript/parameter-properties -- test support: simple fixtures and a hand-rolled fake */
 /** Test doubles for the tart port and the clock: a scripted guest and a virtual timeline. */
+import type { Child, ChildExit, Host } from '@loomcli/core';
+
 import { stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER, READ_FILE_MARKER } from './housekeeping';
-import type { Clock, ExecOptions, ExecResult, ReadOnlyShare, Tart, VmProcess } from './tart';
+import { TartCallError } from './tart';
+import type {
+  CallOptions,
+  Clock,
+  ExecOptions,
+  ExecResult,
+  ReadOnlyShare,
+  Tart,
+  VmProcess,
+} from './tart';
+import { TART_DELETE_DEADLINE_MS, TART_SET_DEADLINE_MS } from './tart-process';
 
 /** A clock whose time only moves when a test advances it. */
 export class FakeClock implements Clock {
@@ -96,8 +108,21 @@ export type StepBehavior = {
   readonly agentLost?: boolean;
 };
 
-/** Guest housekeeping commands that never answer, until their signal aborts them. */
-export type Wedged = { kill?: boolean; logCopy?: boolean; statusPoll?: boolean; stop?: boolean };
+/**
+ * Guest housekeeping commands that never answer, until their signal aborts them. A wedged `set` or
+ * `delete` fails at its deadline without the SIGTERM/SIGKILL escalation of the real helper; tests of
+ * escalation time use `createTartCli(new FakeSpawn(...))` instead.
+ */
+export type Wedged = {
+  kill?: boolean;
+  logCopy?: boolean;
+  statusPoll?: boolean;
+  stop?: boolean;
+  /** `tart set` never answers; the call fails once its deadline passes, as the real helper does. */
+  set?: boolean;
+  /** `tart delete` never answers, for this many calls (`Infinity` for all); each fails at its deadline. */
+  delete?: number;
+};
 
 export type FakeGuest = {
   checkoutExitCode?: number;
@@ -139,6 +164,7 @@ export class FakeTart implements Tart {
   private agentLost = false;
   private readonly killed = new Set<string>();
   private deleteFailures: number;
+  private deleteCalls = 0;
 
   constructor(
     private readonly clock: FakeClock,
@@ -147,15 +173,23 @@ export class FakeTart implements Tart {
     this.deleteFailures = guest.deleteErrors ?? 0;
   }
 
-  async clone(image: string, vm: string): Promise<void> {
+  async clone(image: string, vm: string, _options?: CallOptions): Promise<void> {
     this.events.push(`clone ${image} ${vm}`);
     if (this.guest.cloneError) {
       throw new Error(this.guest.cloneError);
     }
   }
 
-  async setResources(vm: string, resources: { cpus: number; memoryMb: number }): Promise<void> {
+  async setResources(
+    vm: string,
+    resources: { cpus: number; memoryMb: number },
+    _options?: CallOptions,
+  ): Promise<void> {
     this.events.push(`set ${vm} ${resources.cpus} ${resources.memoryMb}`);
+    if (this.guest.wedged?.set) {
+      await this.clock.sleep(TART_SET_DEADLINE_MS);
+      throw new TartCallError('timed-out', 'tart set', vm, `tart set ${vm} timed out`);
+    }
   }
 
   run(vm: string, options: { readOnlyShares: readonly ReadOnlyShare[] }): VmProcess {
@@ -295,8 +329,15 @@ export class FakeTart implements Tart {
     this.exitVm(0);
   }
 
-  async delete(vm: string): Promise<void> {
+  async delete(vm: string, options: { deadlineMs?: number } = {}): Promise<void> {
     this.events.push(`delete ${vm}`);
+    this.deleteCalls += 1;
+    if (this.deleteCalls <= (this.guest.wedged?.delete ?? 0)) {
+      await this.clock.sleep(
+        Math.min(TART_DELETE_DEADLINE_MS, options.deadlineMs ?? TART_DELETE_DEADLINE_MS),
+      );
+      throw new TartCallError('timed-out', 'tart delete', vm, `tart delete ${vm} timed out`);
+    }
     if (this.vmRunning) {
       throw new Error(`${vm} is still running`);
     }
@@ -317,3 +358,89 @@ export class FakeTart implements Tart {
     return call.stdin;
   }
 }
+
+/** What one scripted `tart` process does. */
+export type FakeCommand = {
+  readonly exitCode?: number;
+  readonly output?: string;
+  /** Answers only after this many virtual milliseconds; a signal still ends it sooner. */
+  readonly takesMs?: number;
+  /** Runs until a signal ends it, like a wedged tart. */
+  readonly hangs?: boolean;
+  /** With `hangs`: SIGTERM does nothing, as with a process stuck in the kernel or a guest agent call. */
+  readonly ignoresSigterm?: boolean;
+  /** With `hangs`: not even SIGKILL ends it within the test. */
+  readonly unkillable?: boolean;
+};
+
+export type SpawnedCommand = {
+  readonly command: string;
+  readonly args: readonly string[];
+  /** The signals sent to the process, in order. */
+  readonly signals: string[];
+  /** Virtual time of the spawn and of the process's exit (undefined while it runs). */
+  readonly startedAt: number;
+  endedAt?: number;
+};
+
+/** A fake `host.spawn`: each command behaves as `script` says, on the fake clock. */
+export class FakeSpawn {
+  readonly calls: SpawnedCommand[] = [];
+
+  constructor(
+    private readonly clock: FakeClock,
+    private readonly script: (args: readonly string[]) => FakeCommand = () => ({}),
+  ) {}
+
+  readonly spawn: Host['spawn'] = (command, args, options) => {
+    const behavior = this.script(args);
+    const call: SpawnedCommand = {
+      args,
+      command,
+      signals: [],
+      startedAt: this.clock.now(),
+    };
+    this.calls.push(call);
+    const writable = options && 'stdout' in options ? options.stdout : undefined;
+    const sink = typeof writable === 'object' ? writable : undefined;
+    const { promise: exited, resolve: finish } = Promise.withResolvers<ChildExit>();
+    const slow = behavior.hangs || behavior.takesMs !== undefined;
+    const end = (code: number): void => {
+      if (call.endedAt !== undefined) {
+        return;
+      }
+      if (behavior.output) {
+        sink?.write(behavior.output);
+      }
+      call.endedAt = this.clock.now();
+      finish(exitOf(code, behavior.output ?? ''));
+    };
+    if (behavior.takesMs !== undefined && !behavior.hangs) {
+      void this.clock.sleep(behavior.takesMs).then(() => end(behavior.exitCode ?? 0));
+    } else if (!behavior.hangs) {
+      void Promise.resolve().then(() => end(behavior.exitCode ?? 0));
+    }
+    const child: Child = {
+      exited,
+      kill: (signal = 'SIGTERM') => {
+        call.signals.push(signal);
+        if (!slow || call.endedAt !== undefined) {
+          return;
+        }
+        if (signal === 'SIGKILL' && !behavior.unkillable) {
+          end(137);
+        } else if (signal === 'SIGTERM' && !behavior.ignoresSigterm) {
+          end(143);
+        }
+      },
+    };
+    return child;
+  };
+}
+
+const exitOf = (code: number, text: string): ChildExit => ({
+  code,
+  kind: 'exited',
+  stderr: { bytes: new Uint8Array(), text: '' },
+  stdout: { bytes: new TextEncoder().encode(text), text },
+});

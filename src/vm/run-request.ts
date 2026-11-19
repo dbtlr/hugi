@@ -71,4 +71,6 @@ export type RunResult = {
   };
   /** One line naming what went wrong, for every reason but `passed`. */
   readonly detail?: string;
+  /** Set when teardown could not delete the run's VM; it needs `tart delete <name>`. */
+  readonly leakedVm?: string;
 };

@@ -4,14 +4,17 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { SHUTDOWN_BUDGET_MS } from '../app';
 import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan';
-import { advanceUntilSettled, FakeClock, FakeTart, settle } from './fake-tart';
+import { advanceUntilSettled, FakeClock, FakeSpawn, FakeTart, settle } from './fake-tart';
 import type { FakeGuest } from './fake-tart';
 import { stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER } from './housekeeping';
 import { runInVm, VM_NAME_PREFIX } from './lifecycle';
 import type { RunDeps } from './lifecycle';
 import type { RunRequest } from './run-request';
+import { createTartCli } from './tart-cli';
+import { TEARDOWN_BUDGET_MS } from './teardown';
 
 let logDir: string;
 beforeEach(() => {
@@ -581,3 +584,125 @@ test('a failed tool install is a step failure with a fail verdict, not infrastru
   expect(readFileSync(join(logDir, '00-install-tools.log'), 'utf8')).toContain('no version');
   expect(deleted(h)).toBe(true);
 });
+
+test('a hung tart set ends the run as infrastructure after its deadline, and the VM is still deleted', async () => {
+  const h = harness({ steps: {}, wedged: { set: true } });
+  const result = await run(h, requestOf([runStep(1)]));
+  expect(result).toMatchObject({ reason: 'infrastructure', verdict: 'none' });
+  expect(result.detail).toContain('timed out');
+  expect(h.tart.events.some((event) => event.startsWith('run'))).toBe(false);
+  expect(h.tart.events.at(-1)).toBe(`delete ${vmName}`);
+  expect(result.leakedVm).toBeUndefined();
+});
+
+test('a delete that hangs on every attempt is reported as a leaked VM naming it, within the budget', async () => {
+  const h = harness({ steps: {}, wedged: { delete: Infinity } });
+  const result = await run(h, requestOf([runStep(1)]));
+  expect(result.reason).toBe('passed');
+  expect(result.leakedVm).toBe(vmName);
+  expect(h.warnings.at(-1)).toContain(vmName);
+  expect(h.warnings.at(-1)).toContain('leaked');
+  expect(h.clock.now()).toBeLessThanOrEqual(60_000 + TEARDOWN_BUDGET_MS);
+});
+
+test('an interrupted run with a hung checkout and a hung stop still reaches delete', async () => {
+  const h = harness({ checkoutHangs: true, steps: {}, wedged: { stop: true } });
+  const work = run(h, requestOf([runStep(1)]));
+  await settle();
+  h.interrupt.abort();
+  const result = await work;
+  expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
+  expect(h.tart.events.slice(-2)).toEqual([`kill ${vmName}`, `delete ${vmName}`]);
+});
+
+test('an interrupt during a hung tart clone deletes the VM within the shutdown budget', async () => {
+  const clock = new FakeClock();
+  const fake = new FakeSpawn(clock, (args) => (args[0] === 'clone' ? { hangs: true } : {}));
+  const interrupt = new AbortController();
+  const deps: RunDeps = {
+    clock,
+    interrupt: interrupt.signal,
+    newId: () => 'test1',
+    tart: createTartCli(fake.spawn, clock),
+    warn: () => undefined,
+  };
+  const work = advanceUntilSettled(clock, runInVm(requestOf([runStep(1)]), deps), 250);
+  await settle();
+  interrupt.abort();
+  const result = await work;
+  expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
+  const deletion = fake.calls.find((call) => call.args[0] === 'delete');
+  expect(deletion?.args).toEqual(['delete', vmName]);
+  expect(clock.now()).toBeLessThanOrEqual(SHUTDOWN_BUDGET_MS);
+});
+
+/**
+ * A run over the real tart helper on a fake spawn, in the worst guest a Ctrl-C can meet: `tart run`
+ * and `tart stop` hang and ignore SIGTERM, `tart delete` hangs, and every housekeeping call the
+ * guest answers takes 29 seconds (just inside its 30-second deadline) and ignores SIGTERM. The
+ * interrupt comes when the run first starts the call `trigger` names: the step launcher (the
+ * second `bash -s`, which then hangs) or the read of the step's `GITHUB_ENV` file (which follows
+ * the status read that said the step exited). Resolves to the virtual time from the interrupt to
+ * `runInVm` returning.
+ */
+async function msFromInterruptToReturn(trigger: 'launch' | 'command-file') {
+  const clock = new FakeClock();
+  const interrupt = new AbortController();
+  let interruptedAt: number | undefined;
+  let bashCalls = 0;
+  const slow = { ignoresSigterm: true, takesMs: 29_000 };
+  const hung = { hangs: true, ignoresSigterm: true };
+  const interruptNow = (): void => {
+    interruptedAt ??= clock.now();
+    interrupt.abort();
+  };
+  const fake = new FakeSpawn(clock, (args) => {
+    if (['run', 'stop', 'delete'].includes(args[0]!)) {
+      return hung;
+    }
+    if (args[0] !== 'exec') {
+      return {};
+    }
+    if (args.includes('bash')) {
+      bashCalls += 1;
+      if (trigger === 'launch' && bashCalls === 2) {
+        interruptNow();
+        return hung;
+      }
+      return {};
+    }
+    const path = args.at(-1) ?? '';
+    if (trigger === 'command-file' && path.endsWith('/github_env')) {
+      interruptNow();
+    }
+    return path.endsWith('/status') ? { output: '0' } : slow;
+  });
+  const deps: RunDeps = {
+    clock,
+    interrupt: interrupt.signal,
+    newId: () => 'test1',
+    tart: createTartCli(fake.spawn, clock),
+    warn: () => undefined,
+  };
+  const result = await advanceUntilSettled(clock, runInVm(requestOf([runStep(1)]), deps), 250);
+  return { fake, ms: clock.now() - (interruptedAt ?? Number.NaN), result };
+}
+
+const startedExec = (fake: FakeSpawn, suffix: string) =>
+  fake.calls.filter((call) => call.args.at(-1)?.endsWith(suffix));
+
+test('an interrupt right after the step exits skips its command files and deletes within the shutdown budget', async () => {
+  const { fake, ms, result } = await msFromInterruptToReturn('command-file');
+  expect(result.reason).toBe('interrupted');
+  expect(startedExec(fake, '/github_path')).toHaveLength(0);
+  expect(fake.calls.some((call) => call.args[0] === 'delete')).toBe(true);
+  expect(ms).toBeLessThanOrEqual(SHUTDOWN_BUDGET_MS);
+}, 60_000);
+
+test('an interrupt during the step launch ends the launch, kills the step, and deletes within the shutdown budget', async () => {
+  const { fake, ms, result } = await msFromInterruptToReturn('launch');
+  expect(result.reason).toBe('interrupted');
+  expect(fake.calls.some((call) => call.args.includes(KILL_GROUP_MARKER))).toBe(true);
+  expect(fake.calls.some((call) => call.args[0] === 'delete')).toBe(true);
+  expect(ms).toBeLessThanOrEqual(SHUTDOWN_BUDGET_MS);
+}, 60_000);

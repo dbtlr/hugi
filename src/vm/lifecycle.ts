@@ -9,8 +9,10 @@
  * deadline is `infrastructure`, since it lies outside the lane's steps. After
  * boot the runner watches the `tart run` process, and a VM that exits ends the
  * run as `infrastructure`. Every housekeeping call (status polls, log copies,
- * kills, `tart stop`) has a short deadline of its own, so teardown always
- * reaches `tart delete`.
+ * kills, `tart stop`) has a short deadline of its own, and every tart process
+ * ends by SIGKILL if it ignores SIGTERM (`./tart-process`). Teardown has a fixed
+ * budget (`./teardown`) that reserves time for `tart delete`, so it always
+ * reaches the delete.
  */
 import { messageOf } from '../errors';
 import { buildCheckoutScript } from './checkout';
@@ -21,29 +23,30 @@ import type { RunReason, RunRequest, RunResult, StepResult } from './run-request
 import { runSteps } from './step-executor';
 import type { StepTuning } from './step-executor';
 import type { Clock, Tart, VmProcess } from './tart';
+import { DELETE_RESERVE_MS, teardown, TEARDOWN_BUDGET_MS } from './teardown';
+import type { TeardownOutcome, TeardownTuning } from './teardown';
 
 export const VM_NAME_PREFIX = 'hugi-run-';
 
 /** The VM size every run gets. */
 export const VM_RESOURCES = { cpus: 4, memoryMb: 4096 } as const;
 
-export type RunTuning = StepTuning & {
-  /** How long the guest agent may take to answer after `tart run`. */
-  readonly bootTimeoutMs: number;
-  readonly deleteAttempts: number;
-  readonly deleteRetryMs: number;
-  /** How long the `tart run` process may take to exit after a stop or a kill. */
-  readonly stopGraceMs: number;
-};
+export type RunTuning = StepTuning &
+  TeardownTuning & {
+    /** How long the guest agent may take to answer after `tart run`. */
+    readonly bootTimeoutMs: number;
+  };
 
 export const DEFAULT_TUNING: RunTuning = {
   agentFailureLimit: 3,
   bootTimeoutMs: 5 * 60_000,
   deleteAttempts: 3,
+  deleteReserveMs: DELETE_RESERVE_MS,
   deleteRetryMs: 2000,
   guestPollMs: 1000,
   housekeepingMs: 30_000,
-  stopGraceMs: 30_000,
+  stopGraceMs: 10_000,
+  teardownBudgetMs: TEARDOWN_BUDGET_MS,
 };
 
 export type RunDeps = {
@@ -205,9 +208,9 @@ async function perform(
 
   const cloneStart = clock.now();
   state.cloneStarted = true;
-  await tart.clone(request.image, vm);
+  await tart.clone(request.image, vm, { signal: deps.interrupt });
   state.vmCloned = true;
-  await tart.setResources(vm, VM_RESOURCES);
+  await tart.setResources(vm, VM_RESOURCES, { signal: deps.interrupt });
   state.cloneSeconds = seconds(clock, cloneStart);
   if (deps.interrupt.aborted) {
     return { detail: 'interrupted after cloning', reason: 'interrupted' };
@@ -248,94 +251,9 @@ async function perform(
   );
 }
 
-/** Delete the VM, retrying briefly since a VM still shutting down refuses deletion. */
-async function deleteVm(deps: RunDeps, tuning: RunTuning, vm: string): Promise<void> {
-  for (let attempt = 1; attempt <= tuning.deleteAttempts; attempt += 1) {
-    try {
-      // oxlint-disable-next-line no-await-in-loop -- sequential by design
-      await deps.tart.delete(vm);
-      return;
-    } catch (error) {
-      const last = attempt === tuning.deleteAttempts;
-      deps.warn(
-        `could not delete ${vm} (attempt ${attempt}/${tuning.deleteAttempts})${last ? '; it is leaked and needs `tart delete`' : ''}: ${String(error)}`,
-      );
-      if (!last) {
-        // oxlint-disable-next-line no-await-in-loop -- sequential by design
-        await deps.clock.sleep(tuning.deleteRetryMs);
-      }
-    }
-  }
-}
-
-/** Whether the VM process exits within the stop grace. */
-async function exitsWithinGrace(
-  deps: RunDeps,
-  tuning: RunTuning,
-  process: VmProcess,
-): Promise<boolean> {
-  const cancel = new AbortController();
-  const exited = async (): Promise<boolean> => {
-    await process.exited;
-    return true;
-  };
-  const graceOver = async (): Promise<boolean> => {
-    await deps.clock.sleep(tuning.stopGraceMs, cancel.signal);
-    return false;
-  };
-  try {
-    return await Promise.race([exited(), graceOver()]);
-  } finally {
-    cancel.abort();
-  }
-}
-
-/**
- * Stop the VM if it was started, then delete it if it was cloned, or try once if its clone
- * failed part-way. A stop that
- * fails or misses its deadline, or a VM that keeps running after it, gets the
- * `tart run` process killed, so the delete is always attempted. Never throws.
- */
-async function teardown(
-  deps: RunDeps,
-  tuning: RunTuning,
-  vm: string,
-  state: RunState,
-): Promise<void> {
-  if (state.vmProcess) {
-    const stopped = await withDeadline(
-      deps.clock,
-      tuning.housekeepingMs,
-      (signal) => deps.tart.stop(vm, { signal }),
-      { waitForWork: false },
-    );
-    if (!stopped.ok) {
-      deps.warn(`could not stop ${vm}; killing its tart run process: ${stopped.why}`);
-      state.vmProcess.kill();
-    }
-    if (!(await exitsWithinGrace(deps, tuning, state.vmProcess))) {
-      deps.warn(`${vm} kept running after the stop; killing its tart run process`);
-      state.vmProcess.kill();
-      await exitsWithinGrace(deps, tuning, state.vmProcess);
-    }
-  }
-  if (state.vmCloned) {
-    await deleteVm(deps, tuning, vm);
-  } else if (state.cloneStarted) {
-    await deleteCloneLeftover(deps, vm);
-  }
-}
-
-/** One delete of the VM a failed `tart clone` may have created before it failed. */
-async function deleteCloneLeftover(deps: RunDeps, vm: string): Promise<void> {
-  try {
-    await deps.tart.delete(vm);
-  } catch (error) {
-    deps.warn(
-      `the failed clone may have left ${vm} behind; if \`tart list\` shows it, run \`tart delete ${vm}\`: ${String(error)}`,
-    );
-  }
-}
+/** The result's note of a VM that teardown could not delete, if there is one. */
+const leakOf = (outcome: TeardownOutcome): { leakedVm?: string } =>
+  outcome.kind === 'leaked' ? { leakedVm: outcome.vm } : {};
 
 /** `none` for the reasons that say nothing about the code. */
 export function verdictFor(reason: RunReason): RunResult['verdict'] {
@@ -372,7 +290,7 @@ export async function runInVm(request: RunRequest, deps: RunDeps): Promise<RunRe
           reason: 'infrastructure',
         };
   }
-  await teardown(deps, tuning, vm, state);
+  const torndown = await teardown(deps, tuning, vm, state);
   return {
     reason: ending.reason,
     steps: state.steps,
@@ -383,5 +301,6 @@ export async function runInVm(request: RunRequest, deps: RunDeps): Promise<RunRe
     },
     verdict: verdictFor(ending.reason),
     ...(ending.detail === undefined ? {} : { detail: ending.detail }),
+    ...leakOf(torndown),
   };
 }

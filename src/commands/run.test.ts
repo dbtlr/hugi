@@ -194,6 +194,18 @@ test('--format json prints the report as JSON', async () => {
   expect(JSON.parse(stdout)).toMatchObject({ reason: 'passed', sha: SHA, verdict: 'pass' });
 });
 
+test('a leaked VM is named in the text report with how to remove it, and in the JSON report', async () => {
+  const leaked = result({ leakedVm: 'hugi-run-abc' });
+  const text = await hugi(ARGS, leaked);
+  expect(text.stdout).toContain(
+    'leaked VM: hugi-run-abc (remove it with: tart delete hugi-run-abc)',
+  );
+  const json = await hugi([...ARGS, '--format', 'json'], leaked);
+  expect(JSON.parse(json.stdout)).toMatchObject({ leakedVm: 'hugi-run-abc' });
+  const clean = await hugi(ARGS, result({}));
+  expect(clean.stdout).not.toContain('leaked');
+});
+
 test('--matrix, --needs, and the ref options reach the VM request', async () => {
   const workflow = `
 on: push

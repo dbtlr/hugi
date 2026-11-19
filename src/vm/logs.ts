@@ -16,7 +16,11 @@ export function stepLogName(index: number, name: string): string {
   return `${String(index).padStart(2, '0')}-${slug}.log`;
 }
 
-/** An open log file on the host; `write` appends, `close` flushes and reports any write error. */
+/**
+ * An open log file on the host; `write` appends, `close` flushes and reports any write error.
+ * Output that arrives once `close` has begun is dropped: a guest call aborted at its deadline can
+ * still deliver a chunk, and it must not fail the step whose log is already complete.
+ */
 export type LogFile = {
   readonly path: string;
   readonly write: (chunk: string) => void;
@@ -40,8 +44,10 @@ export async function openLogFile(logDir: string, fileName: string): Promise<Log
   // Watched from the start, so an open or write error waits for `close` instead of crashing the
   // process before the VM is deleted.
   const failure = watchForFailure(stream);
+  let closing = false;
   return {
     close: async () => {
+      closing = true;
       stream.end();
       const error = await failure;
       if (error !== undefined) {
@@ -49,6 +55,10 @@ export async function openLogFile(logDir: string, fileName: string): Promise<Log
       }
     },
     path,
-    write: (chunk) => void stream.write(chunk),
+    write: (chunk) => {
+      if (!closing) {
+        stream.write(chunk);
+      }
+    },
   };
 }

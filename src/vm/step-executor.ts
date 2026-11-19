@@ -102,7 +102,11 @@ const guestCall = (ctx: StepRunContext): GuestCall => ({
   vm: ctx.vm,
 });
 
-/** Start the step in the guest; a launcher that fails or does not answer is an infrastructure error. */
+/**
+ * Start the step in the guest; a launcher that fails or does not answer is an infrastructure
+ * error. An interrupt ends the launch at once and is not an error: the caller sees the interrupt
+ * and kills whatever the launcher got started.
+ */
 async function launch(ctx: StepRunContext, step: RunStep, stdin: string): Promise<void> {
   let output = '';
   const started = await withDeadline(
@@ -116,8 +120,11 @@ async function launch(ctx: StepRunContext, step: RunStep, stdin: string): Promis
         signal,
         stdin,
       }),
-    { waitForWork: false },
+    { parent: ctx.interrupt, waitForWork: false },
   );
+  if (ctx.interrupt.aborted) {
+    return;
+  }
   const why = started.ok
     ? started.value.exitCode !== 0 && `exit code ${started.value.exitCode}: ${output.trim()}`
     : started.why;
@@ -188,7 +195,7 @@ async function copyLog(
 
 /** Read one of the step's command files; a guest that cannot answer is an infrastructure error. */
 async function readCommandFile(ctx: StepRunContext, step: RunStep, path: string): Promise<string> {
-  const text = await readGuestFile(guestCall(ctx), path);
+  const text = await readGuestFile(guestCall(ctx), path, ctx.interrupt);
   if (!text.ok) {
     throw new Error(`could not read ${path} after step ${step.index} "${step.name}" (${text.why})`);
   }
@@ -350,7 +357,25 @@ async function runOneStep(
   }
 
   const { exitCode } = waited;
-  const applied = await applyCommandFiles(ctx, step, files, carried);
+  // An interrupt ends the run, so the step's command files no longer matter: skip them, and copy
+  // the log within its own deadline, so teardown starts well inside the shutdown budget.
+  const applied = ctx.interrupt.aborted
+    ? undefined
+    : await applyCommandFiles(ctx, step, files, carried).catch((error: unknown) => {
+        // A read the interrupt cut short is no infrastructure failure.
+        if (ctx.interrupt.aborted) {
+          return undefined;
+        }
+        throw error;
+      });
+  if (applied === undefined) {
+    const logFile = await copyLog(ctx, step, files);
+    return {
+      carried,
+      end: 'interrupted',
+      result: { ...base, exitCode, logFile, outcome: 'failure' },
+    };
+  }
   if ('error' in applied) {
     const logFile = await copyLog(ctx, step, files, `Error: ${applied.error}\n`);
     return {

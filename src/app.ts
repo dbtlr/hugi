@@ -15,11 +15,13 @@ const textView: View<{ text: string }> = { render: (data) => `${data.text}\n` };
 
 /**
  * How long a signal lets a run unwind before Loom ends the process (Loom's default is 500 ms).
- * An interrupted `hugi run` kills the running step and copies its log (30 seconds each at most),
- * then tears its VM down: a `tart stop` bounded at 30 seconds, up to two 30-second waits for the
- * VM process to exit, then up to three deletes 2 seconds apart. That is 154 seconds plus the
- * deletes themselves, about 160; 180 leaves a margin. Cutting it short would leave a VM behind
- * (ADR-0003). A second Ctrl-C still ends the process at once.
+ * An interrupted `hugi run` first ends the tart call in flight (up to `TART_ESCALATION_MS`,
+ * 7 seconds, when it ignores SIGTERM), then kills the running step and copies its log (30 seconds
+ * each at most), then tears its VM down within the teardown budget (`TEARDOWN_BUDGET_MS`, 100
+ * seconds: stop, wait for the VM process, delete). Once interrupted, the run starts no further
+ * guest call beyond those two and skips the step's command files, so that is 167 seconds at worst;
+ * 180 leaves a 13 second margin. Cutting it short would leave a VM behind (ADR-0003). A second
+ * Ctrl-C still ends the process at once.
  */
 export const SHUTDOWN_BUDGET_MS = 180_000;
 
