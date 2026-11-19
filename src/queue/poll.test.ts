@@ -971,6 +971,34 @@ test('three admitted pull requests all yield candidates', async () => {
   ]);
 });
 
+test('a pull request the listing repeats, as a page shift can, is read once', async () => {
+  const reads: number[] = [];
+  const { queue, snapshot } = await poll(
+    pullsWorld([{ author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 }]),
+    ['ada'],
+    [],
+    (built) => ({
+      github: {
+        ...built.github,
+        openPullRequests: async (repository) => {
+          const listed = await built.github.openPullRequests(repository);
+          return [...listed, ...listed];
+        },
+        pullRequest: async (repository, number) => {
+          reads.push(number);
+          return built.github.pullRequest(repository, number);
+        },
+      },
+    }),
+  );
+  expect(reads).toEqual([44]);
+  const [repository] = snapshot;
+  expect(repository?.kind === 'read' ? repository.pullRequests.length : -1).toBe(1);
+  expect(named(queue).filter((name) => name.endsWith('platform'))).toEqual([
+    'o/r@4 hugi / platform',
+  ]);
+});
+
 /** A macOS job with one matrix row for each of `os`. */
 const matrixJob = (os: string[]) => ({
   'runs-on': '${{ matrix.os }}',

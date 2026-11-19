@@ -339,12 +339,13 @@ async function readPull(
 
 /**
  * The numbers of the pull requests whose author the allowlist admits, compared
- * case-insensitively. A number that is not a positive integer, or cannot be read, throws, which
- * fails the repository's read.
+ * case-insensitively, each once: a listing read page by page can repeat a pull request when the
+ * list shifts between pages, and reading it twice could keep a head it has since left. A number
+ * that is not a positive integer, or cannot be read, throws, which fails the repository's read.
  */
 function admitted(pulls: readonly OpenPullRequest[], allowlist: readonly string[]): number[] {
   const logins = new Set(allowlist.map((login) => login.toLowerCase()));
-  return pulls
+  const numbers = pulls
     .filter((pull) => pull.authorLogin !== null && logins.has(pull.authorLogin.toLowerCase()))
     .map(({ number }) => {
       if (!Number.isSafeInteger(number) || number <= 0) {
@@ -352,6 +353,7 @@ function admitted(pulls: readonly OpenPullRequest[], allowlist: readonly string[
       }
       return number;
     });
+  return [...new Set(numbers)];
 }
 
 /**
