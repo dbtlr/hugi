@@ -20,6 +20,12 @@ export type LaneDecision =
 /** The latest state of each status context on the commit the outcome belongs to. */
 export type CommitStatuses = ReadonlyMap<string, CommitStatusState>;
 
+/**
+ * Why a read failed. A read that failed for a reason the poller does not expect, such as a bug or
+ * repository content that trips one, is marked `unexpected`, so the caller logs it loudly.
+ */
+export type ReadFailure = { readonly cause: string; readonly unexpected?: true };
+
 /** What one poll learned about a commit. */
 export type CommitRead =
   /** The commit's message carries a skip instruction, so it starts no lane. */
@@ -33,7 +39,9 @@ export type CommitRead =
       readonly kind: 'lanes';
       readonly lanes: readonly LaneDecision[];
       readonly statuses: CommitStatuses;
-    };
+    }
+  /** The commit's source or statuses could not be read; it is considered again at the next poll. */
+  | ({ readonly kind: 'failed' } & ReadFailure);
 
 /** One commit a poll considered. */
 export type CommitSnapshot = {
@@ -46,25 +54,30 @@ export type CommitSnapshot = {
 };
 
 /** An open pull request whose reads failed, with why. */
-export type PullRequestReadFailure = { readonly number: number; readonly cause: string };
+export type PullRequestReadFailure = { readonly number: number } & ReadFailure;
 
 /** One enrolled repository as a poll read it, or why its reads failed. */
 export type RepositorySnapshot =
   | {
       readonly kind: 'read';
       readonly repository: string;
+      /** The default branch head; a failed read of it is its `failed` read, and the pull requests are still read. */
       readonly defaultBranch: CommitSnapshot;
       /** The open pull requests the allowlist admits. */
       readonly pullRequests: readonly CommitSnapshot[];
       /** The admitted pull requests whose reads failed; each is skipped for this poll alone. */
       readonly pullRequestFailures: readonly PullRequestReadFailure[];
     }
-  | { readonly kind: 'failed'; readonly repository: string; readonly cause: string };
+  /** A repository-level read failed: the repository, its default branch, or its pull-request listing. */
+  | ({ readonly kind: 'failed'; readonly repository: string } & ReadFailure);
 
 /** Every enrolled repository, in configuration order. */
 export type Snapshot = readonly RepositorySnapshot[];
 
-/** The run in flight: never queued again and never cancelled, even after its pull request moves. */
+/**
+ * A run in flight, of the at most two ADR-0003 allows at once: never queued again and never
+ * cancelled, even after its pull request moves.
+ */
 export type RunInFlight = {
   readonly repository: string;
   /** The commit its outcome belongs to. */
@@ -91,14 +104,16 @@ export type DeclarationReport = {
 };
 
 /**
- * A read that failed, skipped for this poll. With no `pullRequest`, the whole repository is
- * skipped; with one, only that pull request is, and the repository's other commits still yield.
+ * A read that failed, skipped for this poll. With `pullRequest`, only that pull request is
+ * skipped; with `defaultBranch`, only the default branch head is; with neither, the whole
+ * repository is. The repository's other commits still yield.
  */
 export type RepositoryFailure = {
   readonly repository: string;
   readonly pullRequest?: number;
-  readonly cause: string;
-};
+  /** The default branch whose head's read failed. */
+  readonly defaultBranch?: string;
+} & ReadFailure;
 
 /** What the poll derives: the candidates in run order, and what the caller must report. */
 export type Queue = {

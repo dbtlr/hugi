@@ -187,38 +187,103 @@ describe('ordering', () => {
   });
 });
 
-describe('the run in flight', () => {
+describe('the runs in flight', () => {
   test('is not queued, while its sibling lanes are', () => {
-    const inFlight = { commit: MAIN, lane: { ...PLATFORM }, repository: 'o/r' };
+    const inFlight = [{ commit: MAIN, lane: { ...PLATFORM }, repository: 'o/r' }];
     expect(names([repo('o/r', lanes({ 'hugi / platform': 'pending' }))], inFlight)).toEqual([
       'o/r@a hugi / test (macos-latest)',
     ]);
   });
 
   test('is matched by its full identity: the same lane of another commit or repository is queued', () => {
-    const inFlight = { commit: MAIN, lane: TEST_MAC, repository: 'o/other' };
+    const inFlight = [{ commit: MAIN, lane: TEST_MAC, repository: 'o/other' }];
     expect(names([repo('o/r', lanes({}, TEST_MAC))], inFlight)).toEqual([
       'o/r@a hugi / test (macos-latest)',
     ]);
     const otherRow = { ...TEST_MAC, matrix: { os: 'macos-15' } };
     expect(
-      names([repo('o/r', lanes({}, TEST_MAC))], {
-        commit: MAIN,
-        lane: otherRow,
-        repository: 'o/r',
-      }),
+      names(
+        [repo('o/r', lanes({}, TEST_MAC))],
+        [{ commit: MAIN, lane: otherRow, repository: 'o/r' }],
+      ),
     ).toEqual(['o/r@a hugi / test (macos-latest)']);
   });
 
   test("of a superseded head stays out of the queue; the new head's lanes are queued", () => {
     const oldHead = 'f'.repeat(40);
-    const inFlight = { commit: oldHead, lane: PLATFORM, repository: 'o/r' };
+    const inFlight = [{ commit: oldHead, lane: PLATFORM, repository: 'o/r' }];
     const queue = deriveQueue(
       [repo('o/r', NOTHING, pull('o/r', 4, lanes({}, PLATFORM)))],
       inFlight,
     );
     expect(queue.candidates.map((candidate) => candidate.commit)).toEqual([HEAD]);
   });
+
+  test('two runs in flight, as ADR-0003 allows, are each kept out of the queue', () => {
+    const inFlight = [
+      { commit: MAIN, lane: PLATFORM, repository: 'o/r' },
+      { commit: MAIN, lane: TEST_MAC, repository: 'o/r' },
+    ];
+    expect(names([repo('o/r', lanes())], inFlight)).toEqual([]);
+  });
+
+  test('a run of a row with fewer keys does not hide a lane whose row extends it', () => {
+    const narrow = { ...TEST_MAC, matrix: { os: '1' } };
+    const wide = { ...TEST_MAC, matrix: { extra: '2', os: '1' } };
+    expect(
+      names([repo('o/r', lanes({}, wide))], [{ commit: MAIN, lane: narrow, repository: 'o/r' }]),
+    ).toEqual(['o/r@a hugi / test (2, 1)']);
+  });
+});
+
+describe('one commit in two snapshots', () => {
+  test('a pull request whose head is the default branch head adds nothing; the push candidate wins', () => {
+    const queue = deriveQueue([
+      repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, lanes({}, PLATFORM), MAIN)),
+    ]);
+    expect(queue.candidates).toHaveLength(1);
+    expect(queue.candidates[0]!.event).toEqual({ branch: 'main', kind: 'push' });
+  });
+
+  test('one branch opened as two pull requests queues each lane once, for the lower number', () => {
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 9, lanes()), pull('o/r', 4, lanes())),
+    ]);
+    expect(names([repo('o/r', NOTHING, pull('o/r', 9, lanes()), pull('o/r', 4, lanes()))])).toEqual(
+      ['o/r@b hugi / platform', 'o/r@b hugi / test (macos-latest)'],
+    );
+    expect(
+      queue.candidates.map((candidate) =>
+        candidate.event.kind === 'pull_request' ? candidate.event.pullRequest.number : 0,
+      ),
+    ).toEqual([4, 4]);
+  });
+
+  test('a refused declaration on a shared head is reported once', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 4, refused), pull('o/r', 9, refused)),
+    ]);
+    expect(queue.declarationReports).toEqual([
+      { cause: 'lanes[0]: bad', commit: HEAD, repository: 'o/r' },
+    ]);
+  });
+
+  test('the same commit in two repositories is two commits', () => {
+    expect(names([repo('o/r', lanes({}, PLATFORM)), repo('o/s', lanes({}, PLATFORM))])).toEqual([
+      'o/r@a hugi / platform',
+      'o/s@a hugi / platform',
+    ]);
+  });
+});
+
+test('a default branch head whose read failed is reported, and the pull requests still yield', () => {
+  const failed: CommitRead = { cause: 'git fetch failed', kind: 'failed', unexpected: true };
+  const queue = deriveQueue([repo('o/r', failed, pull('o/r', 4, lanes({}, PLATFORM)))]);
+  expect(queue.failures).toEqual([
+    { cause: 'git fetch failed', defaultBranch: 'main', repository: 'o/r', unexpected: true },
+  ]);
+  expect(queue.candidates.map((candidate) => candidate.commit)).toEqual([HEAD]);
 });
 
 test('a repository whose reads failed is reported, and the others still yield candidates', () => {
@@ -234,13 +299,17 @@ test('a pull request whose reads failed is reported by number, and its siblings 
   const snapshot: RepositorySnapshot = {
     defaultBranch: push('o/r', lanes({}, PLATFORM)),
     kind: 'read',
-    pullRequestFailures: [{ cause: 'GitHub answered 502', number: 4 }],
+    pullRequestFailures: [
+      { cause: 'GitHub answered 502', number: 4 },
+      { cause: 'boom', number: 6, unexpected: true },
+    ],
     pullRequests: [pull('o/r', 5, lanes({}, PLATFORM), 'c'.repeat(40))],
     repository: 'o/r',
   };
   const queue = deriveQueue([snapshot]);
   expect(queue.failures).toEqual([
     { cause: 'GitHub answered 502', pullRequest: 4, repository: 'o/r' },
+    { cause: 'boom', pullRequest: 6, repository: 'o/r', unexpected: true },
   ]);
   expect(queue.candidates.map((candidate) => candidate.commit[0])).toEqual(['a', 'c']);
 });

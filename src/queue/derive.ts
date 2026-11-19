@@ -1,6 +1,6 @@
 /**
  * Derive the run queue from one poll's snapshot (ADR-0005, "Where the outcome belongs"). Pure:
- * the queue depends only on what was read and on the run in flight, so a restart, which has
+ * the queue depends only on what was read and on the runs in flight, so a restart, which has
  * nothing in flight, derives the same queue again from GitHub's state.
  */
 import type { CommitStatusState } from '../github/client';
@@ -12,6 +12,8 @@ import type {
   CommitStatuses,
   DeclarationReport,
   Queue,
+  RepositoryFailure,
+  RepositorySnapshot,
   RunInFlight,
   Snapshot,
 } from './types';
@@ -34,12 +36,12 @@ function sameLane(left: LaneRef, right: LaneRef): boolean {
   );
 }
 
-function isInFlight(commit: CommitSnapshot, lane: LaneRef, inFlight: RunInFlight | undefined) {
-  return (
-    inFlight !== undefined &&
-    inFlight.repository === commit.repository &&
-    inFlight.commit === commit.commit &&
-    sameLane(inFlight.lane, lane)
+function isInFlight(commit: CommitSnapshot, lane: LaneRef, inFlight: readonly RunInFlight[]) {
+  return inFlight.some(
+    (run) =>
+      run.repository === commit.repository &&
+      run.commit === commit.commit &&
+      sameLane(run.lane, lane),
   );
 }
 
@@ -49,7 +51,7 @@ type CommitYield = {
   readonly declarationReports: DeclarationReport[];
 };
 
-function commitYield(commit: CommitSnapshot, inFlight: RunInFlight | undefined): CommitYield {
+function commitYield(commit: CommitSnapshot, inFlight: readonly RunInFlight[]): CommitYield {
   const result: CommitYield = { candidates: [], declarationReports: [] };
   const { read, repository } = commit;
   // A hugi status with a verdict settles every lane without one; verdicts already posted stand.
@@ -99,23 +101,61 @@ function numberOf(commit: CommitSnapshot): number {
 }
 
 /**
- * The queue a snapshot yields: each lane that runs for its commit's event and has no verdict
- * there, except the run in flight, plus each refused declaration to report and each repository
- * or pull request whose reads failed.
+ * The first of each group of values with the same key. Two snapshots can share a head commit, as
+ * one branch opened as two pull requests or a pull request whose head is the default branch head;
+ * its status is one, so it gets one candidate per lane and one declaration report, and the first
+ * in run order, a default branch's, wins.
  */
-export function deriveQueue(snapshot: Snapshot, inFlight?: RunInFlight): Queue {
+function firstByKey<Value>(values: readonly Value[], key: (value: Value) => string): Value[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const each = key(value);
+    if (seen.has(each)) {
+      return false;
+    }
+    seen.add(each);
+    return true;
+  });
+}
+
+/** The reads that failed in one repository's snapshot. */
+function failuresOf(repository: RepositorySnapshot): RepositoryFailure[] {
+  const failed = ({ cause, unexpected }: { cause: string; unexpected?: true }) => ({
+    cause,
+    repository: repository.repository,
+    ...(unexpected === undefined ? {} : { unexpected }),
+  });
+  if (repository.kind === 'failed') {
+    return [failed(repository)];
+  }
+  const { defaultBranch } = repository;
+  return [
+    ...(defaultBranch.read.kind === 'failed' && defaultBranch.event.kind === 'push'
+      ? [{ ...failed(defaultBranch.read), defaultBranch: defaultBranch.event.branch }]
+      : []),
+    ...repository.pullRequestFailures.map((failure) => ({
+      ...failed(failure),
+      pullRequest: failure.number,
+    })),
+  ];
+}
+
+/**
+ * The queue a snapshot yields: each lane that runs for its commit's event and has no verdict
+ * there, except the runs in flight, once per commit and status name, plus each refused
+ * declaration to report, once per commit, and each read that failed.
+ */
+export function deriveQueue(snapshot: Snapshot, inFlight: readonly RunInFlight[] = []): Queue {
   const yields = inRunOrder(snapshot).map((commit) => commitYield(commit, inFlight));
   return {
-    candidates: yields.flatMap((each) => each.candidates),
-    declarationReports: yields.flatMap((each) => each.declarationReports),
-    failures: snapshot.flatMap((repository) =>
-      repository.kind === 'failed'
-        ? [{ cause: repository.cause, repository: repository.repository }]
-        : repository.pullRequestFailures.map((failure) => ({
-            cause: failure.cause,
-            pullRequest: failure.number,
-            repository: repository.repository,
-          })),
+    candidates: firstByKey(
+      yields.flatMap((each) => each.candidates),
+      (candidate) => JSON.stringify([candidate.repository, candidate.commit, candidate.statusName]),
     ),
+    declarationReports: firstByKey(
+      yields.flatMap((each) => each.declarationReports),
+      (report) => JSON.stringify([report.repository, report.commit]),
+    ),
+    failures: snapshot.flatMap(failuresOf),
   };
 }
