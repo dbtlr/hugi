@@ -454,8 +454,8 @@ describe('a pull request', () => {
   test("superseded: only the new head's lanes are queued, and the old head's run in flight stays out", async () => {
     const oldHeadRun: RunInFlight = {
       commit: sha('3'),
-      lane: { job: 'platform', matrix: {}, workflow: '.github/workflows/ci.yml' },
       repository: 'o/r',
+      statusName: 'hugi / platform',
     };
     const { queue } = await poll(
       pullsWorld([{ author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 }]),

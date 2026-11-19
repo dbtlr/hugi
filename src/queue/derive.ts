@@ -4,8 +4,7 @@
  * nothing in flight, derives the same queue again from GitHub's state.
  */
 import type { CommitStatusState } from '../github/client';
-import { DECLARATION_STATUS, laneStatusName } from '../github/status-name';
-import type { LaneRef } from '../lane/step-plan';
+import { DECLARATION_STATUS, laneStatusName, statusNameKey } from '../github/status-name';
 import type {
   Candidate,
   CommitSnapshot,
@@ -21,28 +20,24 @@ import type {
 /** A status in one of these states carries a verdict; `pending` settles nothing. */
 const VERDICTS: ReadonlySet<CommitStatusState> = new Set(['success', 'failure', 'error']);
 
-function hasVerdict(statuses: CommitStatuses, name: string): boolean {
-  const state = statuses.get(name);
-  return state !== undefined && VERDICTS.has(state);
+/**
+ * The status names on a commit that carry a verdict, by `statusNameKey`, so a verdict posted in
+ * any case settles the name GitHub treats as the same context.
+ */
+function verdictsOf(statuses: CommitStatuses): ReadonlySet<string> {
+  const latest = new Map<string, CommitStatusState>();
+  for (const [name, state] of statuses) {
+    const key = statusNameKey(name);
+    if (!latest.has(key)) {
+      latest.set(key, state);
+    }
+  }
+  return new Set([...latest].flatMap(([key, state]) => (VERDICTS.has(state) ? [key] : [])));
 }
 
-/** Two lanes are one when their job ids and complete rows are equal; the workflow path is not part of it. */
-function sameLane(left: LaneRef, right: LaneRef): boolean {
-  const keys = Object.keys(left.matrix);
-  return (
-    left.job === right.job &&
-    keys.length === Object.keys(right.matrix).length &&
-    keys.every((key) => Object.hasOwn(right.matrix, key) && right.matrix[key] === left.matrix[key])
-  );
-}
-
-function isInFlight(commit: CommitSnapshot, lane: LaneRef, inFlight: readonly RunInFlight[]) {
-  return inFlight.some(
-    (run) =>
-      run.repository === commit.repository &&
-      run.commit === commit.commit &&
-      sameLane(run.lane, lane),
-  );
+/** The key that identifies one commit status: its repository, commit, and name. */
+function statusKey(repository: string, commit: string, statusName: string): string {
+  return JSON.stringify([repository, commit, statusNameKey(statusName)]);
 }
 
 /** What one commit adds to the queue. */
@@ -51,14 +46,15 @@ type CommitYield = {
   readonly declarationReports: DeclarationReport[];
 };
 
-function commitYield(commit: CommitSnapshot, inFlight: readonly RunInFlight[]): CommitYield {
+function commitYield(commit: CommitSnapshot, inFlight: ReadonlySet<string>): CommitYield {
   const result: CommitYield = { candidates: [], declarationReports: [] };
   const { read, repository } = commit;
+  if (read.kind !== 'refused' && read.kind !== 'lanes') {
+    return result;
+  }
   // A hugi status with a verdict settles every lane without one; verdicts already posted stand.
-  if (
-    (read.kind !== 'refused' && read.kind !== 'lanes') ||
-    hasVerdict(read.statuses, DECLARATION_STATUS)
-  ) {
+  const verdicts = verdictsOf(read.statuses);
+  if (verdicts.has(statusNameKey(DECLARATION_STATUS))) {
     return result;
   }
   if (read.kind === 'refused') {
@@ -70,8 +66,8 @@ function commitYield(commit: CommitSnapshot, inFlight: readonly RunInFlight[]): 
     const statusName = laneStatusName(lane);
     if (
       decision.kind === 'runs' &&
-      !hasVerdict(read.statuses, statusName) &&
-      !isInFlight(commit, lane, inFlight)
+      !verdicts.has(statusNameKey(statusName)) &&
+      !inFlight.has(statusKey(repository, commit.commit, statusName))
     ) {
       result.candidates.push({
         commit: commit.commit,
@@ -100,12 +96,7 @@ function numberOf(commit: CommitSnapshot): number {
   return commit.event.kind === 'pull_request' ? commit.event.pullRequest.number : 0;
 }
 
-/**
- * The first of each group of values with the same key. Two snapshots can share a head commit, as
- * one branch opened as two pull requests or a pull request whose head is the default branch head;
- * its status is one, so it gets one candidate per lane and one declaration report, and the first
- * in run order, a default branch's, wins.
- */
+/** The first of each group of values with the same key, in order. */
 function firstByKey<Value>(values: readonly Value[], key: (value: Value) => string): Value[] {
   const seen = new Set<string>();
   return values.filter((value) => {
@@ -142,20 +133,29 @@ function failuresOf(repository: RepositorySnapshot): RepositoryFailure[] {
 
 /**
  * The queue a snapshot yields: each lane that runs for its commit's event and has no verdict
- * there, except the runs in flight, once per commit and status name, plus each refused
- * declaration to report, once per commit, and each read that failed.
+ * there, except the runs in flight, plus each refused declaration to report, and each read that
+ * failed. A commit status is identified by its repository, commit, and name, compared ignoring
+ * case, so that is what settles, excludes, and deduplicates a lane, whatever its keys.
+ *
+ * Two snapshots can carry one commit: a pull request whose head is the default branch head, or
+ * one branch opened as two pull requests. The commit's statuses are one, so the first snapshot in
+ * run order, a default branch's, then the lowest pull request's, decides the commit wholly, its
+ * candidates and its declaration report alike, and the later ones add nothing (ADR-0005).
  */
 export function deriveQueue(snapshot: Snapshot, inFlight: readonly RunInFlight[] = []): Queue {
-  const yields = inRunOrder(snapshot).map((commit) => commitYield(commit, inFlight));
+  const running = new Set(
+    inFlight.map((run) => statusKey(run.repository, run.commit, run.statusName)),
+  );
+  const commits = firstByKey(inRunOrder(snapshot), (commit) =>
+    JSON.stringify([commit.repository, commit.commit]),
+  );
+  const yields = commits.map((commit) => commitYield(commit, running));
   return {
     candidates: firstByKey(
       yields.flatMap((each) => each.candidates),
-      (candidate) => JSON.stringify([candidate.repository, candidate.commit, candidate.statusName]),
+      (candidate) => statusKey(candidate.repository, candidate.commit, candidate.statusName),
     ),
-    declarationReports: firstByKey(
-      yields.flatMap((each) => each.declarationReports),
-      (report) => JSON.stringify([report.repository, report.commit]),
-    ),
+    declarationReports: yields.flatMap((each) => each.declarationReports),
     failures: snapshot.flatMap(failuresOf),
   };
 }

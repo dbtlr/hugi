@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { CommitStatusState } from '../github/client';
+import { laneStatusName } from '../github/status-name';
 import type { LaneRef } from '../lane/step-plan';
 import { deriveQueue } from './derive';
 import type { CommitRead, CommitSnapshot, RepositorySnapshot } from './types';
@@ -189,29 +190,64 @@ describe('ordering', () => {
 
 describe('the runs in flight', () => {
   test('is not queued, while its sibling lanes are', () => {
-    const inFlight = [{ commit: MAIN, lane: { ...PLATFORM }, repository: 'o/r' }];
+    const inFlight = [{ commit: MAIN, repository: 'o/r', statusName: 'hugi / platform' }];
     expect(names([repo('o/r', lanes({ 'hugi / platform': 'pending' }))], inFlight)).toEqual([
       'o/r@a hugi / test (macos-latest)',
     ]);
   });
 
-  test('is matched by its full identity: the same lane of another commit or repository is queued', () => {
-    const inFlight = [{ commit: MAIN, lane: TEST_MAC, repository: 'o/other' }];
-    expect(names([repo('o/r', lanes({}, TEST_MAC))], inFlight)).toEqual([
-      'o/r@a hugi / test (macos-latest)',
-    ]);
-    const otherRow = { ...TEST_MAC, matrix: { os: 'macos-15' } };
+  test('is matched by repository, commit, and status name: the same name elsewhere is queued', () => {
+    const name = 'hugi / test (macos-latest)';
     expect(
       names(
         [repo('o/r', lanes({}, TEST_MAC))],
-        [{ commit: MAIN, lane: otherRow, repository: 'o/r' }],
+        [{ commit: MAIN, repository: 'o/other', statusName: name }],
+      ),
+    ).toEqual(['o/r@a hugi / test (macos-latest)']);
+    expect(
+      names(
+        [repo('o/r', lanes({}, TEST_MAC))],
+        [{ commit: HEAD, repository: 'o/r', statusName: name }],
+      ),
+    ).toEqual(['o/r@a hugi / test (macos-latest)']);
+    expect(
+      names(
+        [repo('o/r', lanes({}, TEST_MAC))],
+        [{ commit: MAIN, repository: 'o/r', statusName: 'hugi / test (macos-15)' }],
       ),
     ).toEqual(['o/r@a hugi / test (macos-latest)']);
   });
 
+  test('of another lane with the same status name keeps this lane out, so one name never has two runs', () => {
+    // The run started from one event's declaration; the commit's other event declares the name
+    // with other keys, as a pull request whose head is the default branch head can.
+    const running = { ...TEST_MAC, matrix: { os: 'a, b' } };
+    const declared = { ...TEST_MAC, matrix: { os: 'a', xcode: 'b' } };
+    const inFlight = [{ commit: MAIN, repository: 'o/r', statusName: laneStatusName(running) }];
+    expect(names([repo('o/r', lanes({}, declared))], inFlight)).toEqual([]);
+  });
+
+  test('of a row whose value has another type but the same name keeps the lane out', () => {
+    const inFlight = [
+      {
+        commit: MAIN,
+        repository: 'o/r',
+        statusName: laneStatusName({ ...TEST_MAC, matrix: { n: '1' } }),
+      },
+    ];
+    expect(names([repo('o/r', lanes({}, { ...TEST_MAC, matrix: { n: 1 } }))], inFlight)).toEqual(
+      [],
+    );
+  });
+
+  test('is matched ignoring case', () => {
+    const inFlight = [{ commit: MAIN, repository: 'o/r', statusName: 'HUGI / Platform' }];
+    expect(names([repo('o/r', lanes({}, PLATFORM))], inFlight)).toEqual([]);
+  });
+
   test("of a superseded head stays out of the queue; the new head's lanes are queued", () => {
     const oldHead = 'f'.repeat(40);
-    const inFlight = [{ commit: oldHead, lane: PLATFORM, repository: 'o/r' }];
+    const inFlight = [{ commit: oldHead, repository: 'o/r', statusName: 'hugi / platform' }];
     const queue = deriveQueue(
       [repo('o/r', NOTHING, pull('o/r', 4, lanes({}, PLATFORM)))],
       inFlight,
@@ -221,18 +257,39 @@ describe('the runs in flight', () => {
 
   test('two runs in flight, as ADR-0003 allows, are each kept out of the queue', () => {
     const inFlight = [
-      { commit: MAIN, lane: PLATFORM, repository: 'o/r' },
-      { commit: MAIN, lane: TEST_MAC, repository: 'o/r' },
+      { commit: MAIN, repository: 'o/r', statusName: 'hugi / platform' },
+      { commit: MAIN, repository: 'o/r', statusName: 'hugi / test (macos-latest)' },
     ];
     expect(names([repo('o/r', lanes())], inFlight)).toEqual([]);
   });
+});
 
-  test('a run of a row with fewer keys does not hide a lane whose row extends it', () => {
-    const narrow = { ...TEST_MAC, matrix: { os: '1' } };
-    const wide = { ...TEST_MAC, matrix: { extra: '2', os: '1' } };
-    expect(
-      names([repo('o/r', lanes({}, wide))], [{ commit: MAIN, lane: narrow, repository: 'o/r' }]),
-    ).toEqual(['o/r@a hugi / test (2, 1)']);
+describe('status names compare ignoring case, as GitHub compares contexts', () => {
+  test('a verdict on a name in other case settles the lane', () => {
+    expect(names([repo('o/r', lanes({ 'HUGI / PLATFORM': 'success' }))])).toEqual([
+      'o/r@a hugi / test (macos-latest)',
+    ]);
+  });
+
+  test('a verdict on the declaration status in other case settles the commit', () => {
+    expect(names([repo('o/r', lanes({ HUGI: 'failure' }))])).toEqual([]);
+    const refused: CommitRead = {
+      cause: 'bad',
+      kind: 'refused',
+      statuses: statuses({ Hugi: 'error' }),
+    };
+    expect(deriveQueue([repo('o/r', refused)]).declarationReports).toEqual([]);
+  });
+
+  test('a pending status in other case settles nothing', () => {
+    expect(names([repo('o/r', lanes({ 'HUGI / PLATFORM': 'pending' }, PLATFORM))])).toEqual([
+      'o/r@a hugi / platform',
+    ]);
+  });
+
+  test('two lanes of one commit whose names differ only in case are queued once', () => {
+    const upper = { ...PLATFORM, job: 'PLATFORM' };
+    expect(names([repo('o/r', lanes({}, PLATFORM, upper))])).toEqual(['o/r@a hugi / platform']);
   });
 });
 
@@ -267,6 +324,40 @@ describe('one commit in two snapshots', () => {
     expect(queue.declarationReports).toEqual([
       { cause: 'lanes[0]: bad', commit: HEAD, repository: 'o/r' },
     ]);
+  });
+
+  test('a refused merge declaration on a pull request whose head is the default branch head adds nothing', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, refused, MAIN))]);
+    expect(queue.declarationReports).toEqual([]);
+    expect(
+      queue.candidates.map((candidate) => [candidate.statusName, candidate.event.kind]),
+    ).toEqual([['hugi / platform', 'push']]);
+  });
+
+  test('a refused push declaration decides the commit: one report, and no pull request candidates', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([repo('o/r', refused, pull('o/r', 4, lanes({}, PLATFORM), MAIN))]);
+    expect(queue.declarationReports).toEqual([
+      { cause: 'lanes[0]: bad', commit: MAIN, repository: 'o/r' },
+    ]);
+    expect(queue.candidates).toEqual([]);
+  });
+
+  test('a pull request whose head is the default branch head adds no lane the push leaves out', () => {
+    const snapshot = [
+      repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, lanes({}, PLATFORM, TEST_MAC), MAIN)),
+    ];
+    expect(names(snapshot)).toEqual(['o/r@a hugi / platform']);
+  });
+
+  test('of two pull requests sharing a head, the lower number decides it wholly', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 9, refused), pull('o/r', 4, lanes({}, PLATFORM))),
+    ]);
+    expect(queue.declarationReports).toEqual([]);
+    expect(queue.candidates.map((candidate) => candidate.statusName)).toEqual(['hugi / platform']);
   });
 
   test('the same commit in two repositories is two commits', () => {

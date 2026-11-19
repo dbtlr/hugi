@@ -76,13 +76,15 @@ export type Snapshot = readonly RepositorySnapshot[];
 
 /**
  * A run in flight, of the at most two ADR-0003 allows at once: never queued again and never
- * cancelled, even after its pull request moves.
+ * cancelled, even after its pull request moves. It is known by the status it posts, which is what
+ * GitHub identifies, so it keeps out every lane of its commit that would post under that name.
  */
 export type RunInFlight = {
   readonly repository: string;
   /** The commit its outcome belongs to. */
   readonly commit: string;
-  readonly lane: LaneRef;
+  /** The commit status its verdict is posted as, its candidate's `statusName`. */
+  readonly statusName: string;
 };
 
 /** A commit with one lane that lacks a verdict, ready to run. */
