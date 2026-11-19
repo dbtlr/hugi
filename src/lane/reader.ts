@@ -12,7 +12,8 @@ import { JobSkippedError, LaneReadError, LaneSelectionError, withContext } from 
 import { expand } from './expressions';
 import type { Context } from './expressions';
 import { checkJobKeys, checkStepKeys, checkStrategyKeys, rejectMergeKeys } from './keys';
-import { selectCombination } from './matrix';
+import { matrixRows, selectRow } from './matrix';
+import type { Combination } from './matrix';
 import { jobOf, loadWorkflow, mapping, scalar } from './parse';
 import {
   actionReference,
@@ -131,6 +132,39 @@ export function readLane(
   return readLaneFrom(workflow, lane, event, paths);
 }
 
+/** A job's matrix rows as `matrixRows` expands them, or why they cannot be expanded. */
+type ExpandedMatrix =
+  | { readonly rows: readonly Combination[] | undefined }
+  | { readonly failure: unknown };
+
+/** Each loaded job's expanded matrix, by its `strategy` mapping. */
+const expandedMatrices = new WeakMap<object, ExpandedMatrix>();
+
+/**
+ * The job's matrix rows, as `matrixRows` answers them, expanded at most once for each loaded
+ * workflow however many of the job's lanes are read or decided: a large matrix expanded again for
+ * each of its lanes costs their product. A loaded workflow is never changed, so its `strategy`
+ * mapping keys the expansion, and a matrix that cannot be expanded throws the same error each time.
+ */
+function jobMatrixRows(strategy: unknown): readonly Combination[] | undefined {
+  if (typeof strategy !== 'object' || strategy === null) {
+    return matrixRows(strategy);
+  }
+  let expanded = expandedMatrices.get(strategy);
+  if (expanded === undefined) {
+    try {
+      expanded = { rows: matrixRows(strategy) };
+    } catch (failure) {
+      expanded = { failure };
+    }
+    expandedMatrices.set(strategy, expanded);
+  }
+  if ('failure' in expanded) {
+    throw expanded.failure;
+  }
+  return expanded.rows;
+}
+
 /** A lane's job with what its `if:` reads: the upstream jobs it needs and the lane's values. */
 type SelectedJob = {
   readonly job: Record<string, unknown>;
@@ -159,7 +193,12 @@ function selectJob(
   }
   const needs = neededJobs(job.needs);
   refuseUnneededJobs(event, needs);
-  const values = laneValues(event, paths, selectCombination(job.strategy, lane.matrix), needs);
+  const values = laneValues(
+    event,
+    paths,
+    selectRow(jobMatrixRows(job.strategy), lane.matrix),
+    needs,
+  );
   return { job, needs, values };
 }
 

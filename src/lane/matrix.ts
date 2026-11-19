@@ -235,14 +235,6 @@ export function selectRow(
   return rows[0]!;
 }
 
-/** The job's matrix combination the lane selects; see `selectRow`. */
-export function selectCombination(
-  strategy: unknown,
-  selected: LaneRef['matrix'],
-): Readonly<Record<string, Value>> {
-  return selectRow(matrixRows(strategy), selected);
-}
-
 /** Why a `key=value` matrix entry list is refused; each reader words it for its own audience. */
 export type MatrixEntryProblem =
   | { readonly kind: 'not-key-value'; readonly entry: string }

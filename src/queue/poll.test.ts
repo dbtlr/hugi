@@ -8,7 +8,10 @@ import { stringify } from 'yaml';
 import { createGitHubReader } from '../github/client';
 import type { CommitStatusState, GitHubReader } from '../github/client';
 import type { Fetch, PullRequestFacts } from '../github/pull-request';
-// The spies need the modules' namespaces to count how often a workflow is parsed and triggered.
+// The spies need the modules' namespaces to count how often a workflow is parsed, triggered, and
+// its matrices expanded.
+// eslint-disable-next-line import/no-namespace
+import * as laneMatrix from '../lane/matrix';
 // eslint-disable-next-line import/no-namespace
 import * as laneParse from '../lane/parse';
 import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
@@ -923,6 +926,13 @@ test('three admitted pull requests all yield candidates', async () => {
   ]);
 });
 
+/** A macOS job with one matrix row for each of `os`. */
+const matrixJob = (os: string[]) => ({
+  'runs-on': '${{ matrix.os }}',
+  steps: [{ run: 'true' }],
+  strategy: { matrix: { os } },
+});
+
 describe("a commit's reads", () => {
   test('read the changed files at most once, however many workflows filter by path', async () => {
     const { changed, queue } = await poll({
@@ -1009,4 +1019,66 @@ describe("a commit's reads", () => {
       expect(elapsed).toBeLessThan(500);
     },
   );
+
+  test('of a large matrix with 256 include entries and 256 declared lanes, take well under a second', async () => {
+    // Each include entry adds a large value to one row, so expanding the matrix costs every row
+    // against every entry; expanding it again for each lane took nearly two seconds.
+    const n = Array.from({ length: 256 }, (_, index) => index);
+    const include = n.map((index) => ({ n: index, pad: `${index} ${'x'.repeat(2400)}` }));
+    const large = stringify({
+      jobs: {
+        build: {
+          'runs-on': 'macos-latest',
+          steps: [{ run: 'echo ${{ matrix.n }}' }],
+          strategy: { matrix: { include, n } },
+        },
+      },
+      on: { pull_request: null, push: { branches: ['main'] } },
+    });
+    expect(large.length).toBeGreaterThan(600 * 1024);
+    const started = performance.now();
+    const { queue } = await poll({
+      commits: {
+        [sha('1')]: {
+          files: {
+            '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['build'], workflow: 'ci.yml' }] }),
+            '.github/workflows/ci.yml': large,
+          },
+        },
+      },
+      repos: [{ head: sha('1'), name: 'o/r' }],
+    });
+    const elapsed = performance.now() - started;
+    expect(queue.candidates).toHaveLength(256);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("expand each job's matrix once to decide its lanes, however many lanes it holds", async () => {
+    const workflow = stringify({
+      jobs: {
+        a: matrixJob(['macos-14', 'macos-15', 'macos-26']),
+        b: matrixJob(['macos-14', 'macos-15']),
+      },
+      on: { pull_request: null, push: { branches: ['main'] } },
+    });
+    const rows = spyOn(laneMatrix, 'matrixRows');
+    try {
+      const { queue } = await poll({
+        commits: {
+          [sha('1')]: {
+            files: {
+              '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['a', 'b'], workflow: 'ci.yml' }] }),
+              '.github/workflows/ci.yml': workflow,
+            },
+          },
+        },
+        repos: [{ head: sha('1'), name: 'o/r' }],
+      });
+      expect(queue.candidates).toHaveLength(5);
+      // Once in the declaration reader and once to decide the lanes, for each of the two jobs.
+      expect(rows).toHaveBeenCalledTimes(4);
+    } finally {
+      rows.mockRestore();
+    }
+  });
 });
