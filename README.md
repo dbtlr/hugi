@@ -16,7 +16,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 
 - **GitHub supplies commits and receives verdicts; it never schedules.** No run waits on a GitHub runner.
 - **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them.
-- **Nothing from a pull request touches the host.** Every run happens in a VM cloned for that run and deleted afterwards.
+- **Nothing from a pull request runs on the host.** The host reads a commit's files only as data. Every run happens in a VM cloned for that run and deleted afterwards.
 - **The repository says what to run; Hugi's configuration says who may run.** A repository lists its lanes in `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)). Enrolled repositories and allowlisted authors live outside the repositories.
 - **Verification only.** The VM holds no secret and publishes nothing.
 - **Reconcile from GitHub's state.** The queue is derived from the commits that lack a verdict, so a restart heals itself.

@@ -10,7 +10,9 @@ modified: 2026-11-19
 
 ## Context
 
-A lane's verdict must match GitHub's. For a `pull_request` event, GitHub does not run the pull request's head commit. It runs a merge of the head into the base branch, which it computes in the background and keeps at `refs/pull/<n>/merge`, and `actions/checkout` checks out that commit by default. The merge commit's first parent is the base branch's tip and its second parent is the head. GitHub runs no `pull_request` workflow while the pull request has a merge conflict, because there is then no merge commit. Every open pull request also has `refs/pull/<n>/head`, and both refs can be fetched anonymously over https from a public repository. Neither ref records the head or base branch's name; GitHub's API does.
+A lane's verdict must match GitHub's. For a `pull_request` event, GitHub does not run the pull request's head commit. It runs a merge of the head into the base branch, which it computes in the background and keeps at `refs/pull/<n>/merge`, and `actions/checkout` checks out that commit by default. The merge commit's first parent is the base branch's tip when GitHub computed it, and its second parent is the head. GitHub runs no `pull_request` workflow while the pull request has a merge conflict.
+
+Both `refs/pull/<n>/head` and `refs/pull/<n>/merge` can be fetched anonymously over https from a public repository, including for a pull request from a fork. The merge ref is not trustworthy on its own: GitHub leaves the last merge it computed in place after the pull request gains a conflict or is closed, so a stale merge ref can name the current head as its second parent. GitHub's API is the authority. Reading a single pull request returns its `state`, its `head.sha`, `head.ref`, and `base.ref`, its `mergeable` flag (`null` while GitHub computes it, `false` on a conflict), and its `merge_commit_sha`, which is `null` when there is no current merge; that read also starts the computation when it is stale. Neither ref records the head or base branch's name.
 
 The runner's view of a `pull_request` job:
 
@@ -25,15 +27,23 @@ Branch protection counts a required status on the pull request's head commit.
 
 ### The commit
 
-A pull-request run checks out GitHub's merge commit. Hugi learns the pull request's number, head commit, head branch, and base branch from GitHub's API. On the host, it fetches `refs/pull/<n>/head` and `refs/pull/<n>/merge` and uses the merge commit only when all of these hold:
+A pull-request run checks out GitHub's merge commit. When the run starts, Hugi reads the pull request from GitHub's single-pull-request endpoint and, on the host, fetches `refs/pull/<n>/head` and `refs/pull/<n>/merge` from the base repository. It uses the merge commit only when all of these hold:
 
-- `refs/pull/<n>/head` is the head commit the API reported;
-- the merge commit has exactly two parents;
-- its second parent is that head commit.
+1. the pull request's `state` is `open`;
+2. its `merge_commit_sha` is not `null`;
+3. `refs/pull/<n>/merge` is that `merge_commit_sha`;
+4. `refs/pull/<n>/head` is the pull request's `head.sha`;
+5. the merge commit has exactly two parents, and its second parent is `head.sha`.
 
-Otherwise the pull request is not ready to run, and Hugi gives no verdict. The reason is named: the merge ref is missing, because the pull request is closed or has a conflict, or GitHub has not yet computed the merge, or the merge or head ref no longer matches the head commit, because GitHub has not recomputed the merge since the last push or the pull request moved while Hugi read it. The coordinator considers the pull request again at its next poll; `hugi run` exits with no verdict.
+Otherwise the pull request has no current merge and does not run. Hugi names the first condition that failed: the pull request is closed (1); it has a merge conflict (2, with `mergeable` `false`); GitHub has not computed the merge for its head yet (2 with `mergeable` `null`, 3, or 5); or the pull request moved while Hugi read it (4). The coordinator considers the pull request again at its next poll. `hugi run` exits with no verdict, as it does for a commit it cannot fetch.
 
-The lane declaration and the workflow files are read at the merge commit, and the VM checks it out. The run's verdict belongs to the head commit, and its status is posted there.
+The merge is resolved when the run starts, not when the pull request is queued, so a queued run never checks out a merge its head has left behind. If the VM later cannot fetch the merge commit, the run has no verdict, and the coordinator resolves the merge again before it retries.
+
+The lane declaration and the workflow files are read at the merge commit, and the VM checks it out. A draft pull request runs like any other, as on GitHub.
+
+### Where the outcome belongs
+
+Every status Hugi posts for a pull request goes on its head commit, where branch protection reads it: each lane's verdict, and the declaration status when the declaration at the merge commit is refused. The head commit is also what the coordinator reconciles. A lane that already has a status on the head commit does not run again. A lane with no status there runs at the merge commit current when the run starts. A refused declaration's status on the head commit settles every lane of that head.
 
 ### The values the run sees
 
@@ -46,8 +56,8 @@ For a pull-request run, the `github.*` contexts and the environment of every ste
 | `GITHUB_REF` | `github.ref` | `refs/pull/<n>/merge` |
 | `GITHUB_REF_NAME` | `github.ref_name` | `<n>/merge` |
 | `GITHUB_REF_TYPE` | `github.ref_type` | `branch` |
-| `GITHUB_HEAD_REF` | `github.head_ref` | the head branch's name |
-| `GITHUB_BASE_REF` | `github.base_ref` | the base branch's name |
+| `GITHUB_HEAD_REF` | `github.head_ref` | the head branch's name, the API's `head.ref` (without the fork owner) |
+| `GITHUB_BASE_REF` | `github.base_ref` | the base branch's name, the API's `base.ref` |
 
 For a `push` run, `GITHUB_HEAD_REF`, `GITHUB_BASE_REF`, `github.head_ref`, and `github.base_ref` are empty strings, and the other values stay as they are. The event payload, `github.event.*` and `GITHUB_EVENT_PATH`, is still not supplied: a lane that reads it fails as before.
 
@@ -55,7 +65,7 @@ The event contract carries these facts. A `pull_request` event holds the pull re
 
 ### Running a pull request by hand
 
-`hugi run <owner/name> pull/<n> <lane>` runs a lane for pull request `<n>`. Hugi makes one anonymous call to GitHub's API for the pull request's head commit and branches, then resolves the merge commit as the coordinator does. A local repository has no pull requests and refuses `pull/<n>`. `--event pull_request` without `pull/<n>`, `--event push` with it, and `--ref-type` or `--ref-name` with it are usage errors, because none of them can describe a faithful pull-request run.
+`hugi run <owner/name> pull/<n> <lane>` runs a lane for pull request `<n>`. Hugi reads the pull request with one unauthenticated call to GitHub's API, then resolves the merge commit as the coordinator does. A pull request that does not exist, an API call that fails or is rate-limited, and a pull request with no current merge all exit with no verdict (exit code 3), as an unknown commit does. `<n>` is a positive decimal number, and for an `owner/name` repository `pull/<n>` always names the pull request, never a branch of that name; such a branch runs by its sha with `--ref-name`. A local repository has no pull requests and refuses `pull/<n>` with the same advice. `--event pull_request` without `pull/<n>`, `--event push` with it, and `--ref-type` or `--ref-name` with it are usage errors, because none of them can describe a faithful pull-request run.
 
 ## Considered options
 
@@ -66,7 +76,9 @@ The event contract carries these facts. A `pull_request` event holds the pull re
 ## Consequences
 
 - A pull-request run waits until GitHub has computed the merge for the latest push. The wait is usually seconds; the coordinator absorbs it by polling again.
-- A conflicting pull request has no run and no status, as on GitHub. After promotion its required status stays pending until the conflict is resolved, as a hosted check does.
-- The merge commit's base is the base branch's tip when Hugi reads the ref, which can be newer than the tip when GitHub ran its own workflow. A pull request runs once per head commit: a base branch that moves while the head stays put starts no new run, as on GitHub.
+- A conflicting or closed pull request has no run and no status, as on GitHub. After promotion a conflicting pull request's required status stays pending until the conflict is resolved, as a hosted check does.
+- The merge commit's base is the base branch's tip when GitHub last computed the merge, which can be newer than the tip when GitHub ran its own workflow. A lane runs once per head commit: a base branch that moves while the head stays put starts no new run of a lane that has a status, as on GitHub. A lane the base branch newly declares does run, against the newer merge, where GitHub would wait for the pull request's next event.
+- In shadow, Hugi's verdict and the hosted result for the same head commit can come from merges with different bases. A mismatch whose two merge commits differ is not evidence against Hugi until the hosted run's merge is compared; the shadow report records the merge commit each side tested.
+- A lane's status on a commit settles that lane for the commit, whichever event produced it. Two pull requests with the same head commit, or a pull request whose head is also a default-branch commit, share one status per lane, and the second is treated as decided. GitHub would run each event. This is a known gap: it needs a pull request opened from a commit that already has a verdict, which the enrolled repositories' branch workflow does not produce.
 - A branch that predates a repository's enrolment or promotion still runs the base branch's declaration and Hugi workflows, because both are part of the merge.
-- `hugi run` gains a small, unauthenticated GitHub API client. The coordinator reads the same facts from its pull-request listing.
+- `hugi run` gains a small, unauthenticated GitHub API client, subject to GitHub's anonymous rate limit of 60 requests an hour. The coordinator reads the same pull-request fields through its own credential.

@@ -17,7 +17,7 @@ The ordered steps of a lane, read from the workflow file at a commit.
 _Avoid_: Script, recipe
 
 **Run**:
-One execution of a lane at a commit, in its own VM.
+One execution of a lane at a commit, in its own VM. For a pull request, that commit is its merge commit.
 _Avoid_: Build, attempt
 
 **Merge commit**:
@@ -25,11 +25,11 @@ The merge of a pull request's head into its base branch that GitHub keeps at `re
 _Avoid_: Test merge, merge ref (when the commit is meant)
 
 **Verdict**:
-The pass or fail Hugi reports for a lane at a commit, with its logs. A lane that cannot be read, a lane whose tools cannot be resolved, a failing step, and a timeout are all fail verdicts. A run that Hugi interrupts, that fails to clone or boot its VM, that loses its VM mid-run, or that cannot fetch or read the source yields no verdict, because the failure lies outside the lane's steps. A lane selection that picks nothing to run, such as a missing job or a job whose `if:` is false for the event, is a usage error and yields no verdict either. In the coordinator, a missing job refuses the lane declaration, and a job whose trigger or `if:` leaves it out for the event has no run and no status.
+The pass or fail Hugi reports for a lane at a commit, with its logs. A pull request's verdict is reported on its head commit, though its run tested the merge commit. A lane that cannot be read, a lane whose tools cannot be resolved, a failing step, and a timeout are all fail verdicts. A run that Hugi interrupts, that fails to clone or boot its VM, that loses its VM mid-run, or that cannot fetch or read the source yields no verdict, because the failure lies outside the lane's steps. So does a pull request with no current merge commit: one that is closed, has a conflict, or whose merge GitHub has not yet computed for its head. A lane selection that picks nothing to run, such as a missing job or a job whose `if:` is false for the event, is a usage error and yields no verdict either. In the coordinator, a missing job refuses the lane declaration, and a job whose trigger or `if:` leaves it out for the event has no run and no status.
 _Avoid_: Result, status (except for the GitHub commit status that carries a verdict, or the declaration status that reports a refused lane declaration)
 
 **Hosted result**:
-The outcome of the same lane at the same commit on GitHub's hosted runners, which shadow compares verdicts against.
+The outcome of the same lane at the same commit on GitHub's hosted runners, which shadow compares verdicts against. For a pull request, both are reported on the head commit, but the hosted run may have tested an older merge commit than Hugi's run.
 _Avoid_: Hosted verdict
 
 **Hugi workflow**:
