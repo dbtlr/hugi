@@ -265,6 +265,28 @@ describe('a failed read is one error naming the repository and endpoint', () => 
     );
   });
 
+  test.each([
+    [403, { 'retry-after': '60', 'x-ratelimit-remaining': '4999' }],
+    [403, { 'retry-after': '60' }],
+    [429, { 'retry-after': '60', 'x-ratelimit-remaining': '4999' }],
+  ])('a secondary rate limit (%i with retry-after, %o), named as one', async (status, headers) => {
+    const failure = await failing({ body: '{}', headers, status });
+    expect(failure.message).toBe(
+      `GitHub's secondary rate limit refused Hugi's GitHub installation token (status ${status}, retry after 60 s) at ${endpoint}; the repository is read again at a later poll.`,
+    );
+  });
+
+  test('a secondary rate limit whose retry-after is not a number of seconds omits the wait', async () => {
+    const failure = await failing({
+      body: '{}',
+      headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' },
+      status: 403,
+    });
+    expect(failure.message).toBe(
+      `GitHub's secondary rate limit refused Hugi's GitHub installation token (status 403) at ${endpoint}; the repository is read again at a later poll.`,
+    );
+  });
+
   test('a 403 with requests left is not a rate limit', async () => {
     const failure = await failing({
       body: '{}',

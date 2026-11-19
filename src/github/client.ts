@@ -16,7 +16,9 @@ export type TokenProvider = () => Promise<string>;
 
 /**
  * A read from GitHub's API failed. The poller skips what was being read for this poll: the
- * repository for a repository-level read, only the pull request for a read of one pull request.
+ * repository for a repository-level read (the repository, its default branch, or its open pull
+ * requests), only the default branch head for a read of that head's statuses, and only the pull
+ * request for a read of one pull request or its head's statuses.
  */
 export class GitHubReadError extends Error {
   override readonly name = 'GitHubReadError';
@@ -160,12 +162,22 @@ class Endpoint {
     return token;
   }
 
+  /**
+   * The error for an answer that is not 2xx. A 403 or 429 is a rate limit when the token's
+   * requests are used up, or when GitHub's secondary rate limit, which applies while requests
+   * remain, asks the client to wait with `retry-after`.
+   */
   #statusFailure(response: Response): GitHubReadError {
     const { status } = response;
-    if (
-      status === 429 ||
-      (status === 403 && response.headers.get('x-ratelimit-remaining') === '0')
-    ) {
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    const retryAfter = response.headers.get('retry-after');
+    if ((status === 403 || status === 429) && retryAfter !== null && remaining !== '0') {
+      const wait = /^\d+$/u.test(retryAfter) ? `, retry after ${retryAfter} s` : '';
+      return this.fail(
+        `GitHub's secondary rate limit refused Hugi's GitHub installation token (status ${status}${wait}) at ${this.#name}; the repository is read again at a later poll.`,
+      );
+    }
+    if (status === 429 || (status === 403 && remaining === '0')) {
       return this.fail(
         `The rate limit of Hugi's GitHub installation token is used up (status ${status}) at ${this.#name}; the repository is read again at a later poll.`,
       );
