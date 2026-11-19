@@ -76,8 +76,8 @@ export type HostSource = {
    * The files the push or pull request changed, for a workflow's path filters (ADR-0004): a
    * commit's files against its first parent, every file of a root commit, and for a pull request
    * its head against the merge base of the head and the base tip. A failed read throws `SourceError`.
-   * A path that is not valid UTF-8 is decoded lossily, with replacement characters; filter
-   * patterns are UTF-8 text, so this cannot make a path filter match wrongly in practice.
+   * A path that is not valid UTF-8 is decoded lossily: invalid bytes become U+FFFD, so only a
+   * path filter pattern that itself contains U+FFFD can match differently from the raw bytes.
    */
   readonly changedFiles: () => Promise<readonly string[]>;
   /**
@@ -97,8 +97,9 @@ export type CommitMessageReader = {
   /**
    * The full message of commit `sha` as git stores it, every byte after the header kept. `sha`
    * must be a full sha the source holds, such as a pull request's checked head; otherwise it
-   * throws `SourceError`. A message that is not valid UTF-8 is decoded lossily, with replacement
-   * characters; skip instructions are ASCII, so this cannot make one match wrongly in practice.
+   * throws `SourceError`. A message that is not valid UTF-8 is decoded lossily: invalid bytes
+   * become U+FFFD, so only a skip instruction that itself contains U+FFFD could match differently
+   * from the raw bytes, and GitHub's skip instructions are ASCII.
    */
   readonly commitMessage: (sha: string) => Promise<string>;
 };
