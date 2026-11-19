@@ -54,8 +54,10 @@ export const MAX_CAUSE_LENGTH = 300;
 export const MAX_DECLARED_LANES = 256;
 
 /**
- * The first line of a failure's message. Parsers append the source excerpt after it, and the
- * declaration status is one line that never quotes repository text.
+ * The first line of a failure's message. Parsers append the source excerpt after it. A cause
+ * quotes no source excerpt and no filter pattern, but it can carry short repository values such
+ * as job ids, unknown keys and matrix values; every cause is one line bounded by
+ * `MAX_CAUSE_LENGTH`.
  */
 function oneLine(detail: unknown): string {
   return messageOf(detail).split('\n')[0]!.replace(/:$/u, '');
