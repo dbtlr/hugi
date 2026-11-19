@@ -970,6 +970,11 @@ describe('a workflow GitHub would reject is a fail verdict before the lane is re
     ],
     ['an on: that is not a trigger', { ...valid, on: false }, /invalid workflow: .*on/],
     [
+      'an on: push filter GitHub does not know',
+      { ...valid, on: { push: { branch: ['main'] } } },
+      /invalid workflow: on\.push has an unknown filter key "branch"/,
+    ],
+    [
       'a sibling job with neither runs-on nor uses',
       { ...valid, jobs: { broken: { name: 'Broken' }, build } },
       /invalid workflow: .*job "broken".*runs-on or uses/,

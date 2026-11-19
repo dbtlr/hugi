@@ -44,6 +44,11 @@ function workflow(jobs: Record<string, Record<string, unknown>>): string {
 
 const CI = '.github/workflows/ci.yml';
 
+/** A workflow with one macOS job `a` under the given `on:` block. */
+function withOn(on: unknown): string {
+  return stringify({ jobs: { a: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } }, on });
+}
+
 /** A workflow whose job `a` has one matrix axis, `v`, holding the one value. */
 function oneRow(value: unknown): string {
   return workflow({ a: { strategy: { matrix: { v: [value] } } } });
@@ -344,6 +349,50 @@ describe('workflows and jobs', () => {
         [CI]: 'jobs:\n  a: {runs-on: macos-latest, steps: []}\n',
       }),
     ).toMatch(/lanes\[0\] job "a".*invalid workflow: the workflow has no on: trigger/);
+  });
+
+  describe('a workflow whose on: GitHub would refuse is refused', () => {
+    const DECLARATION = 'lanes:\n  - workflow: ci.yml\n    jobs: [a]\n';
+
+    test.each([
+      ['only negative branches', { push: { branches: ['!main'] } }, /on\.push\.branches needs/],
+      [
+        'an unknown filter key',
+        { pull_request: { branch: ['main'] } },
+        /on\.pull_request .*"branch"/,
+      ],
+      [
+        'branches beside branches-ignore',
+        { pull_request: null, push: { branches: ['a'], 'branches-ignore': ['b'] } },
+        /on\.push cannot have both branches and branches-ignore/,
+      ],
+      ['an empty on: list', [], /on: a list/],
+    ])('%s', async (_name, on, problem) => {
+      const cause = await refusalOf(DECLARATION, { [CI]: withOn(on) });
+      expect(cause).toMatch(
+        /^lanes\[0\] job "a" in \.github\/workflows\/ci\.yml: invalid workflow: /,
+      );
+      expect(cause).toMatch(problem);
+    });
+
+    test('an unparsable pattern is named by position, not quoted', async () => {
+      const pattern = 'docs/[secret-z-a]';
+      const cause = await refusalOf(DECLARATION, {
+        [CI]: withOn({ push: { paths: ['src/**', pattern] } }),
+      });
+      expect(cause).toMatch(
+        /ci\.yml: invalid workflow: on\.push\.paths\[1\] is not a valid pattern/,
+      );
+      expect(cause).not.toContain(pattern);
+    });
+
+    test('an unknown filter key with a line break stays one line', async () => {
+      const cause = await refusalOf(DECLARATION, {
+        [CI]: withOn({ push: { 'bad\nkey': ['main'] } }),
+      });
+      expect(cause).not.toContain('\n');
+      expect(cause).toMatch(/on\.push has an unknown filter key/);
+    });
   });
 
   test('a missing job is refused', async () => {

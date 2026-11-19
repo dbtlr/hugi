@@ -3,6 +3,7 @@
  * so without these a workflow GitHub refuses as invalid would still run, and pass, here. Each
  * check throws a plain error; the reader reports it as a `LaneReadError`, a fail verdict.
  */
+import { TriggerError, validateTriggers } from '../trigger';
 import { mapping, scalar } from './parse';
 
 /** The top-level keys GitHub accepts in a workflow file. */
@@ -60,23 +61,18 @@ export function neededJobs(value: unknown): string[] {
   return (Array.isArray(value) ? value : [value]).map((job) => scalar(job, 'needs'));
 }
 
-/** `on:` names an event, a list of events, or a mapping of events to their filters. */
-function isTrigger(on: unknown): boolean {
-  if (typeof on === 'string') {
-    return on !== '';
-  }
-  if (Array.isArray(on)) {
-    return on.length > 0 && on.every((event) => typeof event === 'string' && event !== '');
-  }
-  return typeof on === 'object' && on !== null && Object.keys(on).length > 0;
-}
-
 function checkTopLevel(workflow: Record<string, unknown>) {
   if (!Object.hasOwn(workflow, 'on')) {
     throw invalid('the workflow has no on: trigger');
   }
-  if (!isTrigger(workflow.on)) {
-    throw invalid('on: must name an event, a list of events, or a mapping of events');
+  // The trigger module owns the shape of `on:`, including its push and pull_request filters.
+  try {
+    validateTriggers(workflow.on);
+  } catch (error) {
+    if (error instanceof TriggerError) {
+      throw invalid(error.message);
+    }
+    throw error;
   }
   const unknown = Object.keys(workflow).filter((key) => !WORKFLOW_KEYS.has(key));
   if (unknown.length > 0) {

@@ -52,7 +52,7 @@ A lane's identity is its job id with its complete expanded row: every matrix key
 Hugi refuses the whole declaration when:
 
 - the file does not follow the schema above: a wrong type, an unknown key, an empty list, a duplicate job id in an entry, a path that is not canonical or not in one of the two directories, or a YAML merge or duplicate key;
-- a named workflow file does not exist at the commit, or the lane reader rejects it as a workflow;
+- a named workflow file does not exist at the commit, or the lane reader rejects it as a workflow, including when GitHub would refuse its `on:` block: its `push` and `pull_request` entries are checked whatever the event, so an unknown filter key, a pattern that does not parse, or a `branches` list of only `!` patterns refuses the declaration;
 - a listed job does not exist, or declares `needs`;
 - a job's matrix cannot be expanded when the file is read, for example because it is built by an expression;
 - a filter key appears in no row of a job, or a filter selects no row of a job;
@@ -70,7 +70,7 @@ Hugi considers commits on the enrolled repository's default branch, as `push` ev
 
 A poller sees a pull request's state, not its activity, so the head commit of an open pull request counts as GitHub's default activity types `opened`, `synchronize`, and `reopened`. A `pull_request` entry with no `types`, or with a `types` list that includes any of those three, starts the workflow. An entry whose `types` lists none of them, such as only `labeled`, `ready_for_review`, or `closed`, never starts it under Hugi, so a lane triggered only by those types never runs, where GitHub would run it at that activity.
 
-For a push to the default branch, path filters compare the commit with its first parent. GitHub compares a push with the commit the branch pointed at before it. The two agree for a single commit or a merge, but a direct push of several commits can touch files in an earlier commit that the first-parent diff of the last commit does not show, so Hugi could skip a path-filtered lane that GitHub would run.
+For a push to the default branch, path filters compare the commit with its first parent. GitHub compares a push with the commit the branch pointed at before it, a two-dot diff of the push's before and after. The two agree for a single commit or a merge commit. They differ when one push moves the branch by several commits, as a rebase-merge of a multi-commit pull request or any fast-forward of several commits does: an earlier commit can touch files that the first-parent diff of the last commit does not show, so Hugi could skip a path-filtered lane that GitHub would run.
 
 ### No needs
 
