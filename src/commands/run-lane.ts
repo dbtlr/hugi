@@ -92,6 +92,8 @@ export type LaneReport = {
   readonly toolchain?: ToolchainResolution;
   readonly logDir?: string;
   readonly timings?: RunResult['timings'];
+  /** The VM teardown could not delete: an operator has to run `tart delete` on it. */
+  readonly leakedVm?: string;
 };
 
 /** 0 pass, 1 fail, 3 no verdict; Loom's usage errors keep 2. */
@@ -408,6 +410,7 @@ async function runInGuest(
     toolchain,
     verdict: result.verdict,
     ...(result.detail === undefined ? {} : { detail: result.detail }),
+    ...(result.leakedVm === undefined ? {} : { leakedVm: result.leakedVm }),
     logDir,
   };
 }

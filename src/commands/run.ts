@@ -82,7 +82,7 @@ function renderStep(step: ReportStep): string {
   return `${step.outcome.padEnd(8)} ${step.seconds.toFixed(1).padStart(7)}s  ${step.name}${note}${log}`;
 }
 
-/** One line per step, the toolchain notes, then the verdict, its reason, and where the logs are. */
+/** One line per step, the toolchain notes, then the verdict, its reason, a leaked VM if any, and where the logs are. */
 export function renderReport(report: LaneReport): string {
   const lines = report.steps.map(renderStep);
   for (const note of report.toolchain?.notes ?? []) {
@@ -90,6 +90,9 @@ export function renderReport(report: LaneReport): string {
   }
   const reason = report.detail === undefined ? report.reason : `${report.reason}: ${report.detail}`;
   lines.push(`verdict: ${report.verdict} (${reason})`);
+  if (report.leakedVm !== undefined) {
+    lines.push(`leaked VM: ${report.leakedVm} (remove it with: tart delete ${report.leakedVm})`);
+  }
   if (report.logDir !== undefined) {
     lines.push(`logs: ${report.logDir}`);
   }

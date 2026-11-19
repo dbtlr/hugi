@@ -1,7 +1,9 @@
 /**
- * The one way the runner bounds a call in time. The job deadline waits for the work to wind down
- * after its signal aborts, since the work reports how it ended; a housekeeping call does not wait,
- * so a wedged guest agent or tart process that ignores its signal cannot hold a run open.
+ * The ways the runner bounds work in time. `withDeadline` bounds a call: the job deadline waits for
+ * the work to wind down after its signal aborts, since the work reports how it ended; a
+ * housekeeping call does not wait, so a wedged guest agent or tart process that ignores its signal
+ * cannot hold a run open. `resolvesWithin` bounds the wait for a promise that has no signal to
+ * abort, such as a process's exit.
  */
 import { messageOf } from '../errors';
 import type { Clock } from './tart';
@@ -70,5 +72,23 @@ export async function withDeadline<T>(
   } finally {
     timer.abort();
     parent?.removeEventListener('abort', abortCall);
+  }
+}
+
+/** What `settling` resolves to if it does so within `milliseconds` of the clock, otherwise undefined. */
+export async function resolvesWithin<T>(
+  clock: Clock,
+  settling: Promise<T>,
+  milliseconds: number,
+): Promise<T | undefined> {
+  const cancel = new AbortController();
+  const timeout = async (): Promise<undefined> => {
+    await clock.sleep(milliseconds, cancel.signal);
+    return undefined;
+  };
+  try {
+    return await Promise.race([settling, timeout()]);
+  } finally {
+    cancel.abort();
   }
 }

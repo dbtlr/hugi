@@ -397,6 +397,14 @@ test('the report carries the VM result for a failing and an infrastructure run',
   });
 });
 
+test('the report names a VM the run leaked, and omits the field otherwise', async () => {
+  const leaked: RunResult = { ...passed, leakedVm: 'hugi-run-abc' };
+  const { deps } = harness({ '.github/workflows/ci.yml': WORKFLOW }, leaked);
+  expect(await runLane(request, deps)).toMatchObject({ leakedVm: 'hugi-run-abc' });
+  const clean = harness({ '.github/workflows/ci.yml': WORKFLOW }, passed);
+  expect(await runLane(request, clean.deps)).not.toHaveProperty('leakedVm');
+});
+
 /** A source whose reads of `failing` throw `error`; other paths read from `files`. */
 function failingSource(files: Record<string, string>, failing: string, error: Error): HostSource {
   return {

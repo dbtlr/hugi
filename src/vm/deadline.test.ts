@@ -1,7 +1,7 @@
 /* oxlint-disable promise/avoid-new -- work that settles only on abort */
 import { describe, expect, test } from 'bun:test';
 
-import { withDeadline } from './deadline';
+import { resolvesWithin, withDeadline } from './deadline';
 import { FakeClock, settle } from './fake-tart';
 
 /** Work that settles only once its signal aborts, then returns `value`. */
@@ -77,4 +77,13 @@ test('a parent abort stays an interruption when the deadline passes while the wo
   await settle();
   unwinding.resolve('unwound');
   expect(await pending).toEqual({ ok: true, timedOut: false, value: 'unwound' });
+});
+
+test('resolvesWithin gives what the promise resolves to, or undefined once the time passes', async () => {
+  const clock = new FakeClock();
+  expect(await resolvesWithin(clock, Promise.resolve('up'), 1000)).toBe('up');
+  const pending = resolvesWithin(clock, wedged(), 1000);
+  await settle();
+  clock.advance(1000);
+  expect(await pending).toBeUndefined();
 });
