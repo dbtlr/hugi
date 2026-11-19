@@ -81,6 +81,15 @@ function commitYield(commit: CommitSnapshot, inFlight: ReadonlySet<string>): Com
   return result;
 }
 
+/**
+ * Whether the snapshot read its commit and so can decide it. A read that failed, or a pull
+ * request with no current merge, learned nothing about the commit, so it leaves the commit to the
+ * next snapshot that carries it.
+ */
+function decides(commit: CommitSnapshot): boolean {
+  return commit.read.kind !== 'failed' && commit.read.kind !== 'no-merge';
+}
+
 /** Every default branch head in configuration order, then every pull request by repository and number. */
 function inRunOrder(snapshot: Snapshot): CommitSnapshot[] {
   const read = snapshot.flatMap((repository) => (repository.kind === 'read' ? [repository] : []));
@@ -139,14 +148,16 @@ function failuresOf(repository: RepositorySnapshot): RepositoryFailure[] {
  *
  * Two snapshots can carry one commit: a pull request whose head is the default branch head, or
  * one branch opened as two pull requests. The commit's statuses are one, so the first snapshot in
- * run order, a default branch's, then the lowest pull request's, decides the commit wholly, its
- * candidates and its declaration report alike, and the later ones add nothing (ADR-0005).
+ * run order, a default branch's, then the lowest pull request's, that read the commit decides it
+ * wholly, its candidates and its declaration report alike, and the later ones add nothing
+ * (ADR-0005). A snapshot whose read failed or found no current merge read nothing, so it decides
+ * nothing: a conflicted pull request does not hold back another that shares its head.
  */
 export function deriveQueue(snapshot: Snapshot, inFlight: readonly RunInFlight[] = []): Queue {
   const running = new Set(
     inFlight.map((run) => statusKey(run.repository, run.commit, run.statusName)),
   );
-  const commits = firstByKey(inRunOrder(snapshot), (commit) =>
+  const commits = firstByKey(inRunOrder(snapshot).filter(decides), (commit) =>
     JSON.stringify([commit.repository, commit.commit]),
   );
   const yields = commits.map((commit) => commitYield(commit, running));

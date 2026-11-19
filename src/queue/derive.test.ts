@@ -387,6 +387,51 @@ describe('one commit in two snapshots', () => {
     expect(queue.candidates.map((candidate) => candidate.statusName)).toEqual(['hugi / platform']);
   });
 
+  test('a pull request with no current merge does not claim its head: a mergeable one sharing it decides', () => {
+    const noMerge: CommitRead = { cause: 'Pull request 1 has a merge conflict.', kind: 'no-merge' };
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 1, noMerge), pull('o/r', 2, lanes({}, PLATFORM))),
+    ]);
+    expect(
+      queue.candidates.map((candidate) =>
+        candidate.event.kind === 'pull_request' ? candidate.event.pullRequest.number : 0,
+      ),
+    ).toEqual([2]);
+  });
+
+  test('a default branch head whose read failed does not claim it: a pull request sharing it decides', () => {
+    const failed: CommitRead = { cause: 'git fetch failed', kind: 'failed' };
+    const queue = deriveQueue([repo('o/r', failed, pull('o/r', 4, lanes({}, PLATFORM), MAIN))]);
+    expect(queue.candidates.map((candidate) => [candidate.commit, candidate.event.kind])).toEqual([
+      [MAIN, 'pull_request'],
+    ]);
+  });
+
+  test('a failed pull request read does not claim its head: the next one sharing it decides wholly', () => {
+    const failed: CommitRead = { cause: 'boom', kind: 'failed', unexpected: true };
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([
+      repo(
+        'o/r',
+        NOTHING,
+        pull('o/r', 1, failed),
+        pull('o/r', 2, refused),
+        pull('o/r', 3, lanes({}, PLATFORM)),
+      ),
+    ]);
+    expect(queue.declarationReports).toEqual([
+      { cause: 'lanes[0]: bad', commit: HEAD, repository: 'o/r' },
+    ]);
+    expect(queue.candidates).toEqual([]);
+  });
+
+  test('a skipped read claims its commit', () => {
+    const queue = deriveQueue([
+      repo('o/r', { kind: 'skipped' }, pull('o/r', 4, lanes({}, PLATFORM), MAIN)),
+    ]);
+    expect(queue.candidates).toEqual([]);
+  });
+
   test('the same commit in two repositories is two commits', () => {
     expect(names([repo('o/r', lanes({}, PLATFORM)), repo('o/s', lanes({}, PLATFORM))])).toEqual([
       'o/r@a hugi / platform',
