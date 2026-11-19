@@ -506,7 +506,9 @@ describe('status names', () => {
       const cause = await refusalOf(
         'lanes:\n  - workflow: ci.yml\n    jobs: [build]\n  - workflow: .github/hugi/ci.yml\n    jobs: [build]\n',
         {
-          '.github/hugi/ci.yml': workflow({ build: { strategy: { matrix: { include: [promoted] } } } }),
+          '.github/hugi/ci.yml': workflow({
+            build: { strategy: { matrix: { include: [promoted] } } },
+          }),
           [CI]: workflow({ build: { strategy: { matrix: { include: [hosted] } } } }),
         },
       );
