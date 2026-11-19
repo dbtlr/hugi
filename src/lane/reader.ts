@@ -131,6 +131,61 @@ export function readLane(
   return readLaneFrom(workflow, lane, event, paths);
 }
 
+/** A lane's job with what its `if:` reads: the upstream jobs it needs and the lane's values. */
+type SelectedJob = {
+  readonly job: Record<string, unknown>;
+  readonly needs: readonly string[];
+  readonly values: LaneValues;
+};
+
+/**
+ * The checks a lane passes before its job's `if:` is decided, and the values the `if:` reads:
+ * the job's keys, its matrix row, and its upstream jobs. `readLaneFrom` and `jobSelects` share it,
+ * so they cannot disagree on which lanes reach the `if:`.
+ */
+function selectJob(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): SelectedJob {
+  const job = jobOf(workflow, lane.job);
+  checkJobKeys(job);
+  rejectMergeKeys(job, 'the job');
+  rejectMergeKeys(workflow.env, 'workflow env');
+  rejectMergeKeys(workflow.defaults, 'workflow defaults');
+  if (job.strategy !== undefined) {
+    checkStrategyKeys(mapping(job.strategy, 'strategy'));
+  }
+  const needs = neededJobs(job.needs);
+  refuseUnneededJobs(event, needs);
+  const values = laneValues(event, paths, selectCombination(job.strategy, lane.matrix), needs);
+  return { job, needs, values };
+}
+
+/**
+ * Whether the job's `if:` lets the lane run for the event, decided without building its step
+ * plan, so deciding many lanes of a large job costs little. It is false exactly when
+ * `readLaneFrom` would throw `JobSkippedError`. A lane the reader would reject for any other
+ * reason runs, so its run yields the fail verdict.
+ */
+export function jobSelects(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): boolean {
+  try {
+    const { job, needs, values } = selectJob(workflow, lane, event, paths);
+    requireJobRuns(job.if, values, needs, event);
+  } catch (error) {
+    // `readLaneFrom` keeps a skip's class through every layer of context, and makes any other
+    // failure a read error, so only a skip leaves the lane out.
+    return !(error instanceof JobSkippedError);
+  }
+  return true;
+}
+
 /**
  * `readLane` for a workflow already loaded with `loadWorkflow`, so a caller deciding many lanes of
  * one file parses and validates it once.
@@ -142,17 +197,7 @@ export function readLaneFrom(
   paths: RunnerPaths,
 ): StepPlan {
   try {
-    const job = jobOf(workflow, lane.job);
-    checkJobKeys(job);
-    rejectMergeKeys(job, 'the job');
-    rejectMergeKeys(workflow.env, 'workflow env');
-    rejectMergeKeys(workflow.defaults, 'workflow defaults');
-    if (job.strategy !== undefined) {
-      checkStrategyKeys(mapping(job.strategy, 'strategy'));
-    }
-    const needs = neededJobs(job.needs);
-    refuseUnneededJobs(event, needs);
-    const values = laneValues(event, paths, selectCombination(job.strategy, lane.matrix), needs);
+    const { job, needs, values } = selectJob(workflow, lane, event, paths);
     requireJobRuns(job.if, values, needs, event);
     const settings = jobSettingScope(values);
     runnerLabels(job['runs-on'], settings);

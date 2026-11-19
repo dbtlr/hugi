@@ -5,7 +5,15 @@ import { describe, expect, test } from 'bun:test';
 import { stringify } from 'yaml';
 
 import { messageOf } from '../errors';
-import { JobSkippedError, LaneReadError, LaneSelectionError, readLane } from './reader';
+import { loadWorkflow } from './parse';
+import {
+  JobSkippedError,
+  jobSelects,
+  LaneReadError,
+  LaneSelectionError,
+  readLane,
+  readLaneFrom,
+} from './reader';
 import type { EventContext, LaneRef } from './step-plan';
 
 const lane: LaneRef = { job: 'build', matrix: {}, workflow: '.github/workflows/ci.yml' };
@@ -1032,5 +1040,67 @@ describe('a workflow GitHub would reject is a fail verdict before the lane is re
 
   test('an invalid workflow wins over a missing job', () => {
     expect(rejection({ jobs: { other: build } })).toMatch(/invalid workflow/);
+  });
+});
+
+/** Whether `readLaneFrom` leaves the lane out: it throws `JobSkippedError` for that alone. */
+function readerSkips(text: string, selected: LaneRef, at: EventContext): boolean {
+  try {
+    readLaneFrom(loadWorkflow(text), selected, at, paths);
+  } catch (error) {
+    return error instanceof JobSkippedError;
+  }
+  return false;
+}
+
+describe("jobSelects decides a job's if: as readLaneFrom does", () => {
+  const row: LaneRef = { ...lane, matrix: { os: 'macos-latest' } };
+  const matrixJob = (condition: string | undefined) =>
+    workflow({
+      ...(condition === undefined ? {} : { if: condition }),
+      'runs-on': '${{ matrix.os }}',
+      strategy: { matrix: { os: ['ubuntu-latest', 'macos-latest'] } },
+    });
+
+  const cases: readonly (readonly [string, string, LaneRef])[] = [
+    ['no if:', workflow({}), lane],
+    ['a true if:', workflow({ if: 'true' }), lane],
+    ['a false if:', workflow({ if: 'false' }), lane],
+    ['an event test', workflow({ if: "github.event_name == 'push'" }), lane],
+    ['a ref test', workflow({ if: "github.ref == 'refs/heads/main'" }), lane],
+    ['a head_ref test', workflow({ if: "github.head_ref == 'feature'" }), lane],
+    ['always()', workflow({ if: 'always()' }), lane],
+    ['failure()', workflow({ if: 'failure()' }), lane],
+    ['an if: wrapped in ${{ }}', workflow({ if: "${{ github.event_name != 'push' }}" }), lane],
+    ['an if: reading matrix, which GitHub refuses', workflow({ if: "matrix.os == 'x'" }), lane],
+    ['an if: that does not parse', workflow({ if: "github.event_name == 'push" }), lane],
+    ['a false if: on a matrix row', matrixJob('false'), row],
+    ['a true if: on a matrix row', matrixJob(undefined), row],
+    ['a false if: on a row the matrix lacks', matrixJob('false'), { ...lane, matrix: { os: 'x' } }],
+    ['a false if: on a job with needs', workflow({ if: 'false', needs: 'changes' }), lane],
+    ['a needs result read by failure()', workflow({ if: 'failure()', needs: 'changes' }), lane],
+    [
+      'a false if: on a job with a key Hugi does not run',
+      workflow({ container: 'node', if: 'false' }),
+      lane,
+    ],
+    ['a false if: on a job whose steps are broken', workflow({ if: 'false', steps: 'x' }), lane],
+    ['a true if: on a job whose steps are broken', workflow({ if: 'true', steps: 'x' }), lane],
+    ['a missing job', 'on: push\njobs: {other: {runs-on: macos-latest, steps: []}}', lane],
+  ];
+
+  test.each(cases)('%s', (_name, text, selected) => {
+    for (const at of [event, PULL_REQUEST_EVENT]) {
+      expect(jobSelects(loadWorkflow(text), selected, at, paths)).toBe(
+        !readerSkips(text, selected, at),
+      );
+    }
+  });
+
+  test('the table holds both outcomes', () => {
+    const outcomes = cases.map(([, text, selected]) =>
+      jobSelects(loadWorkflow(text), selected, event, paths),
+    );
+    expect(new Set(outcomes)).toEqual(new Set([true, false]));
   });
 });

@@ -809,37 +809,49 @@ describe("a commit's reads", () => {
     }
   });
 
-  test('of a large workflow with many declared lanes take well under a second', async () => {
-    const rows = Array.from({ length: 256 }, (_, index) => index);
-    const padding = Array.from({ length: 2000 }, (_, index) => ({
-      name: `pad ${index}`,
-      run: `echo ${'x'.repeat(260)}`,
-    }));
-    const large = stringify({
-      jobs: {
-        build: {
-          'runs-on': 'macos-latest',
-          steps: [{ run: 'echo ${{ matrix.n }}' }],
-          strategy: { matrix: { n: rows } },
+  test.each([
+    ['in another job', false],
+    ['in the declared job itself', true],
+  ])(
+    'of a large workflow with 256 declared lanes, its bulk %s, take well under a second',
+    async (_label, inDeclaredJob) => {
+      const rows = Array.from({ length: 256 }, (_, index) => index);
+      // Steps whose plan is costly to build: each has an if: and expressions to expand, so
+      // building every lane's plan, rather than deciding its if: alone, takes about a second.
+      const padding = Array.from({ length: 2000 }, (_, index) => ({
+        env: { N: '${{ matrix.n }}' },
+        if: "github.event_name == 'push'",
+        name: `pad ${index} \${{ matrix.n }}`,
+        run: `echo \${{ matrix.n }} ${'x'.repeat(200)}`,
+      }));
+      const build = {
+        'runs-on': 'macos-latest',
+        steps: [{ run: 'echo ${{ matrix.n }}' }, ...(inDeclaredJob ? padding : [])],
+        strategy: { matrix: { n: rows } },
+      };
+      const large = stringify({
+        jobs: {
+          build,
+          ...(inDeclaredJob ? {} : { pad: { 'runs-on': 'ubuntu-latest', steps: padding } }),
         },
-        pad: { 'runs-on': 'ubuntu-latest', steps: padding },
-      },
-      on: { pull_request: null, push: { branches: ['main'] } },
-    });
-    expect(large.length).toBeGreaterThan(600 * 1024);
-    const started = performance.now();
-    const { queue } = await poll({
-      commits: {
-        [sha('1')]: {
-          files: {
-            '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['build'], workflow: 'ci.yml' }] }),
-            '.github/workflows/ci.yml': large,
+        on: { pull_request: null, push: { branches: ['main'] } },
+      });
+      expect(large.length).toBeGreaterThan(600 * 1024);
+      const started = performance.now();
+      const { queue } = await poll({
+        commits: {
+          [sha('1')]: {
+            files: {
+              '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['build'], workflow: 'ci.yml' }] }),
+              '.github/workflows/ci.yml': large,
+            },
           },
         },
-      },
-      repos: [{ head: sha('1'), name: 'o/r' }],
-    });
-    expect(queue.candidates).toHaveLength(256);
-    expect(performance.now() - started).toBeLessThan(1000);
-  });
+        repos: [{ head: sha('1'), name: 'o/r' }],
+      });
+      const elapsed = performance.now() - started;
+      expect(queue.candidates).toHaveLength(256);
+      expect(elapsed).toBeLessThan(500);
+    },
+  );
 });

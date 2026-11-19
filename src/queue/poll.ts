@@ -13,7 +13,7 @@ import type { BranchHead, GitHubReader, OpenPullRequest } from '../github/client
 import { pullRequestEvent, pullRequestRef } from '../github/pull-request';
 import type { PullRequestFacts } from '../github/pull-request';
 import { loadWorkflow } from '../lane/parse';
-import { JobSkippedError, LaneReadError, readLaneFrom } from '../lane/reader';
+import { jobSelects } from '../lane/reader';
 import type { EventContext, LaneRef } from '../lane/step-plan';
 import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
 import type { OpenedSource } from '../source/host-source';
@@ -121,33 +121,23 @@ function workflowsAt(files: CommitFiles, trigger: TriggerEvent) {
 
 /**
  * Whether the lane runs for the event: its workflow's `on:` must start it, then its job's `if:`
- * must hold. A lane the reader cannot otherwise read runs, so its run yields the fail verdict.
- * An accepted declaration's workflows already loaded and passed trigger validation, so a failure
- * to load a workflow or read its `on:` here breaches that invariant: it is an unexpected error,
+ * must hold. Only the `if:` is decided, not the lane's step plan, so a large job's many lanes stay
+ * cheap. A lane the reader cannot otherwise read runs, so its run yields the fail verdict. An
+ * accepted declaration's workflows already loaded and passed trigger validation, so a failure to
+ * load a workflow or read its `on:` here breaches that invariant: it is an unexpected error,
  * which skips the commit's pull request, or the default branch head, for this poll.
  */
-async function decideLane(
+function decideLane(
   lane: LaneRef,
   considered: ConsideredWorkflow,
   context: EventContext,
-): Promise<LaneDecision> {
+): LaneDecision {
   if (considered === null) {
     return { kind: 'runs', lane };
   }
-  if (!considered.starts) {
-    return { kind: 'left-out', lane };
-  }
-  try {
-    readLaneFrom(considered.workflow, lane, context, GUEST_RUNNER_PATHS);
-  } catch (error) {
-    if (error instanceof JobSkippedError) {
-      return { kind: 'left-out', lane };
-    }
-    if (!(error instanceof LaneReadError)) {
-      throw error;
-    }
-  }
-  return { kind: 'runs', lane };
+  const runs =
+    considered.starts && jobSelects(considered.workflow, lane, context, GUEST_RUNNER_PATHS);
+  return { kind: runs ? 'runs' : 'left-out', lane };
 }
 
 /** Read the declaration at the source, decide each lane, and read the statuses on `commit`. */
@@ -171,7 +161,7 @@ async function readCommit(
   const lanes: LaneDecision[] = [];
   for (const lane of declaration.lanes) {
     // oxlint-disable-next-line no-await-in-loop -- one lane at a time, in declaration order
-    lanes.push(await decideLane(lane, await workflowAt(lane.workflow), considered.context));
+    lanes.push(decideLane(lane, await workflowAt(lane.workflow), considered.context));
   }
   return { kind: 'lanes', lanes, statuses: await github.commitStatuses(repository, commit) };
 }
