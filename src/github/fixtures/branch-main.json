@@ -1,0 +1,19 @@
+{
+  "name": "main",
+  "commit": {
+    "sha": "1111111111111111111111111111111111111111",
+    "node_id": "C_kwDOMAinBdoAKDExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+    "commit": {
+      "author": { "name": "Ada", "email": "ada@example.invalid", "date": "2026-11-18T10:00:00Z" },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-11-18T10:00:00Z"
+      },
+      "message": "Merge pull request #41 from example/tidy\n\nTidy the build",
+      "tree": { "sha": "aaaa111111111111111111111111111111111111" }
+    },
+    "parents": [{ "sha": "0000000000000000000000000000000000000001" }]
+  },
+  "protected": true
+}

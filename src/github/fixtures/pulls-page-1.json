@@ -1,0 +1,40 @@
+[
+  {
+    "number": 44,
+    "state": "open",
+    "draft": false,
+    "title": "Add a cache",
+    "user": { "login": "Ada", "id": 2001, "type": "User" },
+    "head": {
+      "label": "example:cache",
+      "ref": "cache",
+      "sha": "4444444444444444444444444444444444444444",
+      "repo": { "full_name": "example/project" }
+    },
+    "base": {
+      "label": "example:main",
+      "ref": "main",
+      "sha": "1111111111111111111111111111111111111111",
+      "repo": { "full_name": "example/project" }
+    }
+  },
+  {
+    "number": 42,
+    "state": "open",
+    "draft": true,
+    "title": "Try a fork change",
+    "user": { "login": "mallory", "id": 2002, "type": "User" },
+    "head": {
+      "label": "mallory:main",
+      "ref": "main",
+      "sha": "4242424242424242424242424242424242424242",
+      "repo": { "full_name": "mallory/project" }
+    },
+    "base": {
+      "label": "example:main",
+      "ref": "main",
+      "sha": "1111111111111111111111111111111111111111",
+      "repo": { "full_name": "example/project" }
+    }
+  }
+]

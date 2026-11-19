@@ -1,0 +1,9 @@
+{
+  "id": 812345678,
+  "name": "project",
+  "full_name": "example/project",
+  "private": false,
+  "owner": { "login": "example", "id": 1001, "type": "Organization" },
+  "default_branch": "main",
+  "visibility": "public"
+}

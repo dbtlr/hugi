@@ -26,20 +26,22 @@ export type Fetch = (
 ) => Promise<Response>;
 
 /** How long a read waits for GitHub before it gives up, so a hung API cannot hold a run. */
-const READ_TIMEOUT_MS = 30_000;
+export const READ_TIMEOUT_MS = 30_000;
 
 /** GitHub could not tell Hugi about the pull request: it does not exist, or the read failed. */
 export class PullRequestReadError extends Error {
   override readonly name = 'PullRequestReadError';
 }
 
-const HEADERS = {
+/** The headers every GitHub API read sends; a credentialed read adds its token. */
+export const API_HEADERS = {
   Accept: 'application/vnd.github+json',
   'User-Agent': 'hugi',
   'X-GitHub-Api-Version': '2022-11-28',
 } as const;
 
-const FULL_SHA = /^[0-9a-f]{40}$/u;
+/** A full commit sha as GitHub's API writes it. */
+export const FULL_SHA = /^[0-9a-f]{40}$/u;
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -48,7 +50,7 @@ function isObject(value: unknown): value is Json {
 }
 
 /** The facts in `body`, or a description of the first field that is not what GitHub documents. */
-function factsOf(body: unknown, number: number): PullRequestFacts | string {
+export function factsOf(body: unknown, number: number): PullRequestFacts | string {
   if (!isObject(body) || !isObject(body.head) || !isObject(body.base)) {
     return 'it has no head or base';
   }
@@ -124,7 +126,7 @@ export async function readPullRequest(
   let response: Response;
   const signal = AbortSignal.timeout(timeoutMs);
   try {
-    response = await fetch(url, { headers: HEADERS, signal });
+    response = await fetch(url, { headers: API_HEADERS, signal });
   } catch (error) {
     throw new PullRequestReadError(
       signal.aborted
