@@ -736,6 +736,161 @@ describe('an error no read expects', () => {
   });
 });
 
+/** The commits whose candidates the queue holds, as `repository@sha-digit`. */
+const candidateCommits = (queue: Awaited<ReturnType<typeof poll>>['queue']) =>
+  new Set(named(queue).map((name) => name.split(' ')[0]));
+
+/** `value` passed off as whatever a dependency should return, as a broken dependency would. */
+function malformed(value: unknown, key = 'value') {
+  // A key typed as any string makes `Reflect.get` answer `any`, which no type check can refuse.
+  return Reflect.get({ value }, key);
+}
+
+/** The world's GitHub reader, with `defaultBranchHead` for `o/r` answering `head`. */
+function headOfOR(head: () => unknown) {
+  return (built: PollDeps): Partial<PollDeps> => ({
+    github: {
+      ...built.github,
+      defaultBranchHead: async (repository) =>
+        repository === 'o/r' ? malformed(head()) : built.github.defaultBranchHead(repository),
+    },
+  });
+}
+
+describe('a poll is total: a malformed value from a dependency fails only its scope', () => {
+  test.each([
+    ['null', () => null],
+    ['undefined', () => undefined],
+    [
+      'an object whose sha cannot be read',
+      () => ({
+        branch: 'main',
+        message: 'Tidy',
+        get sha(): string {
+          throw new Error('no sha');
+        },
+      }),
+    ],
+    [
+      'an object whose branch cannot be read',
+      () => ({
+        get branch(): string {
+          throw new Error('no branch');
+        },
+        message: 'Tidy',
+        sha: sha('1'),
+      }),
+    ],
+    ['an object whose sha is not text', () => ({ branch: 'main', message: 'Tidy', sha: 7 })],
+  ])('a default branch head that is %s fails its repository alone', async (_label, head) => {
+    const { queue, snapshot } = await poll(twoRepositories(), ['ada'], [], headOfOR(head));
+    expect(snapshot[0]).toMatchObject({ kind: 'failed', repository: 'o/r', unexpected: true });
+    expect(queue.failures).toEqual([
+      expect.objectContaining({ repository: 'o/r', unexpected: true }),
+    ]);
+    expect(candidateCommits(queue)).toEqual(new Set(['o/s@2']));
+  });
+
+  test('a listed pull request whose number cannot be read fails its repository alone', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        openPullRequests: async (repository) => {
+          const pulls = await built.github.openPullRequests(repository);
+          if (repository !== 'o/r') {
+            return pulls;
+          }
+          for (const pull of pulls.filter(({ number }) => number === 44)) {
+            Object.defineProperty(pull, 'number', {
+              get: () => {
+                throw new Error('no number');
+              },
+            });
+          }
+          return pulls;
+        },
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([{ cause: 'no number', repository: 'o/r', unexpected: true }]);
+    expect(candidateCommits(queue)).toEqual(new Set(['o/s@2']));
+  });
+
+  test.each([
+    ['null', () => null],
+    ['a plain object', () => ({ 'hugi / platform': 'success' })],
+    ['a map with a state GitHub never reports', () => new Map([['hugi / platform', 'done']])],
+    ['a map with a name that is not text', () => new Map([[7, 'success']])],
+  ])(
+    'commit statuses that are %s fail that commit alone, and the queue derives',
+    async (_label, statuses) => {
+      const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+        github: {
+          ...built.github,
+          commitStatuses: async (repository, commit) =>
+            commit === sha('1')
+              ? malformed(statuses())
+              : built.github.commitStatuses(repository, commit),
+        } satisfies GitHubReader,
+      }));
+      expect(queue.failures).toEqual([
+        expect.objectContaining({ defaultBranch: 'main', repository: 'o/r', unexpected: true }),
+      ]);
+      expect(candidateCommits(queue)).toEqual(new Set(['o/s@2', 'o/r@4', 'o/r@5']));
+    },
+  );
+
+  test("commit statuses that are null on a pull request's head fail that pull request alone", async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        commitStatuses: async (repository, commit) =>
+          commit === sha('4') ? malformed(null) : built.github.commitStatuses(repository, commit),
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([
+      expect.objectContaining({ pullRequest: 44, repository: 'o/r', unexpected: true }),
+    ]);
+    expect(candidateCommits(queue)).toEqual(new Set(['o/r@1', 'o/s@2', 'o/r@5']));
+  });
+});
+
+describe('a commit shared by two snapshots', () => {
+  test('a conflicted pull request does not hold back a mergeable one with the same head', async () => {
+    const { queue } = await poll(
+      pullsWorld([
+        { author: 'ada', head: sha('4'), merge: 'conflict', number: 1 },
+        { author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 2 },
+      ]),
+    );
+    expect(queue.candidates.length).toBeGreaterThan(0);
+    expect(
+      new Set(
+        queue.candidates.map((candidate) =>
+          candidate.event.kind === 'pull_request' ? candidate.event.pullRequest.number : 0,
+        ),
+      ),
+    ).toEqual(new Set([2]));
+  });
+
+  test('a default branch head whose read failed leaves its commit to a pull request with that head', async () => {
+    const { queue } = await poll({
+      commits: { [sha('8')]: { changed: ['docs/index.md'], files: DECLARED } },
+      repos: [
+        {
+          head: sha('4'),
+          name: 'o/r',
+          pulls: [{ author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 }],
+        },
+      ],
+    });
+    expect(queue.failures).toEqual([expect.objectContaining({ defaultBranch: 'main' })]);
+    expect(queue.candidates.length).toBeGreaterThan(0);
+    expect(queue.candidates.every((candidate) => candidate.event.kind === 'pull_request')).toBe(
+      true,
+    );
+  });
+});
+
 test('a declared workflow path that is a directory refuses the declaration and polls on', async () => {
   const { queue } = await poll({
     commits: {

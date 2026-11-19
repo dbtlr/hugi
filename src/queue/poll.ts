@@ -9,7 +9,12 @@ import { readDeclaration } from '../declaration/read';
 import type { CommitFiles } from '../declaration/read';
 import { messageOf } from '../errors';
 import { GitHubReadError } from '../github/client';
-import type { BranchHead, GitHubReader, OpenPullRequest } from '../github/client';
+import type {
+  BranchHead,
+  CommitStatusState,
+  GitHubReader,
+  OpenPullRequest,
+} from '../github/client';
 import { pullRequestEvent, pullRequestRef } from '../github/pull-request';
 import type { PullRequestFacts } from '../github/pull-request';
 import { loadWorkflow } from '../lane/parse';
@@ -23,6 +28,7 @@ import { GUEST_RUNNER_PATHS } from '../vm';
 import type {
   CommitRead,
   CommitSnapshot,
+  CommitStatuses,
   LaneDecision,
   PullRequestReadFailure,
   ReadFailure,
@@ -140,6 +146,42 @@ function decideLane(
   return { kind: runs ? 'runs' : 'left-out', lane };
 }
 
+const STATUS_STATES: ReadonlySet<unknown> = new Set<CommitStatusState>([
+  'success',
+  'failure',
+  'error',
+  'pending',
+]);
+
+function isStatusState(value: unknown): value is CommitStatusState {
+  return STATUS_STATES.has(value);
+}
+
+/**
+ * The statuses on `commit`, checked to be a map of context names to states and copied, so the
+ * queue derived from them reads only plain, well-formed values. Anything else is the commit's
+ * failed read, marked unexpected.
+ */
+async function readStatuses(
+  github: GitHubReader,
+  repository: string,
+  commit: string,
+): Promise<CommitStatuses> {
+  const read: unknown = await github.commitStatuses(repository, commit);
+  if (!(read instanceof Map)) {
+    throw new Error('the commit statuses were not read as a map');
+  }
+  const entries: Iterable<readonly [unknown, unknown]> = read;
+  const statuses = new Map<string, CommitStatusState>();
+  for (const [name, state] of entries) {
+    if (typeof name !== 'string' || !isStatusState(state)) {
+      throw new Error('the commit statuses hold an entry that is not a context name and a state');
+    }
+    statuses.set(name, state);
+  }
+  return statuses;
+}
+
 /** Read the declaration at the source, decide each lane, and read the statuses on `commit`. */
 async function readCommit(
   github: GitHubReader,
@@ -154,7 +196,7 @@ async function readCommit(
     return { kind: 'no-declaration' };
   }
   if (declaration.kind === 'refused') {
-    const statuses = await github.commitStatuses(repository, commit);
+    const statuses = await readStatuses(github, repository, commit);
     return { cause: declaration.cause, kind: 'refused', statuses };
   }
   const workflowAt = workflowsAt(files, considered.trigger);
@@ -163,7 +205,7 @@ async function readCommit(
     // oxlint-disable-next-line no-await-in-loop -- one lane at a time, in declaration order
     lanes.push(decideLane(lane, await workflowAt(lane.workflow), considered.context));
   }
-  return { kind: 'lanes', lanes, statuses: await github.commitStatuses(repository, commit) };
+  return { kind: 'lanes', lanes, statuses: await readStatuses(github, repository, commit) };
 }
 
 /** A failed GitHub or git read, which skips what was being read for this poll. */
@@ -185,18 +227,39 @@ function failureOf(error: unknown): ReadFailure {
   return expected ? { cause: messageOf(error) } : { cause: messageOf(error), unexpected: true };
 }
 
+/** The default branch head's branch and sha, read and checked before anything can fail on them. */
+type HeadAt = { readonly branch: string; readonly sha: string };
+
+/**
+ * The default branch head's branch and sha, checked to be text. A head that is not an object, or
+ * whose branch or sha is not text or cannot be read, throws, which fails the repository's read.
+ */
+function headAt(head: unknown): HeadAt {
+  if (typeof head !== 'object' || head === null) {
+    throw new Error('the default branch head was not read as an object');
+  }
+  const branch: unknown = Reflect.get(head, 'branch');
+  const sha: unknown = Reflect.get(head, 'sha');
+  if (typeof branch !== 'string' || typeof sha !== 'string') {
+    throw new Error("the default branch head's branch or sha is not text");
+  }
+  return { branch, sha };
+}
+
 /**
  * The default branch head, as a `push` of that branch. Any failure to decide it, from its skip
- * instruction to its source, is its `failed` read, so the repository's pull requests are still read.
+ * instruction to its source, is its `failed` read, so the repository's pull requests are still
+ * read. `at` was read before, so recording a failure reads nothing that can fail.
  */
 async function readPush(
   deps: PollDeps,
   repository: string,
+  at: HeadAt,
   head: BranchHead,
 ): Promise<CommitSnapshot> {
   const snapshot = (read: CommitRead): CommitSnapshot => ({
-    commit: head.sha,
-    event: { branch: head.branch, kind: 'push' },
+    commit: at.sha,
+    event: { branch: at.branch, kind: 'push' },
     read,
     repository,
   });
@@ -204,14 +267,14 @@ async function readPush(
     if (skipsWorkflows(head.message)) {
       return snapshot({ kind: 'skipped' });
     }
-    return snapshot(await readPushAt(deps, repository, head));
+    return snapshot(await readPushAt(deps, repository, at));
   } catch (error) {
     return snapshot({ kind: 'failed', ...failureOf(error) });
   }
 }
 
 /** The default branch head's read, at its source. */
-async function readPushAt(deps: PollDeps, repository: string, head: BranchHead) {
+async function readPushAt(deps: PollDeps, repository: string, head: HeadAt) {
   const source = await deps.openPush(repository, head.sha);
   const considered: Considered = {
     context: {
@@ -233,12 +296,16 @@ async function readPull(
   number: number,
 ): Promise<CommitSnapshot> {
   const facts = await deps.github.pullRequest(repository, number);
-  const snapshot = (read: CommitRead): CommitSnapshot => ({
-    commit: facts.headSha,
-    event: { kind: 'pull_request', pullRequest: pullRequestRef(facts) },
-    read,
-    repository,
-  });
+  // Read before the opener can fail, so recording its outcome reads nothing that can fail.
+  const commit: unknown = facts.headSha;
+  if (typeof commit !== 'string') {
+    throw new TypeError("the pull request's head sha is not text");
+  }
+  const event: CommitSnapshot['event'] = {
+    kind: 'pull_request',
+    pullRequest: pullRequestRef(facts),
+  };
+  const snapshot = (read: CommitRead): CommitSnapshot => ({ commit, event, read, repository });
   let source: CommitSource;
   try {
     source = await deps.openPullRequest(repository, facts);
@@ -260,57 +327,86 @@ async function readPull(
       kind: 'pull_request',
     },
   };
-  return snapshot(await readCommit(deps.github, repository, facts.headSha, source, considered));
+  return snapshot(await readCommit(deps.github, repository, commit, source, considered));
 }
 
-/** The pull requests whose author the allowlist admits, compared case-insensitively. */
-function admitted(
-  pulls: readonly OpenPullRequest[],
-  allowlist: readonly string[],
-): OpenPullRequest[] {
+/**
+ * The numbers of the pull requests whose author the allowlist admits, compared
+ * case-insensitively. A number that is not a positive integer, or cannot be read, throws, which
+ * fails the repository's read.
+ */
+function admitted(pulls: readonly OpenPullRequest[], allowlist: readonly string[]): number[] {
   const logins = new Set(allowlist.map((login) => login.toLowerCase()));
-  return pulls.filter(
-    (pull) => pull.authorLogin !== null && logins.has(pull.authorLogin.toLowerCase()),
-  );
+  return pulls
+    .filter((pull) => pull.authorLogin !== null && logins.has(pull.authorLogin.toLowerCase()))
+    .map(({ number }) => {
+      if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new Error('a listed pull request has no positive integer number');
+      }
+      return number;
+    });
 }
 
 /**
  * Read one repository. Every error is kept to the scope it was read in: a failed
  * repository-level read (the repository, its default branch, the open-pull-request listing) fails
  * the repository; a failed read of the default branch head's source fails only that head; a failed
- * read of one pull request skips only that pull request.
+ * read of one pull request skips only that pull request. Each value a failure is recorded under,
+ * the head's sha and branch and each pull request's number, is read and checked in the
+ * repository-level read, so recording a failure cannot itself fail.
  */
-async function readRepository(
+async function readRepositoryScopes(
   config: Pick<HugiConfig, 'allowlist'>,
   deps: PollDeps,
   repository: string,
 ): Promise<RepositorySnapshot> {
   let head: BranchHead;
-  let pulls: OpenPullRequest[];
+  let at: HeadAt;
+  let pulls: number[];
   try {
     head = await deps.github.defaultBranchHead(repository);
+    at = headAt(head);
     pulls = admitted(await deps.github.openPullRequests(repository), config.allowlist);
   } catch (error) {
     return { kind: 'failed', repository, ...failureOf(error) };
   }
-  const defaultBranch = await readPush(deps, repository, head);
+  const defaultBranch = await readPush(deps, repository, at, head);
   const pullRequests: CommitSnapshot[] = [];
   const pullRequestFailures: PullRequestReadFailure[] = [];
-  for (const pull of pulls) {
+  for (const number of pulls) {
     try {
       // oxlint-disable-next-line no-await-in-loop -- one pull request at a time in the shared clone
-      pullRequests.push(await readPull(deps, repository, pull.number));
+      pullRequests.push(await readPull(deps, repository, number));
     } catch (error) {
-      pullRequestFailures.push({ number: pull.number, ...failureOf(error) });
+      pullRequestFailures.push({ number, ...failureOf(error) });
     }
   }
   return { defaultBranch, kind: 'read', pullRequestFailures, pullRequests, repository };
 }
 
 /**
- * Read every enrolled repository, one at a time in configuration order. It never rejects: a read
- * that fails, for any reason, is recorded in the snapshot for the repository, default branch
- * head, or pull request it belongs to, and the others are still read.
+ * Read one repository, its scopes as `readRepositoryScopes` keeps them. Should anything still
+ * escape them, the whole repository is its `failed` read, marked unexpected, so one repository
+ * can never fail the poll.
+ */
+async function readRepository(
+  config: Pick<HugiConfig, 'allowlist'>,
+  deps: PollDeps,
+  repository: string,
+): Promise<RepositorySnapshot> {
+  try {
+    return await readRepositoryScopes(config, deps, repository);
+  } catch (error) {
+    return { kind: 'failed', repository, ...failureOf(error), unexpected: true };
+  }
+}
+
+/**
+ * Read every enrolled repository, one at a time in configuration order. For a valid
+ * configuration it never rejects, whatever its dependencies return, throw, or reject with: a read
+ * that fails, or yields a value of the wrong shape, is recorded as the `failed` read of the
+ * repository, default branch head, or pull request it belongs to, and the others are still read.
+ * Every snapshot it returns holds only checked values, so `deriveQueue` accepts it.
  */
 export async function pollRepositories(
   config: Pick<HugiConfig, 'allowlist' | 'repositories'>,
