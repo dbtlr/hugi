@@ -115,6 +115,8 @@ describe('pull_request filters', () => {
     ['types mixed', { types: ['labeled', 'opened'] }, 'main', [], true],
     ['types only labeled', { types: ['labeled'] }, 'main', [], false],
     ['types only ready_for_review', { types: ['ready_for_review'] }, 'main', [], false],
+    ['types only stacked', { types: ['stacked'] }, 'main', [], false],
+    ['types stacked and opened', { types: ['stacked', 'opened'] }, 'main', [], true],
     ['types only closed', { types: ['closed'] }, 'main', [], false],
     ['types empty', { types: [] }, 'main', [], false],
   ];

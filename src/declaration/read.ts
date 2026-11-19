@@ -55,8 +55,9 @@ export const MAX_DECLARED_LANES = 256;
 
 /**
  * The first line of a failure's message. Parsers append the source excerpt after it. A cause
- * quotes no source excerpt or pattern; names (job names, unknown filter keys) are JSON-quoted,
- * and every cause is one line bounded by `MAX_CAUSE_LENGTH`.
+ * quotes no source excerpt and no filter pattern, but it can carry short repository values such
+ * as job ids, unknown keys and matrix values; every cause is one line bounded by
+ * `MAX_CAUSE_LENGTH`.
  */
 function oneLine(detail: unknown): string {
   return messageOf(detail).split('\n')[0]!.replace(/:$/u, '');

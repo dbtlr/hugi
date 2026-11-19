@@ -54,6 +54,12 @@ describe('skipsWorkflows', () => {
       'Fix\n\nprose\n  indented\nskip-checks: true',
       false,
     ],
+    [
+      'block starting with an indented line is not trailers',
+      'Fix\n\n  code\nskip-checks: true',
+      false,
+    ],
+    ['block starting with a tab-indented line', 'Fix\n\n\tcode\nskip-checks: true', false],
     ['bracket instruction in another case', '[SKIP CI] fix', false],
   ];
   test.each(cases)('%s', (_, message, expected) => {

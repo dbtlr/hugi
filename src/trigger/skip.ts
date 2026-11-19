@@ -16,8 +16,9 @@ const TRAILER_LINE = /^[A-Za-z0-9-]+[ \t]*:/u;
 /**
  * A `skip-checks: true` trailer. It must be the last non-blank line of a trailer block, which
  * follows git (`git interpret-trailers --parse`): the final paragraph, after the last blank or
- * whitespace-only line, is a trailer block only when every line in it is a trailer line or a
- * continuation line (starting with whitespace). GitHub's documentation asks for "two empty
+ * whitespace-only line, is a trailer block only when it starts with a trailer line and every
+ * later line is a trailer line or a continuation line (starting with whitespace); git reads an
+ * indented line before the first trailer as prose. GitHub's documentation asks for "two empty
  * lines" before the trailer; that is read as a blank-line separator, so one or more blank lines
  * are accepted, as git accepts them. The block cannot be the message's first paragraph.
  */
@@ -34,7 +35,10 @@ function hasSkipTrailer(message: string): boolean {
   if (lastBlank === -1 || lines.slice(0, lastBlank).every(isBlank)) {
     return false;
   }
-  return block.every((line) => TRAILER_LINE.test(line) || /^[ \t]/u.test(line));
+  return (
+    TRAILER_LINE.test(block[0]!) &&
+    block.every((line) => TRAILER_LINE.test(line) || /^[ \t]/u.test(line))
+  );
 }
 
 /** Whether a commit message carries one of GitHub's skip instructions. */

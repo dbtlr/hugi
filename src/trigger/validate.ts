@@ -32,7 +32,11 @@ const EXCLUSIVE_PAIRS = [
   ['paths', 'paths-ignore'],
 ] as const;
 
-/** The activity types GitHub documents for `pull_request`; any other `types` value is refused. */
+/**
+ * The activity types GitHub's workflow schema accepts for `pull_request` (`workflow-v1.0.json` in
+ * actions/languageservices); any other `types` value is refused. `stacked` is in the schema
+ * before the documentation lists it.
+ */
 const PULL_REQUEST_TYPES = new Set([
   'assigned',
   'unassigned',
@@ -55,6 +59,7 @@ const PULL_REQUEST_TYPES = new Set([
   'demilestoned',
   'enqueued',
   'dequeued',
+  'stacked',
 ]);
 
 export type TriggerEventKind = keyof typeof FILTER_KEYS;
