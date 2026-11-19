@@ -112,6 +112,23 @@ test('a read GitHub never answers is abandoned after the timeout', async () => {
   expect(messageOf(failure)).toContain('did not answer within');
 });
 
+/** A GitHub that starts its answer and never finishes it: the body ends only when the read aborts. */
+const stalling: Fetch = async (_url, init) => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{'));
+      init.signal.addEventListener('abort', () => controller.error(init.signal.reason));
+    },
+  });
+  return new Response(body, { status: 200 });
+};
+
+test('an answer whose body never finishes is abandoned as a timeout, not as malformed', async () => {
+  const failure = await failureOf(readPullRequest('example/project', 7, stalling, 20));
+  expect(failure).toBeInstanceOf(PullRequestReadError);
+  expect(messageOf(failure)).toContain('did not answer within');
+});
+
 test('a network failure is a read error that names it', async () => {
   const failure = await failureOf(readPullRequest('example/project', 7, unreachable));
   expect(failure).toBeInstanceOf(PullRequestReadError);

@@ -105,6 +105,11 @@ function statusFailure(response: Response, repository: string, number: number): 
   return `GitHub's API answered ${status} for pull request ${number} in ${repository}.`;
 }
 
+/** The read's time ran out, whether GitHub never answered or stopped partway through its body. */
+function timedOut(timeoutMs: number, number: number): string {
+  return `GitHub's API did not answer within ${timeoutMs / 1000} s for pull request ${number}.`;
+}
+
 /**
  * Read pull request `number` of the `owner/name` repository. Every failure, from the network to a
  * body that is not what GitHub documents, throws `PullRequestReadError` naming the cause.
@@ -123,7 +128,7 @@ export async function readPullRequest(
   } catch (error) {
     throw new PullRequestReadError(
       signal.aborted
-        ? `GitHub's API did not answer within ${timeoutMs / 1000} s for pull request ${number}.`
+        ? timedOut(timeoutMs, number)
         : `Cannot reach GitHub's API: ${messageOf(error)}`,
     );
   }
@@ -135,7 +140,9 @@ export async function readPullRequest(
     body = await response.json();
   } catch (error) {
     throw new PullRequestReadError(
-      `GitHub's answer for pull request ${number} is malformed: ${messageOf(error)}`,
+      signal.aborted
+        ? timedOut(timeoutMs, number)
+        : `GitHub's answer for pull request ${number} is malformed: ${messageOf(error)}`,
     );
   }
   const facts = factsOf(body, number);
