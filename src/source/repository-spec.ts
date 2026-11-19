@@ -5,6 +5,9 @@ export type RepositorySpec =
   | { readonly kind: 'github'; readonly name: string; readonly cloneUrl: string }
   | { readonly kind: 'local'; readonly path: string };
 
+/** A repository on GitHub: the only kind that has pull requests. */
+export type GitHubRepositorySpec = Extract<RepositorySpec, { kind: 'github' }>;
+
 const GITHUB_NAME = /^[\w.-]+\/[\w.-]+$/;
 const EXPLICIT_PATH = /^(\/|\.{1,2}(\/|$)|~)/;
 

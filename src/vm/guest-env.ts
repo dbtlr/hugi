@@ -4,6 +4,7 @@
  * step gets fresh, empty command files; the runner parses them once the step
  * exits, and a malformed file fails the step as it does on GitHub.
  */
+import { refValues } from '../lane/refs';
 import type { EventContext } from '../lane/step-plan';
 import { GUEST_COMMAND_FILES, GUEST_RUNNER_PATHS } from './guest-paths';
 
@@ -11,7 +12,7 @@ export type Environment = Readonly<Record<string, string>>;
 
 /** The variables GitHub's runner exports to every step. */
 export function githubEnvironment(event: EventContext): Environment {
-  const refPrefix = event.refType === 'tag' ? 'refs/tags' : 'refs/heads';
+  const refs = refValues(event);
   // oxlint-disable-next-line sort-keys -- grouped by meaning, not alphabet
   return {
     CI: 'true',
@@ -19,9 +20,11 @@ export function githubEnvironment(event: EventContext): Environment {
     GITHUB_WORKSPACE: GUEST_RUNNER_PATHS.workspace,
     GITHUB_REPOSITORY: event.repository,
     GITHUB_SHA: event.sha,
-    GITHUB_REF: `${refPrefix}/${event.refName}`,
-    GITHUB_REF_NAME: event.refName,
-    GITHUB_REF_TYPE: event.refType,
+    GITHUB_REF: refs.ref,
+    GITHUB_REF_NAME: refs.refName,
+    GITHUB_REF_TYPE: refs.refType,
+    GITHUB_HEAD_REF: refs.headRef,
+    GITHUB_BASE_REF: refs.baseRef,
     GITHUB_EVENT_NAME: event.event,
     RUNNER_OS: 'macOS',
     RUNNER_ARCH: 'ARM64',

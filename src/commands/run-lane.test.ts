@@ -8,9 +8,12 @@ import { join } from 'node:path';
 import { processHandle } from '@loomcli/core';
 
 import { messageOf } from '../errors';
+import { PullRequestReadError } from '../github/pull-request';
+import type { PullRequestFacts } from '../github/pull-request';
 import type { GuestSource, HostSource } from '../source/host-source';
 import {
   AmbiguousRefError,
+  NoCurrentMergeError,
   NotAFileError,
   openHostSource,
   SourceError,
@@ -18,7 +21,7 @@ import {
 import type { RunRequest, RunResult } from '../vm';
 import { RunUsageError } from './run-args';
 import { exitCodeForVerdict, runLane } from './run-lane';
-import type { RunLaneDeps, RunLaneRequest } from './run-lane';
+import type { PushRunRequest, RunLaneDeps, RunLaneRequest } from './run-lane';
 
 const SHA = 'a'.repeat(40);
 const WORKFLOW = `
@@ -54,7 +57,7 @@ function source(files: Record<string, string>, refKind?: 'branch' | 'tag'): Host
   };
 }
 
-const request: RunLaneRequest = {
+const request: PushRunRequest = {
   commit: 'main',
   event: 'push',
   image: 'hugi-golden',
@@ -77,12 +80,27 @@ const needingChanges = (workflow: string, jobLines = '') =>
     )
     .replace('    runs-on: macos', `    needs: changes\n${jobLines}    runs-on: macos`);
 
+const HEAD_SHA = 'c'.repeat(40);
+
+/** Pull request 7 as GitHub reports it, with its merge commit current. */
+const PULL_REQUEST: PullRequestFacts = {
+  baseRef: 'main',
+  headRef: 'feature',
+  headSha: HEAD_SHA,
+  mergeCommitSha: SHA,
+  mergeable: true,
+  number: 7,
+  state: 'open',
+};
+
 function harness(files: Record<string, string>, result: RunResult = passed) {
   const calls: RunRequest[] = [];
   const warnings: string[] = [];
   const deps: RunLaneDeps = {
     newLogDir: async (sha) => `/logs/${sha.slice(0, 7)}`,
+    openPullRequestSource: async () => source(files),
     openSource: async (_spec, commit) => source(files, commit === 'main' ? 'branch' : undefined),
+    readPullRequest: async () => PULL_REQUEST,
     runInVm: async (vmRequest) => {
       calls.push(vmRequest);
       return result;
@@ -130,7 +148,7 @@ function snapshotSource(events: string[], prepare?: () => Promise<void>): HostSo
   };
 }
 
-const localRequest: RunLaneRequest = {
+const localRequest: PushRunRequest = {
   ...request,
   repository: { kind: 'local', path: '/repos/project' },
 };
@@ -233,7 +251,7 @@ test('a lane the reader rejects is a fail verdict and boots no VM', async () => 
 });
 
 /** The usage error `runLane` throws for `lane`, or undefined when it does not throw one. */
-async function selectionFailure(workflow: string, overrides: Partial<RunLaneRequest>) {
+async function selectionFailure(workflow: string, overrides: Partial<PushRunRequest>) {
   const { calls, deps } = harness({ '.github/workflows/ci.yml': workflow });
   const failure = await runLane({ ...request, ...overrides }, deps).catch(
     (error: unknown) => error,
@@ -588,5 +606,87 @@ describe('the report carries the toolchain resolution', () => {
       'rust-toolchain.toml: rustup in the guest handles components and profile.',
     ]);
     expect(report.toolchain?.actions).toHaveLength(3);
+  });
+});
+
+describe('a pull request runs at its merge commit', () => {
+  const pullRequest: RunLaneRequest = {
+    event: 'pull_request',
+    image: 'hugi-golden',
+    lane: request.lane,
+    matrix: {},
+    needs: {},
+    pullRequest: 7,
+    repository: {
+      cloneUrl: 'https://github.com/example/project.git',
+      kind: 'github',
+      name: 'example/project',
+    },
+  };
+  const workflow = WORKFLOW.replace('on: push', 'on: pull_request');
+
+  test('the pull request is read, its merge opened, and the event carries both', async () => {
+    const { calls, deps } = harness({ '.github/workflows/ci.yml': workflow });
+    const read: [string, number][] = [];
+    const opened: PullRequestFacts[] = [];
+    const report = await runLane(pullRequest, {
+      ...deps,
+      openPullRequestSource: async (spec, facts) => {
+        expect(spec.name).toBe('example/project');
+        opened.push(facts);
+        return source({ '.github/workflows/ci.yml': workflow });
+      },
+      readPullRequest: async (repository, number) => {
+        read.push([repository, number]);
+        return PULL_REQUEST;
+      },
+    });
+    expect(read).toEqual([['example/project', 7]]);
+    expect(opened).toEqual([PULL_REQUEST]);
+    expect(calls[0]!.event).toEqual({
+      event: 'pull_request',
+      needs: {},
+      pullRequest: { baseRef: 'main', headRef: 'feature', headSha: HEAD_SHA, number: 7 },
+      repository: 'example/project',
+      sha: SHA,
+    });
+    expect(
+      calls[0]!.plan.steps.some((step) => step.kind === 'run' && step.script.includes('7/merge')),
+    ).toBe(true);
+    expect(report).toMatchObject({
+      pullRequest: { headSha: HEAD_SHA, number: 7 },
+      sha: SHA,
+      verdict: 'pass',
+    });
+  });
+
+  test('a pull request GitHub cannot read yields no verdict and boots no VM', async () => {
+    const { calls, deps } = harness({});
+    const report = await runLane(pullRequest, {
+      ...deps,
+      readPullRequest: async () => {
+        throw new PullRequestReadError("GitHub's anonymous rate limit is used up.");
+      },
+    });
+    expect(report).toMatchObject({ reason: 'infrastructure', verdict: 'none' });
+    expect(report.detail).toContain('rate limit');
+    expect(calls).toHaveLength(0);
+  });
+
+  test('a pull request with no current merge yields no verdict and boots no VM', async () => {
+    const { calls, deps } = harness({});
+    const report = await runLane(pullRequest, {
+      ...deps,
+      openPullRequestSource: async () => {
+        throw new NoCurrentMergeError('conflict', 'Pull request 7 has a merge conflict.');
+      },
+    });
+    expect(report).toMatchObject({
+      pullRequest: { headSha: HEAD_SHA, number: 7 },
+      reason: 'infrastructure',
+      verdict: 'none',
+    });
+    expect(report.detail).toContain('merge conflict');
+    expect(calls).toHaveLength(0);
   });
 });

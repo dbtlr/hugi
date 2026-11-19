@@ -1,4 +1,5 @@
 import type { Context, Value } from './expressions';
+import { refValues } from './refs';
 import type { EventContext, RunnerPaths } from './step-plan';
 
 type Values = Readonly<Record<string, Value>>;
@@ -9,36 +10,25 @@ export type LaneValues = {
   readonly runner: Values;
   readonly matrix: Values;
   readonly needs: Values;
-  /** Full `github.*` expressions this event cannot supply, with the reason. */
-  readonly githubGaps: Readonly<Record<string, string>>;
 };
-
-const PULL_REQUEST_REF_REASON =
-  'not supported for pull_request events until the contract carries the PR number';
 
 const STEP_ENV_REASON =
   'a step cannot read env, because earlier steps can change it through GITHUB_ENV';
 
+/** The `github.*` values; the event payload, `github.event.*`, is not among them. */
 function githubValues(event: EventContext, paths: RunnerPaths): Values {
+  const refs = refValues(event);
   return {
+    'github.base_ref': refs.baseRef,
     'github.event_name': event.event,
-    'github.ref_type': event.refType,
+    'github.head_ref': refs.headRef,
+    'github.ref': refs.ref,
+    'github.ref_name': refs.refName,
+    'github.ref_type': refs.refType,
     'github.repository': event.repository,
     'github.sha': event.sha,
     'github.workspace': paths.workspace,
-    ...(event.event === 'pull_request'
-      ? {}
-      : {
-          'github.ref': `refs/${event.refType === 'tag' ? 'tags' : 'heads'}/${event.refName}`,
-          'github.ref_name': event.refName,
-        }),
   };
-}
-
-function githubGaps(event: EventContext): Record<string, string> {
-  return event.event === 'pull_request'
-    ? { 'github.ref': PULL_REQUEST_REF_REASON, 'github.ref_name': PULL_REQUEST_REF_REASON }
-    : {};
 }
 
 /**
@@ -65,7 +55,6 @@ export function laneValues(
 ): LaneValues {
   return {
     github: githubValues(event, paths),
-    githubGaps: githubGaps(event),
     matrix: Object.fromEntries(
       Object.entries(matrix).map(([key, value]) => [`matrix.${key}`, value]),
     ),
@@ -87,7 +76,6 @@ function scope(
 ): Context {
   return {
     unavailable: {
-      ...lane.githubGaps,
       ...Object.fromEntries(
         disallowed.map((name) => [name, `GitHub does not allow the ${name} context in ${where}`]),
       ),
@@ -141,7 +129,7 @@ export function jobSettingScope(lane: LaneValues): Context {
 
 export function stepScope(lane: LaneValues): Context {
   return {
-    unavailable: { ...lane.githubGaps, env: STEP_ENV_REASON },
+    unavailable: { env: STEP_ENV_REASON },
     values: { ...lane.github, ...lane.needs, ...lane.matrix, ...lane.runner },
   };
 }

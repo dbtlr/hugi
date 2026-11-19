@@ -8,6 +8,24 @@ export class RunUsageError extends UsageError {
   override readonly name = 'RunUsageError';
 }
 
+const PULL_REQUEST_ARGUMENT = /^pull\/([1-9][0-9]*)$/u;
+
+/**
+ * The pull request a `<commit>` argument of the form `pull/<n>` names, `<n>` a positive decimal
+ * number; `undefined` for anything else, such as `pull/0`, which stays a branch name or sha.
+ */
+export function parsePullRequestArgument(commit: string): number | undefined {
+  const digits = PULL_REQUEST_ARGUMENT.exec(commit)?.[1];
+  if (digits === undefined) {
+    return undefined;
+  }
+  const number = Number(digits);
+  if (!Number.isSafeInteger(number)) {
+    throw new RunUsageError(`"${commit}" names a pull request number no repository can have.`);
+  }
+  return number;
+}
+
 const WORKFLOW_DIRECTORY = '.github/workflows';
 
 /** `<workflow>:<job>`, with a bare workflow file name read from `.github/workflows/`. */

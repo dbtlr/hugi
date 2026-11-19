@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test';
 
-import { parseLaneArgument, parseMatrix, parseNeeds, RunUsageError } from './run-args';
+import {
+  parseLaneArgument,
+  parseMatrix,
+  parseNeeds,
+  parsePullRequestArgument,
+  RunUsageError,
+} from './run-args';
 
 test('a bare workflow file name lives under .github/workflows', () => {
   expect(parseLaneArgument('ci.yml:platform')).toEqual({
@@ -76,4 +82,20 @@ test('the parsed maps have no prototype, so a key cannot reach Object.prototype'
   const needs = parseNeeds(['changes.outputs.code=true']);
   expect(Object.getPrototypeOf(needs)).toBeNull();
   expect(Object.getPrototypeOf(needs.changes!.outputs)).toBeNull();
+});
+
+test('pull/<n> with a positive decimal number names that pull request', () => {
+  expect(parsePullRequestArgument('pull/7')).toBe(7);
+  expect(parsePullRequestArgument('pull/1234')).toBe(1234);
+});
+
+test.each(['pull/0', 'pull/007', 'pull/abc', 'pull/7/merge', 'pull/', 'main', 'refs/pull/7'])(
+  '%p names no pull request, so it stays a branch name or sha',
+  (commit) => {
+    expect(parsePullRequestArgument(commit)).toBeUndefined();
+  },
+);
+
+test('a pull request number past the safe integers is a usage error', () => {
+  expect(() => parsePullRequestArgument('pull/99999999999999999999')).toThrow(RunUsageError);
 });

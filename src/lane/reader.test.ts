@@ -464,8 +464,16 @@ test('matrix includes replace previous additions and do not merge added combinat
   ).toThrow(/matrix/);
 });
 
+/** A pull_request run of pull request 7, from `feature` into `main`, at its merge commit. */
+const PULL_REQUEST_EVENT: EventContext = {
+  event: 'pull_request',
+  pullRequest: { baseRef: 'main', headRef: 'feature', headSha: 'def456', number: 7 },
+  repository: 'example/project',
+  sha: 'abc123',
+};
+
 function pullRequest(text: string) {
-  return readLane(text, lane, { ...event, event: 'pull_request' }, paths);
+  return readLane(text, lane, PULL_REQUEST_EVENT, paths);
 }
 
 test('matrix values keep their YAML type in conditions and expansions', () => {
@@ -562,15 +570,30 @@ test('runs-on labels match case-insensitively, as GitHub labels do', () => {
   expect(read(workflow({ 'runs-on': 'macOS-latest' })).steps).toBeDefined();
 });
 
-test.each(['github.ref', 'github.ref_name'])(
-  'a pull_request lane that reads %s fails, because the contract lacks the PR number',
-  (expression) => {
-    const text = workflow({ steps: [{ name: 'Ref', run: `echo \${{ ${expression} }}` }] });
-    expect(() => pullRequest(text)).toThrow(
-      new RegExp(`step 1 "Ref".*${expression.replace('.', String.raw`\.`)}.*pull_request`, 'u'),
-    );
-  },
-);
+test('a pull_request lane sees the merge ref and the head and base branch names', () => {
+  const text = workflow({
+    steps: [
+      {
+        run: '${{ github.ref }} ${{ github.ref_name }} ${{ github.ref_type }} ${{ github.head_ref }} ${{ github.base_ref }}',
+      },
+    ],
+  });
+  expect(pullRequest(text).steps[0]).toMatchObject({
+    script: 'refs/pull/7/merge 7/merge branch feature main',
+  });
+});
+
+test('a push lane sees empty head and base branch names', () => {
+  const text = workflow({ steps: [{ run: '[${{ github.head_ref }}][${{ github.base_ref }}]' }] });
+  expect(read(text).steps[0]).toMatchObject({ script: '[][]' });
+});
+
+test('a pull_request lane that reads the event payload still fails', () => {
+  const text = workflow({
+    steps: [{ name: 'Number', run: 'echo ${{ github.event.pull_request.number }}' }],
+  });
+  expect(() => pullRequest(text)).toThrow(/step 1 "Number".*unsupported expression/u);
+});
 
 test('a pull_request lane still reads the event name and sha', () => {
   const text = workflow({ steps: [{ run: 'echo ${{ github.event_name }} ${{ github.sha }}' }] });

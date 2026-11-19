@@ -5,26 +5,35 @@ import type { Host, View } from '@loomcli/core';
 import { json } from '@loomcli/plugins/format';
 import { helpCommand } from '@loomcli/plugins/help/extension';
 
-import { openHostSource } from '../source/host-source';
+import { readPullRequest } from '../github/pull-request';
+import { openHostSource, openPullRequestSource } from '../source/host-source';
+import type { HostSourceOptions } from '../source/host-source';
 import { createRunDirectory, resolveCacheDir, resolveRunsDir } from '../source/locations';
 import { parseRepository, RepositorySpecError } from '../source/repository-spec';
+import type { RepositorySpec } from '../source/repository-spec';
 import type { ActionResolution } from '../toolchain/resolver';
 import { createTartCli, runInVm, systemClock } from '../vm';
-import { parseLaneArgument, parseMatrix, parseNeeds, RunUsageError } from './run-args';
+import {
+  parseLaneArgument,
+  parseMatrix,
+  parseNeeds,
+  parsePullRequestArgument,
+  RunUsageError,
+} from './run-args';
 import { exitCodeForVerdict, runLane } from './run-lane';
-import type { LaneReport, ReportStep, RunLaneDeps } from './run-lane';
+import type { LaneReport, ReportStep, RunLaneDeps, RunLaneRequest } from './run-lane';
 
 const DESCRIPTION =
   'Run one lane of a repository at a commit in a throwaway VM and report its verdict.';
 
-const DETAILS = `<repository> is \`owner/name\` (public, on GitHub) or a path to a local git repository, starting with \`./\`, \`../\`, \`/\`, or \`~\`. <commit> is a sha, a branch, or a tag; a name that is both a branch and a tag is refused, so pass its sha with --ref-type and --ref-name. <lane> is \`<workflow>:<job>\`, such as \`ci.yml:build\`.
+const DETAILS = `<repository> is \`owner/name\` (public, on GitHub) or a path to a local git repository, starting with \`./\`, \`../\`, \`/\`, or \`~\`. <commit> is a sha, a branch, or a tag; a name that is both a branch and a tag is refused, so pass its sha with --ref-type and --ref-name. For an \`owner/name\` repository, <commit> may also be \`pull/<n>\`: pull request <n>, run as a pull_request event on GitHub's merge commit, read with one unauthenticated call to GitHub's API. It takes no --ref-type or --ref-name; a branch named \`pull/<n>\` runs by its sha with --ref-name. <lane> is \`<workflow>:<job>\`, such as \`ci.yml:build\`.
 
 Exit codes:
 
 - 0: pass. The lane's steps succeeded.
 - 1: fail. A step failed or timed out, or the lane could not be read or its tools resolved.
 - 2: usage error, including a lane selection that picks nothing to run: a missing job, --matrix values that select no single combination, a needed upstream output not given with --needs, a --needs entry for a job outside the job's needs, or a job whose if: makes it skipped for the event (no verdict).
-- 3: no verdict. The VM failed to clone or boot or was lost mid-run, or the source could not be fetched or read.
+- 3: no verdict. The VM failed to clone or boot or was lost mid-run, or the source could not be fetched or read. For pull/<n>: the pull request does not exist, GitHub's API failed or is rate-limited, or the pull request has no current merge (it is closed, has a merge conflict, GitHub has not computed the merge for its head yet, or it moved while Hugi read it).
 - 130 (143 for SIGTERM): interrupted. The VM is deleted and the report, with no verdict, is printed before Hugi exits. A second Ctrl-C exits at once, and Hugi exits anyway if cleanup takes more than three minutes; either can leave the VM behind. Remove a leftover \`hugi-run-*\` VM with \`tart delete\`.`;
 
 /** Exit 1, raised after the report is printed: the lane's verdict is fail. */
@@ -93,6 +102,8 @@ const textView: View<LaneReport> = { render: renderReport };
 export type RunCommandOverrides = {
   readonly runInVm?: RunLaneDeps['runInVm'];
   readonly openSource?: RunLaneDeps['openSource'];
+  readonly readPullRequest?: RunLaneDeps['readPullRequest'];
+  readonly openPullRequestSource?: RunLaneDeps['openPullRequestSource'];
 };
 
 export function runCommand(overrides: RunCommandOverrides = {}) {
@@ -103,7 +114,8 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
       required: true,
     })
     .argument('commit', {
-      description: 'A sha (short or full), a branch, or a tag.',
+      description:
+        'A sha (short or full), a branch, a tag, or pull/<n> for pull request <n> of an owner/name repository.',
       required: true,
     })
     .argument('lane', { description: '<workflow>:<job>, such as ci.yml:build.', required: true })
@@ -118,15 +130,18 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
       type: 'string',
     })
     .option('event', {
-      description: 'The event the run stands in for: push (default) or pull_request.',
+      description:
+        'The event the run stands in for: push, or pull_request, which <commit> pull/<n> implies.',
       type: 'string',
     })
     .option('ref-type', {
-      description: 'branch (default) or tag. Inferred from <commit> when that names a tag.',
+      description:
+        'branch (default) or tag. Inferred from <commit> when that names a tag; not for pull/<n>.',
       type: 'string',
     })
     .option('ref-name', {
-      description: 'The branch or tag name; defaults to <commit> when that names one.',
+      description:
+        'The branch or tag name; defaults to <commit> when that names one; not for pull/<n>.',
       type: 'string',
     })
     .option('image', {
@@ -148,20 +163,26 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
     .action(async ({ args, host, options, out, signal }) => {
       const runner: Runner = host;
       const request = buildRequest(args, options, runner);
+      const sourceOptions: HostSourceOptions = {
+        cacheDir: resolveCacheDir(options['cache-dir'], host.env, host.home),
+        cwd: host.cwd,
+        env: host.env,
+        spawn: host.spawn,
+        tempDir: host.tmpdir,
+        uid: host.uid,
+      };
       const report = await runLane(request, {
         newLogDir: (sha) =>
           createRunDirectory(resolveRunsDir(host.env, host.home), new Date(), sha),
+        openPullRequestSource:
+          overrides.openPullRequestSource ??
+          ((spec, facts) => openPullRequestSource(spec, facts, sourceOptions)),
         openSource:
-          overrides.openSource ??
-          ((spec, commit) =>
-            openHostSource(spec, commit, {
-              cacheDir: resolveCacheDir(options['cache-dir'], host.env, host.home),
-              cwd: host.cwd,
-              env: host.env,
-              spawn: host.spawn,
-              tempDir: host.tmpdir,
-              uid: host.uid,
-            })),
+          overrides.openSource ?? ((spec, commit) => openHostSource(spec, commit, sourceOptions)),
+        readPullRequest:
+          overrides.readPullRequest ??
+          ((repository, number) =>
+            readPullRequest(repository, number, (url, init) => fetch(url, init))),
         runInVm:
           overrides.runInVm ??
           ((vmRequest) =>
@@ -184,19 +205,21 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
     });
 }
 
+type RunOptions = {
+  matrix: string[] | undefined;
+  needs: string[] | undefined;
+  event: string | undefined;
+  'ref-type': string | undefined;
+  'ref-name': string | undefined;
+  image: string;
+  logs: string | undefined;
+};
+
 function buildRequest(
   args: { repository: string; commit: string; lane: string },
-  options: {
-    matrix: string[] | undefined;
-    needs: string[] | undefined;
-    event: string | undefined;
-    'ref-type': string | undefined;
-    'ref-name': string | undefined;
-    image: string;
-    logs: string | undefined;
-  },
+  options: RunOptions,
   runner: Runner,
-) {
+): RunLaneRequest {
   if (options['ref-name'] === '') {
     throw new RunUsageError('--ref-name must not be empty.');
   }
@@ -209,18 +232,66 @@ function buildRequest(
     }
     throw error;
   }
-  return {
-    commit: args.commit,
-    event: oneOf('--event', options.event, EVENTS) ?? 'push',
+  const selection = {
     image: options.image,
     lane: parseLaneArgument(args.lane),
     matrix: parseMatrix(options.matrix ?? []),
     needs: parseNeeds(options.needs ?? []),
-    repository,
     ...(options.logs === undefined ? {} : { logDir: resolve(runner.cwd, options.logs) }),
+  };
+  const event = oneOf('--event', options.event, EVENTS);
+  const pullRequest = parsePullRequestArgument(args.commit);
+  if (pullRequest !== undefined) {
+    return {
+      ...selection,
+      ...pullRequestTarget(args.commit, pullRequest, repository, event, options),
+    };
+  }
+  if (event === 'pull_request') {
+    throw new RunUsageError(
+      '--event pull_request needs <commit> to be pull/<n>, the pull request to run on its merge commit.',
+    );
+  }
+  return {
+    ...selection,
+    commit: args.commit,
+    event: 'push',
+    repository,
     ...(options['ref-name'] === undefined ? {} : { refName: options['ref-name'] }),
     ...refTypeOption(options['ref-type']),
   };
+}
+
+/**
+ * `pull/<n>` is a pull_request run of an `owner/name` repository, whose ref values come from the
+ * pull request; any flag that would describe another run is refused (ADR-0005).
+ */
+function pullRequestTarget(
+  commit: string,
+  number: number,
+  repository: RepositorySpec,
+  event: (typeof EVENTS)[number] | undefined,
+  options: RunOptions,
+) {
+  const asBranch = `To run a branch named ${commit}, pass its sha with --ref-name ${commit}.`;
+  if (repository.kind === 'local') {
+    throw new RunUsageError(
+      `${commit} names a pull request, and a local repository has none. ${asBranch}`,
+    );
+  }
+  if (event === 'push') {
+    throw new RunUsageError(
+      `--event push cannot run ${commit}, which is a pull_request run. ${asBranch}`,
+    );
+  }
+  for (const flag of ['ref-type', 'ref-name'] as const) {
+    if (options[flag] !== undefined) {
+      throw new RunUsageError(
+        `--${flag} does not apply to ${commit}: a pull request runs on refs/pull/${number}/merge. ${asBranch}`,
+      );
+    }
+  }
+  return { event: 'pull_request', pullRequest: number, repository } as const;
 }
 
 function refTypeOption(value: string | undefined) {
