@@ -49,6 +49,7 @@ function repo(
   return {
     defaultBranch: push(repository, defaultBranch),
     kind: 'read',
+    pullRequestFailures: [],
     pullRequests,
     repository,
   };
@@ -120,19 +121,6 @@ describe('a lane is a candidate until its status has a verdict', () => {
     expect(names([repo('o/r', read)])).toEqual(['o/r@a hugi / test (macos-latest)']);
   });
 
-  test('a lane whose on: GitHub would refuse is no candidate, and is reported', () => {
-    const read: CommitRead = {
-      kind: 'lanes',
-      lanes: [{ cause: 'on.push cannot have both', kind: 'refused-trigger', lane: PLATFORM }],
-      statuses: statuses(),
-    };
-    const queue = deriveQueue([repo('o/r', read)]);
-    expect(queue.candidates).toEqual([]);
-    expect(queue.refusedTriggers).toEqual([
-      { cause: 'on.push cannot have both', commit: MAIN, lane: PLATFORM, repository: 'o/r' },
-    ]);
-  });
-
   test('a skip instruction, no current merge, and no declaration yield nothing', () => {
     const queue = deriveQueue([
       repo('o/r', { kind: 'skipped' }, pull('o/r', 3, { cause: 'conflict', kind: 'no-merge' })),
@@ -142,7 +130,6 @@ describe('a lane is a candidate until its status has a verdict', () => {
       candidates: [],
       declarationReports: [],
       failures: [],
-      refusedTriggers: [],
     });
   });
 });
@@ -241,4 +228,19 @@ test('a repository whose reads failed is reported, and the others still yield ca
   ]);
   expect(queue.failures).toEqual([{ cause: 'GitHub answered 502', repository: 'o/broken' }]);
   expect(queue.candidates.map((candidate) => candidate.repository)).toEqual(['o/r']);
+});
+
+test('a pull request whose reads failed is reported by number, and its siblings still yield', () => {
+  const snapshot: RepositorySnapshot = {
+    defaultBranch: push('o/r', lanes({}, PLATFORM)),
+    kind: 'read',
+    pullRequestFailures: [{ cause: 'GitHub answered 502', number: 4 }],
+    pullRequests: [pull('o/r', 5, lanes({}, PLATFORM), 'c'.repeat(40))],
+    repository: 'o/r',
+  };
+  const queue = deriveQueue([snapshot]);
+  expect(queue.failures).toEqual([
+    { cause: 'GitHub answered 502', pullRequest: 4, repository: 'o/r' },
+  ]);
+  expect(queue.candidates.map((candidate) => candidate.commit[0])).toEqual(['a', 'c']);
 });

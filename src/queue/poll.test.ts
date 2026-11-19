@@ -65,7 +65,7 @@ const DOCS = stringify({
   jobs: { site: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
   on: {
     pull_request: { paths: ['docs/**'] },
-    push: { branches: ['main'], 'branches-ignore': ['x'] },
+    push: { branches: ['main'] },
   },
 });
 
@@ -234,11 +234,12 @@ describe('a push to the default branch', () => {
       commits: { [sha('1')]: { files: DECLARED } },
       repos: [{ head: sha('1'), name: 'o/r' }],
     });
-    // release runs only for a push; site's push filter is refused, so it is reported, not run.
+    // release runs only for a push; site's path filter applies to pull requests alone.
     expect(named(queue)).toEqual([
       'o/r@1 hugi / platform',
       'o/r@1 hugi / release',
       'o/r@1 hugi / test (macos-latest)',
+      'o/r@1 hugi / site',
     ]);
     expect(queue.candidates[0]).toEqual({
       commit: sha('1'),
@@ -247,14 +248,20 @@ describe('a push to the default branch', () => {
       repository: 'o/r',
       statusName: 'hugi / platform',
     });
-    expect(queue.refusedTriggers).toEqual([
-      {
-        cause: 'on.push cannot have both branches and branches-ignore',
-        commit: sha('1'),
-        lane: { job: 'site', matrix: {}, workflow: '.github/workflows/docs.yml' },
-        repository: 'o/r',
-      },
-    ]);
+  });
+
+  test('a declaration naming a workflow whose on: GitHub would refuse is reported, and runs nothing', async () => {
+    const badDocs = stringify({
+      jobs: { site: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
+      on: { push: { branches: ['main'], 'branches-ignore': ['x'] } },
+    });
+    const { queue } = await poll({
+      commits: { [sha('1')]: { files: { ...DECLARED, '.github/workflows/docs.yml': badDocs } } },
+      repos: [{ head: sha('1'), name: 'o/r' }],
+    });
+    expect(queue.candidates).toEqual([]);
+    expect(queue.declarationReports).toHaveLength(1);
+    expect(queue.declarationReports[0]).toMatchObject({ commit: sha('1'), repository: 'o/r' });
   });
 
   test('a lane with a verdict is settled, and a pending one is queued again after a restart', async () => {
@@ -269,7 +276,7 @@ describe('a push to the default branch', () => {
         },
       },
     });
-    expect(named(queue)).toEqual(['o/r@1 hugi / test (macos-latest)']);
+    expect(named(queue)).toEqual(['o/r@1 hugi / test (macos-latest)', 'o/r@1 hugi / site']);
   });
 
   test('a skip instruction yields nothing and opens no source', async () => {
@@ -321,7 +328,6 @@ describe('a refused declaration', () => {
       candidates: [],
       declarationReports: [],
       failures: [],
-      refusedTriggers: [],
     });
   });
 });
@@ -499,4 +505,35 @@ test('a repository whose source cannot be read is reported like a failed API rea
     { cause: `The commit "${sha('1')}" does not exist in the repository.`, repository: 'o/gone' },
   ]);
   expect(queue.candidates.length).toBeGreaterThan(0);
+});
+
+test('a pull request whose read fails is skipped alone, and named in the failure', async () => {
+  const { queue } = await poll({
+    commits: {
+      [sha('1')]: { files: DECLARED },
+      [sha('5')]: { files: {} },
+      [sha('8')]: { files: DECLARED },
+    },
+    repos: [
+      {
+        failing: `${API}/repos/o/r/pulls/44`,
+        head: sha('1'),
+        name: 'o/r',
+        pulls: [
+          { author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 },
+          { author: 'ada', head: sha('6'), merge: { sha: sha('8') }, number: 45 },
+        ],
+      },
+    ],
+  });
+  expect(queue.failures).toEqual([
+    {
+      cause: "GitHub's API answered 502 for GET /repos/o/r/pulls/44.",
+      pullRequest: 44,
+      repository: 'o/r',
+    },
+  ]);
+  expect(new Set(queue.candidates.map((candidate) => candidate.commit[0]))).toEqual(
+    new Set(['1', '6']),
+  );
 });

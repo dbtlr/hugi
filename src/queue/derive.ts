@@ -12,7 +12,6 @@ import type {
   CommitStatuses,
   DeclarationReport,
   Queue,
-  RefusedTrigger,
   RunInFlight,
   Snapshot,
 } from './types';
@@ -48,11 +47,10 @@ function isInFlight(commit: CommitSnapshot, lane: LaneRef, inFlight: RunInFlight
 type CommitYield = {
   readonly candidates: Candidate[];
   readonly declarationReports: DeclarationReport[];
-  readonly refusedTriggers: RefusedTrigger[];
 };
 
 function commitYield(commit: CommitSnapshot, inFlight: RunInFlight | undefined): CommitYield {
-  const result: CommitYield = { candidates: [], declarationReports: [], refusedTriggers: [] };
+  const result: CommitYield = { candidates: [], declarationReports: [] };
   const { read, repository } = commit;
   // A hugi status with a verdict settles every lane without one; verdicts already posted stand.
   if (
@@ -67,15 +65,6 @@ function commitYield(commit: CommitSnapshot, inFlight: RunInFlight | undefined):
   }
   for (const decision of read.lanes) {
     const { lane } = decision;
-    if (decision.kind === 'refused-trigger') {
-      result.refusedTriggers.push({
-        cause: decision.cause,
-        commit: commit.commit,
-        lane,
-        repository,
-      });
-      continue;
-    }
     const statusName = laneStatusName(lane);
     if (
       decision.kind === 'runs' &&
@@ -112,7 +101,7 @@ function numberOf(commit: CommitSnapshot): number {
 /**
  * The queue a snapshot yields: each lane that runs for its commit's event and has no verdict
  * there, except the run in flight, plus each refused declaration to report and each repository
- * whose reads failed.
+ * or pull request whose reads failed.
  */
 export function deriveQueue(snapshot: Snapshot, inFlight?: RunInFlight): Queue {
   const yields = inRunOrder(snapshot).map((commit) => commitYield(commit, inFlight));
@@ -122,8 +111,11 @@ export function deriveQueue(snapshot: Snapshot, inFlight?: RunInFlight): Queue {
     failures: snapshot.flatMap((repository) =>
       repository.kind === 'failed'
         ? [{ cause: repository.cause, repository: repository.repository }]
-        : [],
+        : repository.pullRequestFailures.map((failure) => ({
+            cause: failure.cause,
+            pullRequest: failure.number,
+            repository: repository.repository,
+          })),
     ),
-    refusedTriggers: yields.flatMap((each) => each.refusedTriggers),
   };
 }

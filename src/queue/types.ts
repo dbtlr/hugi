@@ -15,9 +15,7 @@ export type CommitEvent =
 export type LaneDecision =
   | { readonly kind: 'runs'; readonly lane: LaneRef }
   /** The workflow's `on:` or the job's `if:` leaves the lane out: no run and no status. */
-  | { readonly kind: 'left-out'; readonly lane: LaneRef }
-  /** The workflow's `on:` is one GitHub would refuse, so the lane does not run; `cause` says why. */
-  | { readonly kind: 'refused-trigger'; readonly lane: LaneRef; readonly cause: string };
+  | { readonly kind: 'left-out'; readonly lane: LaneRef };
 
 /** The latest state of each status context on the commit the outcome belongs to. */
 export type CommitStatuses = ReadonlyMap<string, CommitStatusState>;
@@ -47,6 +45,9 @@ export type CommitSnapshot = {
   readonly read: CommitRead;
 };
 
+/** An open pull request whose reads failed, with why. */
+export type PullRequestReadFailure = { readonly number: number; readonly cause: string };
+
 /** One enrolled repository as a poll read it, or why its reads failed. */
 export type RepositorySnapshot =
   | {
@@ -55,6 +56,8 @@ export type RepositorySnapshot =
       readonly defaultBranch: CommitSnapshot;
       /** The open pull requests the allowlist admits. */
       readonly pullRequests: readonly CommitSnapshot[];
+      /** The admitted pull requests whose reads failed; each is skipped for this poll alone. */
+      readonly pullRequestFailures: readonly PullRequestReadFailure[];
     }
   | { readonly kind: 'failed'; readonly repository: string; readonly cause: string };
 
@@ -87,21 +90,19 @@ export type DeclarationReport = {
   readonly cause: string;
 };
 
-/** A lane left out because its workflow's `on:` is one GitHub would refuse. */
-export type RefusedTrigger = {
+/**
+ * A read that failed, skipped for this poll. With no `pullRequest`, the whole repository is
+ * skipped; with one, only that pull request is, and the repository's other commits still yield.
+ */
+export type RepositoryFailure = {
   readonly repository: string;
-  readonly commit: string;
-  readonly lane: LaneRef;
+  readonly pullRequest?: number;
   readonly cause: string;
 };
-
-/** A repository skipped for this poll because its reads failed. */
-export type RepositoryFailure = { readonly repository: string; readonly cause: string };
 
 /** What the poll derives: the candidates in run order, and what the caller must report. */
 export type Queue = {
   readonly candidates: readonly Candidate[];
   readonly declarationReports: readonly DeclarationReport[];
-  readonly refusedTriggers: readonly RefusedTrigger[];
   readonly failures: readonly RepositoryFailure[];
 };

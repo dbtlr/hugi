@@ -15,13 +15,14 @@ import { JobSkippedError, LaneReadError, readLane } from '../lane/reader';
 import type { EventContext, LaneRef, PullRequestRef } from '../lane/step-plan';
 import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
 import type { HostSource } from '../source/host-source';
-import { skipsWorkflows, TriggerError, workflowStarts } from '../trigger';
+import { skipsWorkflows, workflowStarts } from '../trigger';
 import type { TriggerEvent } from '../trigger';
 import { GUEST_RUNNER_PATHS } from '../vm';
 import type {
   CommitRead,
   CommitSnapshot,
   LaneDecision,
+  PullRequestReadFailure,
   RepositorySnapshot,
   Snapshot,
 } from './types';
@@ -72,18 +73,11 @@ function once(read: () => Promise<readonly string[]>): () => Promise<readonly st
   };
 }
 
-/** The workflow's parsed `on:`, or `undefined` when the workflow cannot be read here. */
-function triggerOf(text: string): { readonly on: unknown } | undefined {
-  try {
-    return { on: loadWorkflow(text).on };
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Whether the lane runs for the event: its workflow's `on:` must start it, then its job's `if:`
  * must hold. A lane the reader cannot otherwise read runs, so its run yields the fail verdict.
+ * An accepted declaration's workflows already loaded and passed trigger validation, so a failure
+ * to read `on:` here breaches that invariant: it propagates and fails the repository's read.
  */
 async function decideLane(
   lane: LaneRef,
@@ -91,19 +85,11 @@ async function decideLane(
   considered: Considered,
 ): Promise<LaneDecision> {
   const text = await files(lane.workflow);
-  const trigger = text === null ? undefined : triggerOf(text);
-  if (text === null || trigger === undefined) {
+  if (text === null) {
     return { kind: 'runs', lane };
   }
-  try {
-    if (!(await workflowStarts(trigger.on, considered.trigger))) {
-      return { kind: 'left-out', lane };
-    }
-  } catch (error) {
-    if (error instanceof TriggerError) {
-      return { cause: error.message, kind: 'refused-trigger', lane };
-    }
-    throw error;
+  if (!(await workflowStarts(loadWorkflow(text).on, considered.trigger))) {
+    return { kind: 'left-out', lane };
   }
   try {
     readLane(text, lane, considered.context, GUEST_RUNNER_PATHS);
@@ -225,6 +211,16 @@ function admitted(
   );
 }
 
+/** A failed GitHub or git read, which skips what was being read for this poll. */
+function isReadFailure(error: unknown): error is GitHubReadError | SourceError {
+  return error instanceof GitHubReadError || error instanceof SourceError;
+}
+
+/**
+ * Read one repository. A failed repository-level read (the repository, the open-pull-request
+ * listing, the default branch head) fails the repository; a failed read of one pull request skips
+ * only that pull request.
+ */
 async function readRepository(
   config: Pick<HugiConfig, 'allowlist'>,
   deps: PollDeps,
@@ -238,13 +234,21 @@ async function readRepository(
     );
     const pulls = admitted(await deps.github.openPullRequests(repository), config.allowlist);
     const pullRequests: CommitSnapshot[] = [];
+    const pullRequestFailures: PullRequestReadFailure[] = [];
     for (const pull of pulls) {
-      // oxlint-disable-next-line no-await-in-loop -- one pull request at a time in the shared clone
-      pullRequests.push(await readPull(deps, repository, pull.number));
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- one pull request at a time in the shared clone
+        pullRequests.push(await readPull(deps, repository, pull.number));
+      } catch (error) {
+        if (!isReadFailure(error)) {
+          throw error;
+        }
+        pullRequestFailures.push({ cause: error.message, number: pull.number });
+      }
     }
-    return { defaultBranch, kind: 'read', pullRequests, repository };
+    return { defaultBranch, kind: 'read', pullRequestFailures, pullRequests, repository };
   } catch (error) {
-    if (error instanceof GitHubReadError || error instanceof SourceError) {
+    if (isReadFailure(error)) {
       return { cause: error.message, kind: 'failed', repository };
     }
     throw error;
@@ -252,8 +256,9 @@ async function readRepository(
 }
 
 /**
- * Read every enrolled repository, one at a time in configuration order. A repository whose GitHub
- * or git reads fail is recorded as failed for this poll; the others are still read.
+ * Read every enrolled repository, one at a time in configuration order. A repository whose own GitHub
+ * or git reads fail is recorded as failed for this poll, and a pull request whose reads fail is
+ * skipped alone; the others are still read.
  */
 export async function pollRepositories(
   config: Pick<HugiConfig, 'allowlist' | 'repositories'>,
