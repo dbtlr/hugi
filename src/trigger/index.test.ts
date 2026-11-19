@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { TriggerError, workflowStarts } from './index';
+import { TriggerError, validateTriggers, workflowStarts } from './index';
 import type { TriggerEvent } from './index';
 
 type Counted = { event: TriggerEvent; calls: () => number };
@@ -47,6 +47,7 @@ describe('on: forms', () => {
     ['mapping empty values', { pull_request: {}, push: {} }, true, true],
     ['mapping unrelated', { release: { types: ['published'] } }, false, false],
     ['mapping one', { push: null }, true, false],
+    ['null-prototype mapping', Object.assign(Object.create(null), { push: null }), true, false],
   ];
   test.each(cases)('%s', async (_, on, pushes, pulls) => {
     expect(await workflowStarts(on, push('main').event)).toBe(pushes);
@@ -76,6 +77,18 @@ describe('push filters', () => {
     ['branch ok, paths miss', { branches: ['main'], paths: ['src/**'] }, 'main', ['x'], false],
     ['branch miss, paths ok', { branches: ['main'], paths: ['src/**'] }, 'dev', ['src/a'], false],
     ['both ok', { branches: ['main'], paths: ['src/**'] }, 'main', ['src/a'], true],
+    ['branches null', { branches: null }, 'dev', [], true],
+    [
+      'branches null beside branches-ignore',
+      { branches: null, 'branches-ignore': ['dev'] },
+      'dev',
+      [],
+      false,
+    ],
+    ['branches empty list', { branches: [] }, 'main', [], false],
+    ['branches-ignore empty list', { 'branches-ignore': [] }, 'main', [], true],
+    ['hyphenated branch', { branches: ['release-*'] }, 'release-1', [], true],
+    ['hyphenated path', { paths: ['**/*-post.md'] }, 'main', ['blog/my-post.md'], true],
   ];
   test.each(cases)('%s', async (_, filters, branch, files, expected) => {
     expect(await workflowStarts({ push: filters }, push(branch, files).event)).toBe(expected);
@@ -175,19 +188,75 @@ describe('TriggerError', () => {
     ['paths wrong type', { pull_request: { paths: { a: 1 } } }, /pull_request.*paths/],
     ['types wrong type', { pull_request: { types: 4 } }, /pull_request.*types/],
     ['only negative branches', { push: { branches: ['!main'] } }, /push.*branches/],
+    ['only negative tags', { push: { tags: ['!v1'] } }, /push.*tags/],
+    ['only negative paths', { pull_request: { paths: ['!docs/**'] } }, /pull_request.*paths/],
     ['event value wrong type', { push: 'main' }, /push/],
+    ['event value a list', { push: ['main'] }, /push/],
+    ['event value a Date', { push: new Date(0) }, /push/],
+    ['filters a Date', { pull_request: { branches: new Date(0) } }, /pull_request.*branches/],
+    ['on a Date', new Date(0), /on:/],
     ['on wrong type', 5, /on:/],
+    ['on empty string', '', /on:/],
+    ['on empty list', [], /on:/],
+    ['on empty mapping', {}, /on:/],
     ['list item wrong type', ['push', 3], /on:/],
+    ['list item empty', ['push', ''], /on:/],
+    ['push unknown key', { push: { branch: ['main'] } }, /push.*"branch"/],
+    ['push types', { push: { types: ['opened'] } }, /push.*"types"/],
+    ['pull_request tags', { pull_request: { tags: ['v*'] } }, /pull_request.*"tags"/],
+    [
+      'pull_request unknown key',
+      { pull_request: { branchs: ['main'] } },
+      /pull_request.*"branchs"/,
+    ],
+    ['unparsable branch pattern', { push: { branches: ['main', '[z-a]'] } }, /push\.branches\[1\]/],
+    ['unparsable negative pattern', { push: { paths: ['**', '![]'] } }, /push\.paths\[1\]/],
+    [
+      'unparsable ignore pattern',
+      { pull_request: { 'paths-ignore': '[a' } },
+      /pull_request\.paths-ignore/,
+    ],
+    ['unparsable tag pattern', { push: { tags: ['v[^1]'] } }, /push\.tags\[0\]/],
   ];
   test.each(cases)('%s', async (_, on, message) => {
-    const event = JSON.stringify(on).includes('pull_request') ? pull('main') : push('main');
-    const error = await workflowStarts(on, event.event).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(TriggerError);
-    expect(error instanceof Error ? error.message : '').toMatch(message);
+    for (const event of [push('main', ['a']), pull('main', ['a'])]) {
+      // oxlint-disable-next-line no-await-in-loop -- each event is checked in turn
+      const error = await workflowStarts(on, event.event).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(TriggerError);
+      expect(error instanceof Error ? error.message : '').toMatch(message);
+    }
+    expect(() => validateTriggers(on)).toThrow(TriggerError);
   });
 
-  test('a conflict under another event is not an error', async () => {
+  test('does not depend on the branch or the changed files', async () => {
+    const on = { push: { branches: ['main'], paths: ['src/**', '!docs/**', '[z-a]'] } };
+    for (const event of [push('dev'), push('main'), push('main', ['src/a'])]) {
+      // oxlint-disable-next-line no-await-in-loop -- each event is checked in turn
+      expect(await workflowStarts(on, event.event).catch((e: unknown) => e)).toBeInstanceOf(
+        TriggerError,
+      );
+    }
+    const negative = { push: { branches: ['main'], paths: ['!x'] } };
+    expect(
+      await workflowStarts(negative, push('dev').event).catch((e: unknown) => e),
+    ).toBeInstanceOf(TriggerError);
+  });
+
+  test('a conflict under the other event is still an error', async () => {
     const on = { pull_request: null, push: { branches: ['a'], 'branches-ignore': ['b'] } };
-    expect(await workflowStarts(on, pull('main').event)).toBe(true);
+    expect(await workflowStarts(on, pull('main').event).catch((e: unknown) => e)).toBeInstanceOf(
+      TriggerError,
+    );
+  });
+
+  test('entries of other events are not inspected', () => {
+    expect(() =>
+      validateTriggers({ push: null, release: 5, schedule: [{ cron: 1 }], workflow_dispatch: 'x' }),
+    ).not.toThrow();
+  });
+
+  test('a null-prototype filter mapping is read', async () => {
+    const filters = Object.assign(Object.create(null), { paths: ['a'] });
+    expect(await workflowStarts({ push: filters }, push('dev', ['a']).event)).toBe(true);
   });
 });

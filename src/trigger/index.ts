@@ -2,51 +2,52 @@
  * Decide whether a workflow's `on:` block starts it for one event Hugi considers (ADR-0004,
  * "Events"). Pure: the caller supplies the event and, lazily, the files it changed.
  */
-import { TriggerError } from './errors';
 import { filtersStart } from './filters';
+import { isMapping, validateTriggers } from './validate';
 
 export { TriggerError } from './errors';
 export { skipsWorkflows } from './skip';
+export { validateTriggers } from './validate';
 
 export type TriggerEvent =
   | {
       readonly kind: 'push';
+      /** The short name of the branch pushed to, such as `main`, not `refs/heads/main`. */
       readonly branch: string;
+      /**
+       * The repository-relative paths the commit changed against its first parent (ADR-0004).
+       * Called only when a path filter needs them.
+       */
       readonly changedFiles: () => Promise<readonly string[]>;
     }
   | {
       readonly kind: 'pull_request';
+      /** The short name of the branch the pull request targets, such as `main`. */
       readonly baseRef: string;
+      /**
+       * The repository-relative paths in GitHub's three-dot diff: the head against the merge base
+       * of base and head. Called only when a path filter needs them.
+       */
       readonly changedFiles: () => Promise<readonly string[]>;
     };
 
-function isMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Whether the workflow's parsed `on:` value starts it for `event`. */
+/**
+ * Whether the workflow's parsed `on:` value starts it for `event`. The whole block is validated
+ * first, so a `TriggerError` depends only on the workflow, never on the branch or the files.
+ */
 export async function workflowStarts(on: unknown, event: TriggerEvent): Promise<boolean> {
+  validateTriggers(on);
   if (typeof on === 'string') {
     return on === event.kind;
   }
   if (Array.isArray(on)) {
-    if (on.some((name) => typeof name !== 'string')) {
-      throw new TriggerError('on: a list must name events as strings');
-    }
     return on.includes(event.kind);
   }
-  if (!isMapping(on)) {
-    throw new TriggerError('on: must be an event name, a list of them, or a mapping');
-  }
-  if (!Object.hasOwn(on, event.kind)) {
+  // Validation leaves a mapping here; the check narrows its type.
+  if (!isMapping(on) || !Object.hasOwn(on, event.kind)) {
     return false;
   }
   const filters = on[event.kind];
-  if (filters === null || filters === undefined) {
-    return event.kind !== 'pull_request' || filtersStart(event, {});
-  }
-  if (!isMapping(filters)) {
-    throw new TriggerError(`on.${event.kind} must be empty or a mapping of filters`);
-  }
-  return filtersStart(event, filters);
+  // An entry with no filters starts every push and pull request Hugi considers.
+  return isMapping(filters) ? filtersStart(event, filters) : true;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
+import { TriggerError } from './errors';
 import { matchesPatterns, matchesPattern } from './patterns';
 
 describe('matchesPattern', () => {
@@ -37,10 +38,88 @@ describe('matchesPattern', () => {
     [String.raw`a\*b`, 'a*b', true],
     [String.raw`a\*b`, 'aXb', false],
     ['Main', 'main', false],
-    ['[unclosed', '[unclosed', true],
+    ['[0-9a-z]x', '7x', true],
+    ['[0-9a-z]x', 'qx', true],
+    ['[0-9a-z]x', 'Qx', false],
+    [String.raw`a\[b`, 'a[b', true],
+    // The cheat sheet's rows with a hyphen.
+    ['feature/*', 'feature/my-branch', true],
+    ['feature/**', 'feature/beta-a/my-branch', true],
+    ['releases/mona-the-octocat', 'releases/mona-the-octocat', true],
+    ['*feature', 'mona-feature', true],
+    ['release-*', 'release-1', true],
+    ['release-*', 'release_1', false],
+    ['**/*src/**', 'my-src/code/js/app.js', true],
+    ['**/*src/**', 'a/src/app.js', true],
+    ['**/docs/**', 'dir/docs/my-file.txt', true],
+    ['**/docs/**', 'space/docs/plan/space.doc', true],
+    ['**/*-post.md', 'my-post.md', true],
+    ['**/*-post.md', 'path/their-post.md', true],
+    ['**/*-post.md', 'path/their_post.md', false],
+    ['**/migrate-*.sql', 'migrate-10909.sql', true],
+    ['**/migrate-*.sql', 'db/migrate-v1.0.sql', true],
+    ['**/migrate-*.sql', 'db/sept/migrate-v1.sql', true],
+    ['.github/workflows/ci-mac.yml', '.github/workflows/ci-mac.yml', true],
+    // A quantifier with nothing before it is a literal character.
+    ['?a', '?a', true],
+    ['?a', 'a', false],
+    ['+a', '+a', true],
+    ['+a', 'a', false],
+    // A quantifier after a wildcard changes nothing.
+    ['a*+', 'abc', true],
+    ['a*?', 'a/b', false],
+    // Names are compared by code point.
+    ['docs/🚀.md', 'docs/🚀.md', true],
+    ['a🚀+b', 'a🚀🚀b', true],
+    ['a🚀?b', 'ab', true],
+    ['*', '🚀', true],
+    ['?', '🚀', false],
+    // Git allows a line break in a path; `*` crosses it but never `/`.
+    ['*', 'a\nb', true],
+    ['docs/*', 'docs/a\nb.md', true],
+    ['*', 'a\n/b', false],
+    ['**', 'a\n/b', true],
   ];
   test.each(cases)('%s vs %s is %p', (pattern, name, expected) => {
     expect(matchesPattern(pattern, name)).toBe(expected);
+  });
+});
+
+describe('a pattern GitHub would not parse', () => {
+  const cases: [string, string][] = [
+    ['empty class', '[]'],
+    ['class of a bracket', '[]]'],
+    ['unterminated class', '[unclosed'],
+    ['negated class', '[^a]'],
+    ['escape in a class', String.raw`[a\]]`],
+    ['reversed range', '[z-a]'],
+    ['range across kinds', '[a-Z]'],
+    ['range across digits and letters', '[0-z]'],
+    ['dangling hyphen', '[a-]'],
+    ['leading hyphen', '[-a]'],
+    ['punctuation in a class', '[a.]'],
+    ['non-ASCII letter in a class', '[é]'],
+  ];
+  test.each(cases)('%s is a TriggerError', (_, pattern) => {
+    expect(() => matchesPattern(pattern, 'a')).toThrow(TriggerError);
+  });
+});
+
+describe('matching time', () => {
+  // A backtracking matcher takes seconds to minutes on these; each must stay linear in the name.
+  const cases: [string, string][] = [
+    ['**a**a**a**a**a**a**b', 'a'.repeat(80)],
+    ['**?*?*?*?*?*?x', 'a'.repeat(200)],
+    ['a+a+a+a+a+a+a+a+b', 'a'.repeat(2000)],
+    [`${'**a'.repeat(40)}b`, 'a'.repeat(5000)],
+    [`${'*/'.repeat(30)}x`, 'a/'.repeat(3000)],
+  ];
+  test('adversarial patterns finish well under a second', () => {
+    const started = performance.now();
+    for (const [pattern, name] of cases) {
+      expect(matchesPattern(pattern, name)).toBe(false);
+    }
+    expect(performance.now() - started).toBeLessThan(250);
   });
 });
 

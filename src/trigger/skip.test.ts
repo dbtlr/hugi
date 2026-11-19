@@ -21,6 +21,15 @@ describe('skipsWorkflows', () => {
     ['trailer in subject only', 'skip-checks: true', false],
     ['trailer not in final paragraph', 'fix\n\nskip-checks: true\n\nmore text', false],
     ['trailer value longer', 'fix\n\nskip-checks: trueish', false],
+    ['trailer then blank lines', 'x\n\nskip-checks: true\n\n', true],
+    ['trailer after two blank lines', 'fix\n\n\nskip-checks: true', true],
+    ['whitespace-only line before trailer', 'fix\n  \t\nskip-checks: true', true],
+    ['trailing spaces on trailer lines', 'fix\n\nSigned-off-by: a  \nskip-checks: true \t', true],
+    ['trailer before another trailer', 'fix\n\nskip-checks: true\nSigned-off-by: a <a@b>', false],
+    ['trailer after only blank lines', '\n\nskip-checks: true', false],
+    ['trailer indented', 'fix\n\n  skip-checks: true', false],
+    ['trailer in subject then blank lines', 'skip-checks: true\n\n', false],
+    ['bracket instruction in another case', '[SKIP CI] fix', false],
   ];
   test.each(cases)('%s', (_, message, expected) => {
     expect(skipsWorkflows(message)).toBe(expected);
