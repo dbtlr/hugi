@@ -90,6 +90,19 @@ export type HostSource = {
   readonly guestSource: () => Promise<GuestSource>;
 };
 
+/** Reads a commit's message from the source's git, for GitHub's skip instructions (ADR-0004). */
+export type CommitMessageReader = {
+  /**
+   * The full message of commit `sha` as git stores it, every byte after the header kept. `sha`
+   * must be a full sha the source holds, such as a pull request's checked head; otherwise it
+   * throws `SourceError`.
+   */
+  readonly commitMessage: (sha: string) => Promise<string>;
+};
+
+/** A source as an opener returns it: the commit's files, and the messages of commits it holds. */
+export type OpenedSource = HostSource & CommitMessageReader;
+
 export type HostSourceOptions = {
   readonly cacheDir: string;
   /** The run's `host.spawn`, the only way this module starts a program. */
@@ -271,6 +284,24 @@ function fileReader(git: Git, gitDir: string, sha: string) {
   };
 }
 
+/** A full sha, SHA-1 or SHA-256, so the argument git gets can never read as an option. */
+const FULL_OBJECT_NAME = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+/**
+ * Reads a commit's raw object: the header ends at the first empty line, and the message is
+ * everything after it, byte for byte, so no format placeholder or separator can cut it short.
+ */
+function messageReader(git: Git, gitDir: string): CommitMessageReader['commitMessage'] {
+  return async (sha) => {
+    if (!FULL_OBJECT_NAME.test(sha)) {
+      throw new SourceError(`"${sha}" is not a full commit sha, so its message is not read.`);
+    }
+    const object = await gitOrThrow(git, gitDir, ['cat-file', 'commit', sha]);
+    const end = object.indexOf('\n\n');
+    return end === -1 ? '' : object.slice(end + 2);
+  };
+}
+
 const NOTHING_TO_RELEASE = async (): Promise<void> => {};
 
 /** The guest's source: the clone URL, or a fresh snapshot of `sha` for a local repository. */
@@ -361,9 +392,10 @@ function pinnedSource(
   sha: string,
   options: HostSourceOptions,
   changedFiles: HostSource['changedFiles'],
-): HostSource {
+): OpenedSource {
   return {
     changedFiles,
+    commitMessage: messageReader(git, repository.gitDir),
     guestSource: guestSourceOf(spec, sha, options),
     readFile: fileReader(git, repository.gitDir, sha),
     sha,
@@ -375,7 +407,7 @@ export async function openHostSource(
   spec: RepositorySpec,
   commit: string,
   options: HostSourceOptions,
-): Promise<HostSource> {
+): Promise<OpenedSource> {
   const git = sourceGit(spec, options);
   const repository =
     spec.kind === 'local'
@@ -496,7 +528,7 @@ export async function openPullRequestSource(
   spec: GitHubRepositorySpec,
   facts: PullRequestFacts,
   options: HostSourceOptions,
-): Promise<HostSource> {
+): Promise<OpenedSource> {
   const reported = reportedMerge(facts);
   const git = sourceGit(spec, options);
   const repository = await cachedClone(git, spec, options);

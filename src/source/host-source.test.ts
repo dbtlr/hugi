@@ -542,6 +542,47 @@ describe("a commit's changed files, for path filters", () => {
   });
 });
 
+test('a changed path holding a newline or a quote is returned exactly', async () => {
+  const odd = await committedRepo('odd-paths', { 'line\nbreak.txt': 'a\n', 'say "hi".txt': 'b\n' });
+  const source = await openHostSource(
+    { kind: 'local', path: odd.path },
+    odd.sha,
+    hostOptions(join(root, 'cache')),
+  );
+  expect(await source.changedFiles()).toEqual(['line\nbreak.txt', 'say "hi".txt']);
+});
+
+describe("a commit's message, for skip instructions", () => {
+  test('is read from git exactly, every line and the final newline kept', async () => {
+    const message = 'Bump\n\nKeep "quotes", tabs\tand a trailer.\n\nskip-checks: true';
+    const made = await committedRepo('messages', { 'a.txt': 'a\n' });
+    await gitIn(
+      made.path,
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--quiet',
+      '--allow-empty',
+      '--cleanup=verbatim',
+      '-m',
+      message,
+    );
+    const sha = await gitIn(made.path, 'rev-parse', 'HEAD');
+    const source = await openHostSource(
+      { kind: 'local', path: made.path },
+      sha,
+      hostOptions(join(root, 'cache')),
+    );
+    expect(await source.commitMessage(sha)).toBe(`${message}\n`);
+    expect(await source.commitMessage(made.sha)).toBe('messages\n');
+  });
+
+  test('of a name that is not a full sha is refused before git runs', async () => {
+    const source = await open('main');
+    expect(await failureOf(source.commitMessage('--output=/tmp/x'))).toBeInstanceOf(SourceError);
+  });
+});
+
 test('git never reads the home directory, so a .netrc there cannot authenticate a fetch', async () => {
   const seen: Readonly<Record<string, string | undefined>>[] = [];
   const env = { ...handle.env, HOME: join(root, 'operator-home') };
@@ -856,6 +897,11 @@ describe('a pull request opens at its merge commit only when the merge is curren
     const source = await openPullRequestSource(spec(), current(7), pullsOptions());
     // main.txt changed on the base after the head branched, so the three-dot diff leaves it out.
     expect(await source.changedFiles()).toEqual(['feature.txt']);
+  });
+
+  test("a pull request's head message is read from the fetched head ref, with no API call", async () => {
+    const source = await openPullRequestSource(spec(), current(7), pullsOptions());
+    expect(await source.commitMessage(head)).toBe('feature\n');
   });
 
   test('a pushed merge commit is compared with its first parent', async () => {
