@@ -135,6 +135,35 @@ describe('open pull requests', () => {
     expect(calls.length).toBeGreaterThan(1);
   });
 
+  /** A listing of `count` pages, each linking to the next, with one pull request on the last. */
+  async function pages(count: number) {
+    const [pull] = JSON.parse(await recorded('pulls-page-1'));
+    const at = (page: number) => (page === 1 ? PULLS : `${PULLS}&page=${page}`);
+    const routes: Record<string, Answer> = {};
+    for (let page = 1; page <= count; page += 1) {
+      routes[at(page)] =
+        page === count
+          ? { body: JSON.stringify([pull]) }
+          : { body: '[]', headers: { link: `<${at(page + 1)}>; rel="next"` } };
+    }
+    return serving(routes);
+  }
+
+  test('a listing of 50 pages, the most Hugi reads, is read whole', async () => {
+    const { calls, fetch } = await pages(50);
+    expect(await reader(fetch).openPullRequests(REPO)).toHaveLength(1);
+    expect(calls).toHaveLength(50);
+  });
+
+  test('a listing of 51 pages fails at the 51st with the typed error', async () => {
+    const { calls, fetch } = await pages(51);
+    const failure = await failureOf(reader(fetch).openPullRequests(REPO));
+    expect(failure.message).toBe(
+      `GET /repos/${REPO}/pulls lists more than 50 pages; Hugi reads no further.`,
+    );
+    expect(calls).toHaveLength(50);
+  });
+
   test('an entry without a full head sha is malformed', async () => {
     const { fetch } = serving({
       [PULLS]: {
@@ -200,7 +229,7 @@ describe("a commit's statuses", () => {
     });
   });
 
-  test('keep the first, most recent, state of a context listed twice', async () => {
+  test('keep the first state of a context listed twice', async () => {
     const statuses = [
       { context: 'hugi / platform', state: 'failure' },
       { context: 'hugi / platform', state: 'pending' },
@@ -293,6 +322,19 @@ describe('a failed read is one error naming the repository and endpoint', () => 
     expect(failure.message).toBe(
       `GitHub's answer for ${endpoint} is malformed: it has no default_branch.`,
     );
+  });
+
+  test('a token provider that never answers times out like a request', async () => {
+    const { calls, fetch } = serving({});
+    const failure = await failureOf(
+      createGitHubReader({
+        fetch,
+        timeoutMs: 50,
+        token: () => new Promise<string>(() => {}),
+      }).defaultBranchHead(REPO),
+    );
+    expect(failure.message).toBe(`Cannot get a GitHub token for ${endpoint} within 0.05 s.`);
+    expect(calls).toHaveLength(0);
   });
 
   test('a token that cannot be had', async () => {

@@ -12,7 +12,10 @@ import type { Fetch, PullRequestFacts } from './pull-request';
 /** Supplies the token each read sends; minting an installation token is the caller's. */
 export type TokenProvider = () => Promise<string>;
 
-/** A read of one repository from GitHub's API failed; the poller skips that repository. */
+/**
+ * A read from GitHub's API failed. The poller skips what was being read for this poll: the
+ * repository for a repository-level read, only the pull request for a read of one pull request.
+ */
 export class GitHubReadError extends Error {
   override readonly name = 'GitHubReadError';
   /** `owner/name`. */
@@ -127,11 +130,28 @@ class Endpoint {
     return this.fail(`GitHub's answer for ${this.#name} is malformed: ${detail}`);
   }
 
+  get #timeoutMs(): number {
+    return this.#options.timeoutMs ?? READ_TIMEOUT_MS;
+  }
+
+  /** The provider's token, bounded by the same time limit as a request, so it cannot hold a poll. */
   async #token(): Promise<string> {
+    const timeoutMs = this.#timeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(this.fail(`Cannot get a GitHub token for ${this.#name} within ${timeoutMs / 1000} s.`));
+      }, timeoutMs);
+    });
     try {
-      return await this.#options.token();
+      return await Promise.race([this.#options.token(), timedOut]);
     } catch (error) {
+      if (error instanceof GitHubReadError) {
+        throw error;
+      }
       throw this.fail(`Cannot get a GitHub token for ${this.#name}: ${messageOf(error)}`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -151,7 +171,7 @@ class Endpoint {
   /** Read one page at `url`; a timeout covers the answer and its body. */
   async page(url: string): Promise<Page> {
     const token = await this.#token();
-    const timeoutMs = this.#options.timeoutMs ?? READ_TIMEOUT_MS;
+    const timeoutMs = this.#timeoutMs;
     const signal = AbortSignal.timeout(timeoutMs);
     const timedOut = () =>
       this.fail(`GitHub's API did not answer within ${timeoutMs / 1000} s for ${this.#name}.`);
@@ -324,7 +344,7 @@ export function createGitHubReader(options: GitHubReaderOptions): GitHubReader {
           ? eachOf(body.statuses, 'statuses', statusOf)
           : new Malformed('it has no statuses'),
       );
-      // GitHub lists the most recent status of a context first.
+      // The combined status holds one latest entry per context; a context listed twice keeps its first.
       const latest = new Map<string, CommitStatusState>();
       for (const { context, state } of statuses) {
         if (!latest.has(context)) {
