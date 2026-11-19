@@ -5,7 +5,16 @@ import { join, relative } from 'node:path';
 
 import { processHandle } from '@loomcli/core';
 
-import { AmbiguousRefError, NotAFileError, openHostSource, SourceError } from './host-source';
+import { messageOf } from '../errors';
+import type { PullRequestFacts } from '../github/pull-request';
+import {
+  AmbiguousRefError,
+  NoCurrentMergeError,
+  NotAFileError,
+  openHostSource,
+  openPullRequestSource,
+  SourceError,
+} from './host-source';
 import type { HostSourceOptions } from './host-source';
 
 const handle = processHandle();
@@ -201,6 +210,23 @@ test('git runs with no inherited GIT_* variable and with system and global confi
       GIT_NO_LAZY_FETCH: '1',
       GIT_TERMINAL_PROMPT: '0',
     });
+  }
+});
+
+test("git runs in the C locale, so the messages Hugi reads do not depend on the user's language", async () => {
+  const seen: Readonly<Record<string, string | undefined>>[] = [];
+  const env = { ...handle.env, LANG: 'de_DE.UTF-8', LANGUAGE: 'de', LC_ALL: 'de_DE.UTF-8' };
+  const base = hostOptions(join(root, 'cache'), { env });
+  await openHostSource({ kind: 'local', path: repo }, 'main', {
+    ...base,
+    spawn: (command, args, options) => {
+      seen.push(options?.env ?? {});
+      return base.spawn(command, args, options);
+    },
+  });
+  expect(seen.length).toBeGreaterThan(0);
+  for (const gitEnv of seen) {
+    expect(gitEnv).toMatchObject({ LANGUAGE: 'C', LC_ALL: 'C' });
   }
 });
 
@@ -557,4 +583,238 @@ test('a repository whose path has a percent escape snapshots from that literal p
   } finally {
     await guest.release();
   }
+});
+
+const pullsOptions = () => hostOptions(join(root, 'pulls-cache'), { remoteTransport: 'file' });
+
+describe('a pull request opens at its merge commit only when the merge is current', () => {
+  let upstream: string;
+  let head: string;
+  let merge: string;
+  let staleMerge: string;
+  let foreignMerge: string;
+  let mainTip: string;
+  let baseTip: string;
+  const spec = () =>
+    ({ cloneUrl: `file://${upstream}`, kind: 'github', name: 'example/pulls' }) as const;
+
+  /** A three-parent commit whose second parent is `secondParent`, as no GitHub merge ever is. */
+  async function octopusOf(firstParent: string, secondParent: string, thirdParent: string) {
+    const merged = await mergeOf(firstParent, secondParent);
+    const tree = await gitIn(upstream, 'rev-parse', `${merged}^{tree}`);
+    return gitIn(
+      upstream,
+      'commit-tree',
+      tree,
+      '-p',
+      firstParent,
+      '-p',
+      secondParent,
+      '-p',
+      thirdParent,
+      '-m',
+      'octopus',
+    );
+  }
+
+  /** A two-parent merge commit of `first` and `second`, with the tree git merges them to. */
+  async function mergeOf(firstParent: string, secondParent: string) {
+    const tree = (
+      await gitIn(upstream, 'merge-tree', '--write-tree', firstParent, secondParent)
+    ).split('\n')[0]!;
+    return gitIn(
+      upstream,
+      'commit-tree',
+      tree,
+      '-p',
+      firstParent,
+      '-p',
+      secondParent,
+      '-m',
+      `Merge ${secondParent} into ${firstParent}`,
+    );
+  }
+
+  beforeAll(async () => {
+    const created = await committedRepo('pulls', { 'base.txt': 'base\n' });
+    upstream = created.path;
+    baseTip = created.sha;
+    await gitIn(upstream, 'config', 'uploadpack.allowFilter', 'true');
+    await gitIn(upstream, 'checkout', '--quiet', '-b', 'feature');
+    await writeFile(join(upstream, 'feature.txt'), 'feature\n');
+    await gitIn(upstream, 'add', '-A');
+    await gitIn(upstream, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'feature');
+    head = await gitIn(upstream, 'rev-parse', 'HEAD');
+    await gitIn(upstream, 'checkout', '--quiet', 'main');
+    await writeFile(join(upstream, 'main.txt'), 'main\n');
+    await gitIn(upstream, 'add', '-A');
+    await gitIn(upstream, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'main');
+    mainTip = await gitIn(upstream, 'rev-parse', 'HEAD');
+    merge = await mergeOf(mainTip, head);
+    staleMerge = await mergeOf(baseTip, head);
+    foreignMerge = await mergeOf(baseTip, mainTip);
+    const refs: [string, string][] = [
+      ['refs/pull/7/head', head],
+      ['refs/pull/7/merge', merge],
+      ['refs/pull/8/head', head],
+      ['refs/pull/9/merge', merge],
+      ['refs/pull/10/head', head],
+      ['refs/pull/10/merge', staleMerge],
+      ['refs/pull/11/head', head],
+      ['refs/pull/11/merge', foreignMerge],
+      ['refs/pull/12/head', head],
+      ['refs/pull/12/merge', mainTip],
+      ['refs/pull/13/head', head],
+      ['refs/pull/13/merge', await octopusOf(mainTip, head, baseTip)],
+      ['refs/pull/14/head', head],
+      ['refs/pull/14/merge', await mergeOf(head, mainTip)],
+    ];
+    for (const [ref, sha] of refs) {
+      // oxlint-disable-next-line no-await-in-loop -- one ref at a time keeps git's ref locks apart
+      await gitIn(upstream, 'update-ref', ref, sha);
+    }
+  });
+
+  /** Pull request `number` as GitHub reports it when its merge is current. */
+  const current = (
+    number: number,
+    overrides: Partial<PullRequestFacts> = {},
+  ): PullRequestFacts => ({
+    baseRef: 'main',
+    headRef: 'feature',
+    headSha: head,
+    mergeCommitSha: merge,
+    mergeable: true,
+    number,
+    state: 'open',
+    ...overrides,
+  });
+
+  /** The reason `openPullRequestSource` refuses `facts` for, with its message. */
+  async function refusal(facts: PullRequestFacts, extra: Partial<HostSourceOptions> = {}) {
+    const failure = await failureOf(
+      openPullRequestSource(spec(), facts, { ...pullsOptions(), ...extra }),
+    );
+    expect(failure).toBeInstanceOf(SourceError);
+    if (!(failure instanceof NoCurrentMergeError)) {
+      throw new Error(`expected NoCurrentMergeError, got ${String(failure)}`);
+    }
+    return { message: failure.message, reason: failure.reason };
+  }
+
+  test('a current merge pins the source to the merge commit, read with both sides', async () => {
+    const source = await openPullRequestSource(spec(), current(7), pullsOptions());
+    expect(source.sha).toBe(merge);
+    expect(source.refKind).toBeUndefined();
+    expect(await source.readFile('feature.txt')).toBe('feature\n');
+    expect(await source.readFile('main.txt')).toBe('main\n');
+    const guest = await source.guestSource();
+    expect(guest.location).toEqual({ cloneUrl: `file://${upstream}`, kind: 'remote' });
+  });
+
+  test('a closed pull request is refused before any git runs', async () => {
+    let spawned = 0;
+    const base = pullsOptions();
+    const { message, reason } = await refusal(current(7, { state: 'closed' }), {
+      spawn: (command, args, spawnOptions) => {
+        spawned += 1;
+        return base.spawn(command, args, spawnOptions);
+      },
+    });
+    expect(reason).toBe('closed');
+    expect(message).toContain('is closed');
+    expect(spawned).toBe(0);
+  });
+
+  test('a pull-request ref left in the cache cannot be run by any name, past the merge checks', async () => {
+    await openPullRequestSource(spec(), current(7), pullsOptions());
+    const names = [
+      'pull/7/merge',
+      'refs/pull/7/merge',
+      'pull/7/head',
+      'pull/7/merge~0',
+      'pull/7/merge^0',
+      'pull/7/merge^{}',
+      'refs/pull/7/merge^{commit}',
+      'pull/7/head~0',
+      'main~0',
+    ];
+    for (const name of names) {
+      // oxlint-disable-next-line no-await-in-loop -- each name opens the same cache in turn
+      const failure = await failureOf(openHostSource(spec(), name, pullsOptions()));
+      expect(failure).toBeInstanceOf(SourceError);
+      expect(messageOf(failure)).toContain('not a sha, a branch, or a tag');
+    }
+  });
+
+  test('a pull request with a merge conflict is refused', async () => {
+    const { message, reason } = await refusal(
+      current(7, { mergeCommitSha: null, mergeable: false }),
+    );
+    expect(reason).toBe('conflict');
+    expect(message).toContain('merge conflict');
+  });
+
+  test.each([
+    ['mergeable is null', { mergeable: null }],
+    ['merge_commit_sha is null', { mergeCommitSha: null }],
+  ] as const)('a pull request whose %s has no computed merge', async (_name, overrides) => {
+    const { message, reason } = await refusal(current(7, overrides));
+    expect(reason).toBe('not-computed');
+    expect(message).toContain('has not computed the merge');
+  });
+
+  test('a stale merge ref that merges the head but is not merge_commit_sha is refused', async () => {
+    const { message, reason } = await refusal(current(10));
+    expect(reason).toBe('not-computed');
+    expect(message).toContain('has not computed the merge');
+    expect(message).toContain(staleMerge);
+  });
+
+  test('a conflict is refused even while GitHub still reports an old merge commit', async () => {
+    const { reason } = await refusal(current(7, { mergeable: false }));
+    expect(reason).toBe('conflict');
+  });
+
+  test('a pull request with neither ref is a merge GitHub has not computed', async () => {
+    const { reason } = await refusal(current(99));
+    expect(reason).toBe('not-computed');
+  });
+
+  test.each([
+    ['with three parents', 13],
+    ['whose head is its first parent', 14],
+  ] as const)(
+    'a merge %s, though it has the head as a parent, is refused',
+    async (_name, number) => {
+      const sha = await gitIn(upstream, 'rev-parse', `refs/pull/${number}/merge`);
+      const { reason } = await refusal(current(number, { mergeCommitSha: sha }));
+      expect(reason).toBe('not-computed');
+    },
+  );
+
+  test('a missing merge ref is a merge GitHub has not computed', async () => {
+    const { reason } = await refusal(current(8));
+    expect(reason).toBe('not-computed');
+  });
+
+  test('a head ref that is not the head GitHub reported means the pull request moved', async () => {
+    const { message, reason } = await refusal(current(7, { headSha: mainTip }));
+    expect(reason).toBe('moved');
+    expect(message).toContain('moved while Hugi read it');
+  });
+
+  test('a missing head ref means the pull request moved', async () => {
+    const { reason } = await refusal(current(9));
+    expect(reason).toBe('moved');
+  });
+
+  test.each([
+    ['whose second parent is not the head', 11, () => foreignMerge],
+    ['with one parent', 12, () => mainTip],
+  ] as const)('a merge ref %s is not a computed merge of the head', async (_name, number, sha) => {
+    const { message, reason } = await refusal(current(number, { mergeCommitSha: sha() }));
+    expect(reason).toBe('not-computed');
+    expect(message).toContain('has not computed the merge');
+  });
 });

@@ -1,38 +1,63 @@
 /**
  * One run of a lane by hand: read the lane at a commit, resolve its tools, run it in a VM, and
- * return the verdict. The host only reads data from the repository; the VM executes the steps.
- * Every collaborator is injected so the order of operations is testable without a VM.
+ * return the verdict. A pull request runs at GitHub's merge commit (ADR-0005). The host only reads
+ * data from the repository; the VM executes the steps. Every collaborator is injected so the order
+ * of operations is testable without a VM or GitHub.
  */
 import { messageOf } from '../errors';
+import { PullRequestReadError } from '../github/pull-request';
+import type { PullRequestFacts } from '../github/pull-request';
 import { JobSkippedError, LaneReadError, LaneSelectionError, readLane } from '../lane/reader';
-import type { EventContext, LaneRef, StepPlan } from '../lane/step-plan';
+import type { EventContext, LaneRef, PushEvent, StepPlan } from '../lane/step-plan';
 import { AmbiguousRefError, NotAFileError, SourceError } from '../source/host-source';
 import type { GuestSource, HostSource } from '../source/host-source';
 import { repositoryLabel } from '../source/repository-spec';
-import type { RepositorySpec } from '../source/repository-spec';
+import type { GitHubRepositorySpec, RepositorySpec } from '../source/repository-spec';
 import { resolveToolchains, ToolchainResolutionError } from '../toolchain/resolver';
 import type { ActionResolution, ToolchainResolution } from '../toolchain/resolver';
 import { checkoutStepIndex, GUEST_RUNNER_PATHS } from '../vm';
 import type { RunReason, RunRequest, RunResult, StepResult } from '../vm';
 import { RunUsageError } from './run-args';
 
-export type RunLaneRequest = {
+/** A push run of a commit, named by its sha, branch, or tag. */
+type PushTarget = {
+  readonly event: 'push';
   readonly repository: RepositorySpec;
   /** A sha (short or full), a branch, or a tag. */
   readonly commit: string;
+  readonly refType?: PushEvent['refType'];
+  readonly refName?: string;
+};
+
+/** A pull_request run of a GitHub pull request, at its merge commit. */
+type PullRequestTarget = {
+  readonly event: 'pull_request';
+  readonly repository: GitHubRepositorySpec;
+  readonly pullRequest: number;
+};
+
+type LaneSelection = {
   readonly lane: Pick<LaneRef, 'job' | 'workflow'>;
   readonly matrix: LaneRef['matrix'];
-  readonly event: EventContext['event'];
-  readonly refType?: EventContext['refType'];
-  readonly refName?: string;
   readonly needs: NonNullable<EventContext['needs']>;
   readonly image: string;
   /** Where step logs go; the default is a fresh directory from `deps.newLogDir`. */
   readonly logDir?: string;
 };
 
+export type PushRunRequest = PushTarget & LaneSelection;
+export type PullRequestRunRequest = PullRequestTarget & LaneSelection;
+export type RunLaneRequest = PushRunRequest | PullRequestRunRequest;
+
 export type RunLaneDeps = {
   readonly openSource: (spec: RepositorySpec, commit: string) => Promise<HostSource>;
+  /** GitHub's facts about a pull request of an `owner/name` repository. */
+  readonly readPullRequest: (repository: string, number: number) => Promise<PullRequestFacts>;
+  /** The pull request's merge commit, once its five conditions hold (ADR-0005). */
+  readonly openPullRequestSource: (
+    spec: GitHubRepositorySpec,
+    facts: PullRequestFacts,
+  ) => Promise<HostSource>;
   /** The VM runner with its tart, clock, and interrupt already bound. */
   readonly runInVm: (request: RunRequest) => Promise<RunResult>;
   readonly newLogDir: (sha: string) => Promise<string>;
@@ -58,8 +83,10 @@ export type LaneReport = {
   readonly verdict: RunResult['verdict'];
   readonly reason: LaneReason;
   readonly detail?: string;
-  /** The full sha the commit resolved to, once the source opened. */
+  /** The full sha the commit resolved to once the source opened; for a pull request, its merge commit. */
   readonly sha?: string;
+  /** For a pull_request run, once GitHub reported it: the number, and the head its status belongs on. */
+  readonly pullRequest?: { readonly number: number; readonly headSha: string };
   readonly steps: readonly ReportStep[];
   /** The lane's tools, each action's resolution, and the notes; absent until resolution succeeds. */
   readonly toolchain?: ToolchainResolution;
@@ -89,7 +116,7 @@ async function refusingAmbiguity<Value>(pending: Promise<Value>): Promise<Value>
   }
 }
 
-function resolveEvent(request: RunLaneRequest, source: HostSource): EventContext {
+function resolvePushEvent(request: PushRunRequest, source: HostSource): EventContext {
   const named = source.refKind;
   const refName = request.refName ?? (named === undefined ? undefined : request.commit);
   if (refName === undefined) {
@@ -98,7 +125,7 @@ function resolveEvent(request: RunLaneRequest, source: HostSource): EventContext
     );
   }
   return {
-    event: request.event,
+    event: 'push',
     needs: request.needs,
     refName,
     refType: request.refType ?? named ?? 'branch',
@@ -231,18 +258,93 @@ function withResolvedActions(
   });
 }
 
-/** Read the lane, resolve its tools, then run it in a VM; return the verdict with the evidence. */
-export async function runLane(request: RunLaneRequest, deps: RunLaneDeps): Promise<LaneReport> {
+/** The opened source and the event it stands for, or the report of why it could not open. */
+type Opened =
+  | { readonly source: HostSource; readonly event: EventContext }
+  | { readonly report: LaneReport };
+
+/** Open a push run's source at its commit and settle its ref values. */
+async function openPush(request: PushRunRequest, deps: RunLaneDeps): Promise<Opened> {
   let source: HostSource;
   try {
     source = await refusingAmbiguity(deps.openSource(request.repository, request.commit));
   } catch (error) {
     if (error instanceof SourceError) {
-      return noVm('infrastructure', 'none', error.message);
+      return { report: noVm('infrastructure', 'none', error.message) };
     }
     throw error;
   }
-  const event = resolveEvent(request, source);
+  return { event: resolvePushEvent(request, source), source };
+}
+
+/**
+ * Read the pull request from GitHub and open its merge commit. A pull request GitHub cannot report
+ * and one with no current merge both have no verdict, as a commit the source cannot fetch.
+ */
+async function openPullRequest(request: PullRequestRunRequest, deps: RunLaneDeps): Promise<Opened> {
+  let facts: PullRequestFacts;
+  try {
+    facts = await deps.readPullRequest(request.repository.name, request.pullRequest);
+  } catch (error) {
+    if (error instanceof PullRequestReadError) {
+      return { report: noVm('infrastructure', 'none', error.message) };
+    }
+    throw error;
+  }
+  const { baseRef, headRef, headSha, number } = facts;
+  let source: HostSource;
+  try {
+    source = await deps.openPullRequestSource(request.repository, facts);
+  } catch (error) {
+    if (error instanceof SourceError) {
+      return {
+        report: {
+          ...noVm('infrastructure', 'none', error.message),
+          pullRequest: { headSha, number },
+        },
+      };
+    }
+    throw error;
+  }
+  const event: EventContext = {
+    event: 'pull_request',
+    needs: request.needs,
+    pullRequest: { baseRef, headRef, headSha, number },
+    repository: request.repository.name,
+    sha: source.sha,
+  };
+  return { event, source };
+}
+
+/** The pull request a report stands for: its number and head, where its status belongs. */
+function pullRequestOf(event: EventContext): Pick<LaneReport, 'pullRequest'> {
+  if (event.event !== 'pull_request') {
+    return {};
+  }
+  const { headSha, number } = event.pullRequest;
+  return { pullRequest: { headSha, number } };
+}
+
+/** Read the lane, resolve its tools, then run it in a VM; return the verdict with the evidence. */
+export async function runLane(request: RunLaneRequest, deps: RunLaneDeps): Promise<LaneReport> {
+  const opened =
+    request.event === 'pull_request'
+      ? await openPullRequest(request, deps)
+      : await openPush(request, deps);
+  if ('report' in opened) {
+    return opened.report;
+  }
+  const { event, source } = opened;
+  return { ...(await runAtSource(request, deps, source, event)), ...pullRequestOf(event) };
+}
+
+/** Read the lane at the opened source, resolve its tools, and run it in a VM. */
+async function runAtSource(
+  request: RunLaneRequest,
+  deps: RunLaneDeps,
+  source: HostSource,
+  event: EventContext,
+): Promise<LaneReport> {
   let plan: StepPlan;
   try {
     plan = await readPlan(request, source, event);

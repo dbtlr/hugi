@@ -57,6 +57,30 @@ test("malformed GITHUB_OUTPUT content is an error in GitHub's wording", () => {
   expect(parseOutputFile('=v\n')).toContain('Name must not be empty');
 });
 
+test('a push event has empty head and base refs', () => {
+  const env = githubEnvironment(event);
+  expect(env.GITHUB_HEAD_REF).toBe('');
+  expect(env.GITHUB_BASE_REF).toBe('');
+});
+
+test('a pull_request event exports the merge ref, not a branch ref, and both branch names', () => {
+  const env = githubEnvironment({
+    event: 'pull_request',
+    pullRequest: { baseRef: 'main', headRef: 'feature', headSha: 'def456', number: 7 },
+    repository: 'dbtlr/hugi',
+    sha: 'abc123',
+  });
+  expect(env).toMatchObject({
+    GITHUB_BASE_REF: 'main',
+    GITHUB_EVENT_NAME: 'pull_request',
+    GITHUB_HEAD_REF: 'feature',
+    GITHUB_REF: 'refs/pull/7/merge',
+    GITHUB_REF_NAME: '7/merge',
+    GITHUB_REF_TYPE: 'branch',
+    GITHUB_SHA: 'abc123',
+  });
+});
+
 test('a tag event gets a refs/tags ref', () => {
   const env = githubEnvironment({ ...event, refName: 'v1.0.0', refType: 'tag' });
   expect(env.GITHUB_REF).toBe('refs/tags/v1.0.0');

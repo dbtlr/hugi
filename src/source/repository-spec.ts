@@ -5,6 +5,9 @@ export type RepositorySpec =
   | { readonly kind: 'github'; readonly name: string; readonly cloneUrl: string }
   | { readonly kind: 'local'; readonly path: string };
 
+/** A repository on GitHub: the only kind that has pull requests. */
+export type GitHubRepositorySpec = Extract<RepositorySpec, { kind: 'github' }>;
+
 const GITHUB_NAME = /^[\w.-]+\/[\w.-]+$/;
 const EXPLICIT_PATH = /^(\/|\.{1,2}(\/|$)|~)/;
 
@@ -23,7 +26,10 @@ export function parseRepository(text: string, cwd: string, home: string): Reposi
   }
   if (GITHUB_NAME.test(text)) {
     const name = text.replace(/\.git$/, '');
-    return { cloneUrl: `https://github.com/${name}.git`, kind: 'github', name };
+    // `.` and `..` would make the clone and API URLs name another path.
+    if (!name.split('/').some((part) => part === '.' || part === '..')) {
+      return { cloneUrl: `https://github.com/${name}.git`, kind: 'github', name };
+    }
   }
   throw new RepositorySpecError(
     `"${text}" is neither owner/name nor a path; start a local path with ./ or /.`,

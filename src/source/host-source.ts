@@ -2,7 +2,8 @@
  * Reads a repository at a commit as data, on the host. Nothing from the repository runs here:
  * only `git` reads objects, under the hardening in `./git` (ADR-0002). A GitHub repository is read
  * through a bare partial clone in the cache, which only the user may write; a local repository is
- * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`).
+ * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`). A pull
+ * request is read at GitHub's merge commit, only after checking the merge is current (ADR-0005).
  */
 import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,15 +11,33 @@ import { join } from 'node:path';
 import type { Host } from '@loomcli/core';
 
 import { messageOf } from '../errors';
+import type { PullRequestFacts } from '../github/pull-request';
 import type { SourceLocation } from '../vm';
 import { createGit } from './git';
 import type { Git, GitTransport } from './git';
-import type { RepositorySpec } from './repository-spec';
+import type { GitHubRepositorySpec, RepositorySpec } from './repository-spec';
 import { snapshotCommit } from './snapshot';
 
 /** The repository could not be read: git failed, the commit is unknown, or a fetch failed. */
 export class SourceError extends Error {
-  override readonly name = 'SourceError';
+  override readonly name: string = 'SourceError';
+}
+
+/** Why a pull request has no current merge to run, in the order ADR-0005 checks its conditions. */
+export type NoCurrentMergeReason = 'closed' | 'conflict' | 'not-computed' | 'moved';
+
+/**
+ * A pull request has no current merge, so it does not run: the run has no verdict, as for a commit
+ * the source cannot fetch. The message names the first ADR-0005 condition that failed.
+ */
+export class NoCurrentMergeError extends SourceError {
+  override readonly name = 'NoCurrentMergeError';
+  readonly reason: NoCurrentMergeReason;
+
+  constructor(reason: NoCurrentMergeReason, message: string) {
+    super(message);
+    this.reason = reason;
+  }
 }
 
 /** A path names a tree, not a file, at the commit. The repository read fine; its content is wrong. */
@@ -46,7 +65,7 @@ export type GuestSource = {
 
 /** A repository at one commit. */
 export type HostSource = {
-  /** The full sha the commit argument resolved to. */
+  /** The full sha the commit argument resolved to; for a pull request, its merge commit. */
   readonly sha: string;
   /**
    * The file's text at the commit, or `undefined` when the commit has no such path. A path that
@@ -125,7 +144,7 @@ async function checkPrivate(path: string, uid: number | undefined): Promise<bool
   return true;
 }
 
-/** The refs a refresh mirrors from the repository URL. */
+/** The refs a refresh mirrors from the repository URL; a pull request's refs are fetched on their own. */
 const MIRRORED_REFS = ['+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'] as const;
 
 /**
@@ -134,7 +153,7 @@ const MIRRORED_REFS = ['+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
  */
 async function cachedClone(
   git: Git,
-  spec: Extract<RepositorySpec, { kind: 'github' }>,
+  spec: GitHubRepositorySpec,
   options: HostSourceOptions,
 ): Promise<Repository> {
   const { cloneUrl, name } = spec;
@@ -142,14 +161,7 @@ async function cachedClone(
   const reposDir = join(cacheDir, 'repos');
   const gitDir = join(reposDir, `${name.replace('/', '__')}.git`);
   const refresh = async () => {
-    await gitOrThrow(git, gitDir, [
-      'fetch',
-      '--quiet',
-      '--force',
-      '--filter=blob:none',
-      cloneUrl,
-      ...MIRRORED_REFS,
-    ]);
+    await gitOrThrow(git, gitDir, fetchArgs(cloneUrl, MIRRORED_REFS));
   };
   try {
     await mkdir(reposDir, { mode: 0o700, recursive: true });
@@ -171,6 +183,11 @@ async function cachedClone(
     gitDir,
   ]);
   return { gitDir, refresh };
+}
+
+/** A fetch of `refspecs` from the repository's URL into the cached clone, keeping it blob-less. */
+function fetchArgs(cloneUrl: string, refspecs: readonly string[]): string[] {
+  return ['fetch', '--quiet', '--force', '--filter=blob:none', cloneUrl, ...refspecs];
 }
 
 async function resolveSha(git: Git, repository: Repository, revision: string): Promise<string> {
@@ -282,37 +299,174 @@ function guestSourceOf(spec: RepositorySpec, sha: string, options: HostSourceOpt
   };
 }
 
+/** The hardened git for `spec`: lazy fetching only for a GitHub source, over its transport. */
+function sourceGit(spec: RepositorySpec, options: HostSourceOptions): Git {
+  return createGit({
+    cwd: options.cwd,
+    env: options.env,
+    lazyFetch: spec.kind === 'github',
+    spawn: options.spawn,
+    transport: options.remoteTransport ?? 'https',
+  });
+}
+
+/** The source pinned to `sha`: files read there, and the guest fetches that commit. */
+function pinnedSource(
+  spec: RepositorySpec,
+  git: Git,
+  repository: Repository,
+  sha: string,
+  options: HostSourceOptions,
+): HostSource {
+  return {
+    guestSource: guestSourceOf(spec, sha, options),
+    readFile: fileReader(git, repository.gitDir, sha),
+    sha,
+  };
+}
+
 /** Resolve `commit` in the repository and return a reader pinned to the resulting sha. */
 export async function openHostSource(
   spec: RepositorySpec,
   commit: string,
   options: HostSourceOptions,
 ): Promise<HostSource> {
-  const local = spec.kind === 'local';
-  const git = createGit({
-    cwd: options.cwd,
-    env: options.env,
-    lazyFetch: !local,
-    spawn: options.spawn,
-    transport: options.remoteTransport ?? 'https',
-  });
-  const repository = local
-    ? await localRepository(git, spec.path)
-    : await cachedClone(git, spec, options);
-  if (!local && !looksLikeSha(commit)) {
+  const git = sourceGit(spec, options);
+  const repository =
+    spec.kind === 'local'
+      ? await localRepository(git, spec.path)
+      : await cachedClone(git, spec, options);
+  if (spec.kind === 'github' && !looksLikeSha(commit)) {
     await repository.refresh();
   }
   // A branch or tag resolves through its own namespace, so the sha and the ref kind agree.
   const kind = await refKindOf(git, repository.gitDir, commit);
+  // The cache also holds pull requests' refs, which only `openPullRequestSource` may use: any other
+  // name git could resolve, such as `pull/7/merge~0`, would run one past the merge checks (ADR-0005).
+  if (spec.kind === 'github' && kind === undefined && !looksLikeSha(commit)) {
+    throw new SourceError(
+      `"${commit}" is not a sha, a branch, or a tag of ${spec.name}; run a pull request as pull/<n>.`,
+    );
+  }
   const sha = await resolveSha(
     git,
     repository,
     kind === undefined ? commit : `${REF_PREFIXES[kind]}${commit}`,
   );
   return {
-    guestSource: guestSourceOf(spec, sha, options),
-    readFile: fileReader(git, repository.gitDir, sha),
-    sha,
+    ...pinnedSource(spec, git, repository, sha, options),
     ...(kind === undefined ? {} : { refKind: kind }),
   };
+}
+
+/** Conditions 1 and 2 of ADR-0005, from GitHub's facts alone: the merge commit GitHub reports. */
+function reportedMerge(facts: PullRequestFacts): string {
+  const pull = `Pull request ${facts.number}`;
+  if (facts.state !== 'open') {
+    throw new NoCurrentMergeError('closed', `${pull} is closed, so it does not run.`);
+  }
+  if (facts.mergeable === false) {
+    throw new NoCurrentMergeError(
+      'conflict',
+      `${pull} has a merge conflict, so it does not run until the conflict is resolved.`,
+    );
+  }
+  if (facts.mergeable === null || facts.mergeCommitSha === null) {
+    throw notComputed(facts, 'GitHub reports no merge commit yet');
+  }
+  return facts.mergeCommitSha;
+}
+
+function notComputed(facts: PullRequestFacts, detail: string): NoCurrentMergeError {
+  return new NoCurrentMergeError(
+    'not-computed',
+    `GitHub has not computed the merge for pull request ${facts.number}'s head ${facts.headSha} yet (${detail}); try again shortly.`,
+  );
+}
+
+function moved(facts: PullRequestFacts, detail: string): NoCurrentMergeError {
+  return new NoCurrentMergeError(
+    'moved',
+    `Pull request ${facts.number} moved while Hugi read it (${detail}); try again.`,
+  );
+}
+
+/**
+ * Fetch the pull request's merge and head refs into the cached clone. The merge ref comes first, as
+ * condition 3 does, because git names the first refspec the remote lacks: a missing ref is the
+ * matching condition failing, and any other failure is a plain `SourceError`.
+ */
+async function fetchPullRefs(
+  git: Git,
+  repository: Repository,
+  spec: GitHubRepositorySpec,
+  facts: PullRequestFacts,
+) {
+  const refs = { head: `refs/pull/${facts.number}/head`, merge: `refs/pull/${facts.number}/merge` };
+  const outcome = await git(
+    repository.gitDir,
+    fetchArgs(spec.cloneUrl, [`+${refs.merge}:${refs.merge}`, `+${refs.head}:${refs.head}`]),
+  );
+  if (!outcome.ok) {
+    const missing = /couldn't find remote ref (\S+)/u.exec(outcome.stderr)?.[1];
+    if (missing === refs.merge) {
+      throw notComputed(facts, `${spec.name} has no ${refs.merge}`);
+    }
+    if (missing === refs.head) {
+      throw moved(facts, `${spec.name} has no ${refs.head}`);
+    }
+    throw new SourceError(
+      `Cannot fetch pull request ${facts.number}'s refs: ${outcome.stderr.trim()}`,
+    );
+  }
+  return refs;
+}
+
+/** The commit `ref` names in the cached clone. */
+async function commitAt(git: Git, repository: Repository, ref: string): Promise<string> {
+  return (
+    await gitOrThrow(git, repository.gitDir, [
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `${ref}^{commit}`,
+    ])
+  ).trim();
+}
+
+/** The parents of `sha`, in order. */
+async function parentsOf(git: Git, repository: Repository, sha: string): Promise<string[]> {
+  const line = await gitOrThrow(git, repository.gitDir, ['rev-list', '--parents', '-n', '1', sha]);
+  return line.trim().split(' ').slice(1);
+}
+
+/**
+ * Open a pull request at GitHub's merge commit, given the facts GitHub's API reported for it. The
+ * merge is used only when ADR-0005's five conditions hold: the pull request is open, GitHub reports
+ * it mergeable with a merge commit, `refs/pull/<n>/merge` is that commit, `refs/pull/<n>/head` is
+ * the reported head, and the merge commit has two parents, the second the head. Otherwise it throws
+ * `NoCurrentMergeError` naming the first condition that failed.
+ */
+export async function openPullRequestSource(
+  spec: GitHubRepositorySpec,
+  facts: PullRequestFacts,
+  options: HostSourceOptions,
+): Promise<HostSource> {
+  const reported = reportedMerge(facts);
+  const git = sourceGit(spec, options);
+  const repository = await cachedClone(git, spec, options);
+  const refs = await fetchPullRefs(git, repository, spec, facts);
+  const merge = await commitAt(git, repository, refs.merge);
+  if (merge !== reported) {
+    throw notComputed(facts, `${refs.merge} is ${merge}, not GitHub's merge commit ${reported}`);
+  }
+  const head = await commitAt(git, repository, refs.head);
+  if (head !== facts.headSha) {
+    throw moved(facts, `${refs.head} is ${head}, not the head GitHub reported`);
+  }
+  const parents = await parentsOf(git, repository, merge);
+  if (parents.length !== 2 || parents[1] !== facts.headSha) {
+    throw notComputed(facts, `${merge} is not a merge of the head into the base`);
+  }
+  return pinnedSource(spec, git, repository, merge, options);
 }

@@ -20,3 +20,4 @@ Each record captures one decision that is hard to reverse, with its context and 
 | [ADR-0002](0002-verification-only.md) | accepted | Hugi runs verification lanes only, with no secrets in the VM. |
 | [ADR-0003](0003-one-throwaway-vm-per-run.md) | accepted | Every run happens in a fresh VM cloned from the golden image and deleted afterwards. |
 | [ADR-0004](0004-lanes-declared-in-hugi-yaml.md) | accepted | A repository declares its lanes in `.github/hugi.yaml`; promotion moves them into a Hugi workflow GitHub never runs. |
+| [ADR-0005](0005-pull-requests-run-on-the-merge-commit.md) | accepted | A pull request runs on GitHub's merge commit, with the ref values GitHub's runner gives a `pull_request` job; its status goes on the head commit. |

@@ -16,7 +16,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 
 - **GitHub supplies commits and receives verdicts; it never schedules.** No run waits on a GitHub runner.
 - **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them.
-- **Nothing from a pull request touches the host.** Every run happens in a VM cloned for that run and deleted afterwards.
+- **Nothing from a pull request runs on the host.** The host reads a commit's files only as data. Every run happens in a VM cloned for that run and deleted afterwards.
 - **The repository says what to run; Hugi's configuration says who may run.** A repository lists its lanes in `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)). Enrolled repositories and allowlisted authors live outside the repositories.
 - **Verification only.** The VM holds no secret and publishes nothing.
 - **Reconcile from GitHub's state.** The queue is derived from the commits that lack a verdict, so a restart heals itself.
@@ -26,7 +26,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 
 | Part | What it does |
 | --- | --- |
-| Poller | Reads the head commit of the default branch and of open pull requests for each enrolled repository. Skips pull requests whose author is not allowlisted. |
+| Poller | Reads the head commit of the default branch and of open pull requests for each enrolled repository. Skips pull requests whose author is not allowlisted. A pull request runs on GitHub's merge commit and its status goes on the head commit ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). |
 | Queue | Holds lanes that have no verdict for their commit. One VM at a time to start. |
 | Lane reader | Checks that GitHub would accept the workflow file as a whole, then reads the named job at the commit into a step plan, with its expressions expanded and its read-time conditions decided, failing loudly on anything it cannot read. |
 | Toolchain resolution | Maps each setup action in the plan to pinned tool versions or a documented no-op, and reads the repository's Rust toolchain file. See [supported actions](docs/supported-actions.md). |
@@ -54,7 +54,7 @@ bun run build     # build the binary to dist/hugi
 
 ## Running a lane by hand
 
-`hugi run <repository> <commit> <workflow>:<job>` runs one lane at one commit in a throwaway VM and prints a verdict. `<repository>` is `owner/name` for a public GitHub repository, or a path to a local git repository (start it with `./`, `../`, `/`, or `~`). `<commit>` is a sha, a branch, or a tag. Step logs go to a new directory under `$XDG_STATE_HOME/hugi/runs` unless `--logs` names one. Add `--format json` for the report as JSON.
+`hugi run <repository> <commit> <workflow>:<job>` runs one lane at one commit in a throwaway VM and prints a verdict. `<repository>` is `owner/name` for a public GitHub repository, or a path to a local git repository (start it with `./`, `../`, `/`, or `~`). `<commit>` is a sha, a branch, or a tag. For an `owner/name` repository it can also be `pull/<n>`, pull request `<n>`, which runs as a `pull_request` event on GitHub's merge commit ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). Step logs go to a new directory under `$XDG_STATE_HOME/hugi/runs` unless `--logs` names one. Add `--format json` for the report as JSON.
 
 The host reads the workflow and toolchain files as data with `git`; nothing from the repository runs on the host. An `owner/name` repository is read through a bare partial clone in `$XDG_CACHE_HOME/hugi` (override with `--cache-dir` or `HUGI_CACHE_DIR`). The cache is created private to you, and Hugi refuses a cached clone that another user owns or can write. A local repository is read in place, and never through the cache. It reaches the VM as a snapshot: before booting, Hugi builds a temporary bare repository that holds only the commit, at depth 1, with no config, remote URL, or other ref carried over, and shares it read-only. Untracked files such as `.env` never reach the VM, and a subdirectory or a linked worktree works as well as the repository root. The snapshot is deleted when the run ends. Every `git` call is hardened so that neither the repository nor your git setup can run a program or use a credential:
 
@@ -83,14 +83,23 @@ hugi run dbtlr/mimir 810a1fb3f release.yml:build \
   --ref-type tag --ref-name v0.29.0
 ```
 
-When `<commit>` is a branch or tag name, `--ref-name` defaults to it, and a tag name sets `--ref-type tag` unless you give `--ref-type`. A sha needs `--ref-name`. A name that is both a branch and a tag is refused as a usage error; pass its sha with `--ref-type` and `--ref-name`.
+A pull request runs on its merge commit:
+
+```sh
+# norn: an open pull request, here number 42, as a pull_request event
+hugi run dbtlr/norn-next pull/42 ci.yml:platform
+```
+
+For `pull/<n>`, Hugi reads the pull request with one unauthenticated call to GitHub's API, subject to GitHub's anonymous limit of 60 requests an hour. It then fetches `refs/pull/<n>/head` and `refs/pull/<n>/merge` into the cache and runs only when the merge is current: the pull request is open and mergeable, the merge ref is the merge commit GitHub reports, the head ref is the head GitHub reports, and the merge commit's second parent is that head. The lane sees `GITHUB_REF=refs/pull/<n>/merge`, `GITHUB_REF_NAME=<n>/merge`, and the head and base branch names in `GITHUB_HEAD_REF` and `GITHUB_BASE_REF`, as on GitHub. The report's `sha` is the merge commit, and its `pullRequest` holds the number and the head commit.
+
+When `<commit>` is a branch or tag name, `--ref-name` defaults to it, and a tag name sets `--ref-type tag` unless you give `--ref-type`. A sha needs `--ref-name`. A name that is both a branch and a tag is refused as a usage error; pass its sha with `--ref-type` and `--ref-name`. `pull/<n>` takes no `--ref-type` or `--ref-name`, and `--event push` with it, or `--event pull_request` without it, is a usage error. For an `owner/name` repository `pull/<n>` always names the pull request; a branch with that name runs by its sha with `--ref-name`. A local repository has no pull requests and refuses `pull/<n>`.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Verdict pass. |
 | 1 | Verdict fail: a step failed or timed out, or the lane could not be read or its tools resolved. No VM boots for an unreadable lane. |
 | 2 | Usage error, including a lane selection that picks nothing to run: a missing job, `--matrix` values that select no single combination, an upstream output the lane reads but `--needs` does not supply, a `--needs` entry for a job outside the job's `needs:`, or a job whose `if:` is false for the event. GitHub skips such a job, so Hugi gives no verdict. |
-| 3 | No verdict: the VM failed to clone or boot, the VM was lost mid-run, or the source could not be fetched or read. |
+| 3 | No verdict: the VM failed to clone or boot, the VM was lost mid-run, or the source could not be fetched or read. For `pull/<n>`: the pull request does not exist, GitHub's API failed or rate-limited the call, or the pull request has no current merge because it is closed, has a merge conflict, GitHub has not computed the merge for its head yet, or it moved while Hugi read it. |
 | 130 | Interrupted by Ctrl-C (143 for SIGTERM). Hugi still deletes the VM and prints the report, with no verdict, before it exits. A second Ctrl-C exits at once, and Hugi exits anyway if cleanup takes more than three minutes; either can leave the VM behind. |
 
 Deleting the VM is best effort. When a delete fails, Hugi warns with the VM's name and still reports the verdict. A VM left behind is listed by `tart list` with a `hugi-run-` name; remove it with `tart delete <name>`.

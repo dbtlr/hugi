@@ -3,7 +3,14 @@ import { expect, test } from 'bun:test';
 import { mockProcess } from '@loomcli/testing';
 
 import { createApp } from '../app';
-import { AmbiguousRefError, NotAFileError, SourceError } from '../source/host-source';
+import { PullRequestReadError } from '../github/pull-request';
+import type { PullRequestFacts } from '../github/pull-request';
+import {
+  AmbiguousRefError,
+  NoCurrentMergeError,
+  NotAFileError,
+  SourceError,
+} from '../source/host-source';
 import type { HostSource } from '../source/host-source';
 import type { RunRequest, RunResult } from '../vm';
 
@@ -333,4 +340,118 @@ test('an empty --ref-name is a usage error and never runs the VM', async () => {
   );
   expect(exitCode).toBe(2);
   expect(stderr).toContain('--ref-name');
+});
+
+const HEAD_SHA = 'c'.repeat(40);
+
+const PULL_REQUEST: PullRequestFacts = {
+  baseRef: 'main',
+  headRef: 'feature',
+  headSha: HEAD_SHA,
+  mergeCommitSha: SHA,
+  mergeable: true,
+  number: 7,
+  state: 'open',
+};
+
+/** Runs `hugi run` with a pull request reader and merge opener in place of GitHub. */
+async function hugiPull(
+  argv: string[],
+  pull: {
+    readonly read?: () => Promise<PullRequestFacts>;
+    readonly open?: () => Promise<HostSource>;
+  } = {},
+) {
+  const requests: RunRequest[] = [];
+  const opened: string[] = [];
+  const mock = mockProcess({ argv, env: {}, stdin: '' });
+  const exitCode = await createApp({
+    openPullRequestSource: pull.open ?? (async () => source()),
+    openSource: async (_spec, commit) => {
+      opened.push(commit);
+      return source(undefined, commit);
+    },
+    readPullRequest: pull.read ?? (async () => PULL_REQUEST),
+    runInVm: async (request) => {
+      requests.push(request);
+      return result({});
+    },
+  }).run({ process: mock });
+  return { exitCode, opened, requests, stderr: mock.stderr.text, stdout: mock.stdout.text };
+}
+
+const PULL_ARGS = ['run', 'example/project', 'pull/7', 'ci.yml:build', '--logs', '/logs'];
+
+test('pull/<n> runs the pull request at its merge commit and reports the head', async () => {
+  const { exitCode, requests, stdout } = await hugiPull([...PULL_ARGS, '--format', 'json']);
+  expect(exitCode).toBe(0);
+  expect(requests[0]!.event).toMatchObject({
+    event: 'pull_request',
+    pullRequest: { number: 7 },
+    sha: SHA,
+  });
+  expect(JSON.parse(stdout)).toMatchObject({
+    pullRequest: { headSha: HEAD_SHA, number: 7 },
+    sha: SHA,
+  });
+});
+
+test('--event pull_request with pull/<n> is the same run', async () => {
+  const { exitCode, requests } = await hugiPull([...PULL_ARGS, '--event', 'pull_request']);
+  expect(exitCode).toBe(0);
+  expect(requests[0]!.event.event).toBe('pull_request');
+});
+
+test.each([
+  ['a missing pull request', new PullRequestReadError('pull request 7 does not exist')],
+  ['a rate-limited API', new PullRequestReadError("GitHub's anonymous rate limit is used up")],
+])('%s has no verdict and exits 3', async (_name, error) => {
+  const { exitCode, requests, stdout } = await hugiPull(PULL_ARGS, {
+    read: async () => {
+      throw error;
+    },
+  });
+  expect(exitCode).toBe(3);
+  expect(requests).toHaveLength(0);
+  expect(stdout).toContain(`verdict: none (infrastructure: ${error.message})`);
+});
+
+test('a pull request with no current merge has no verdict and exits 3', async () => {
+  const { exitCode, requests, stdout } = await hugiPull(PULL_ARGS, {
+    open: async () => {
+      throw new NoCurrentMergeError('closed', 'Pull request 7 is closed, so it does not run.');
+    },
+  });
+  expect(exitCode).toBe(3);
+  expect(requests).toHaveLength(0);
+  expect(stdout).toContain('is closed');
+});
+
+test.each([
+  [['run', './project', 'pull/7', 'ci.yml:build'], 'local repository'],
+  [[...PULL_ARGS, '--event', 'push'], '--event push'],
+  [['run', 'example/project', 'main', 'ci.yml:build', '--event', 'pull_request'], 'pull/<n>'],
+  [[...PULL_ARGS, '--ref-type', 'branch'], '--ref-type'],
+  [[...PULL_ARGS, '--ref-name', 'pull/7'], '--ref-name'],
+])('usage error %p exits 2 and says what to do', async (argv, message) => {
+  const { exitCode, opened, requests, stderr } = await hugiPull(argv);
+  expect(exitCode).toBe(2);
+  expect(requests).toHaveLength(0);
+  expect(opened).toHaveLength(0);
+  expect(stderr).toContain(message);
+});
+
+test.each(['pull/0', 'pull/abc'])('%s is an ordinary branch name', async (commit) => {
+  const { exitCode, opened } = await hugiPull([
+    'run',
+    'example/project',
+    commit,
+    'ci.yml:build',
+    '--logs',
+    '/logs',
+    '--ref-name',
+    commit,
+  ]);
+  expect(exitCode).toBe(0);
+  expect(opened).toEqual([commit]);
 });
