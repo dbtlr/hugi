@@ -41,27 +41,36 @@ function statusKey(repository: string, commit: string, statusName: string): stri
 }
 
 /** Whether the commit's hugi status carries a verdict, which settles every lane without one. */
-function declarationSettled(statuses: CommitStatuses): boolean {
-  return verdictsOf(statuses).has(statusNameKey(DECLARATION_STATUS));
+function declarationSettled(verdicts: ReadonlySet<string>): boolean {
+  return verdicts.has(statusNameKey(DECLARATION_STATUS));
 }
 
 /** The refused declaration to report for a commit, unless a verdict already settles it. */
-function declarationReports(commit: CommitSnapshot): DeclarationReport[] {
+function declarationReports(
+  commit: CommitSnapshot,
+  verdicts: ReadonlySet<string>,
+): DeclarationReport[] {
   const { read } = commit;
-  if (read.kind !== 'refused' || declarationSettled(read.statuses)) {
+  if (read.kind !== 'refused' || declarationSettled(verdicts)) {
     return [];
   }
   return [{ cause: read.cause, commit: commit.commit, repository: commit.repository }];
 }
 
-/** The snapshot's lanes that run and have neither a verdict nor a run in flight. */
-function laneCandidates(commit: CommitSnapshot, inFlight: ReadonlySet<string>): Candidate[] {
+/**
+ * The snapshot's lanes that run and have neither a verdict nor a run in flight. `verdicts` are the
+ * commit's, from every snapshot that read it.
+ */
+function laneCandidates(
+  commit: CommitSnapshot,
+  inFlight: ReadonlySet<string>,
+  verdicts: ReadonlySet<string>,
+): Candidate[] {
   const { read, repository } = commit;
   // A hugi status with a verdict settles every lane without one; verdicts already posted stand.
-  if (read.kind !== 'lanes' || declarationSettled(read.statuses)) {
+  if (read.kind !== 'lanes' || declarationSettled(verdicts)) {
     return [];
   }
-  const verdicts = verdictsOf(read.statuses);
   return read.lanes.flatMap((decision) => {
     const { lane } = decision;
     const statusName = laneStatusName(lane);
@@ -139,6 +148,35 @@ function commitKey(commit: CommitSnapshot): string {
   return JSON.stringify([commit.repository, commit.commit]);
 }
 
+/** Each snapshot's statuses, if it read them. */
+function statusesOf(commit: CommitSnapshot): CommitStatuses | undefined {
+  const { read } = commit;
+  return read.kind === 'lanes' || read.kind === 'refused' ? read.statuses : undefined;
+}
+
+/**
+ * Each commit's verdicts, from every snapshot that read its statuses. The snapshots of one commit
+ * read its statuses a moment apart, so a verdict any of them saw settles the name for all.
+ */
+function commitVerdicts(
+  reads: readonly CommitSnapshot[],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const verdicts = new Map<string, Set<string>>();
+  for (const commit of reads) {
+    const statuses = statusesOf(commit);
+    if (statuses === undefined) {
+      continue;
+    }
+    const key = commitKey(commit);
+    const settled = verdicts.get(key) ?? new Set<string>();
+    for (const name of verdictsOf(statuses)) {
+      settled.add(name);
+    }
+    verdicts.set(key, settled);
+  }
+  return verdicts;
+}
+
 /**
  * The queue a snapshot yields: each lane that runs for its commit's event and has no verdict
  * there, except the runs in flight, plus each refused declaration to report, and each read that
@@ -152,7 +190,8 @@ function commitKey(commit: CommitSnapshot): string {
  * whether the commit is refused: if it is, the commit yields its one declaration report and no
  * candidates; if it carries a skip instruction, which every snapshot of the commit shares, the
  * commit yields nothing. Otherwise every snapshot that reads lanes adds its candidates in run
- * order, and a lane two of them select runs once, for the first; a later snapshot that refuses
+ * order, and a lane two of them select runs once, for the first; a verdict any snapshot of the
+ * commit read settles the name for all of them; a later snapshot that refuses
  * the declaration adds nothing. A snapshot whose read failed or found no current merge read
  * nothing, so it decides nothing: a conflicted pull request does not hold back another that
  * shares its head.
@@ -168,16 +207,19 @@ export function deriveQueue(snapshot: Snapshot, inFlight: readonly RunInFlight[]
       firsts.set(commitKey(commit), commit);
     }
   }
+  const verdicts = commitVerdicts(reads);
+  const none: ReadonlySet<string> = new Set();
   const candidates: Candidate[] = [];
   const reports: DeclarationReport[] = [];
   for (const commit of reads) {
     const first = firsts.get(commitKey(commit));
+    const settled = verdicts.get(commitKey(commit)) ?? none;
     if (first === commit) {
-      reports.push(...declarationReports(commit));
+      reports.push(...declarationReports(commit, settled));
     }
     const kind = first?.read.kind;
     if (kind !== 'refused' && kind !== 'skipped') {
-      candidates.push(...laneCandidates(commit, running));
+      candidates.push(...laneCandidates(commit, running, settled));
     }
   }
   return {

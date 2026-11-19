@@ -40,6 +40,7 @@ test.each([
   ['sigma, final sigma, and capital sigma', ['aσ', 'aς', 'aΣ', 'AΣ']],
   ['the Kelvin sign and k', ['\u212A', 'k', 'K']],
   ['sharp s and SS', ['ß', 'SS', 'ss']],
+  ['capital sharp s, sharp s, and SS', ['\u1E9E', 'ß', 'SS']],
 ])('%s have one key, however the case maps them', (_label, names) => {
   expect(new Set(names.map(statusNameKey)).size).toBe(1);
 });

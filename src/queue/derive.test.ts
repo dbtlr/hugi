@@ -444,6 +444,25 @@ describe('one commit in two snapshots', () => {
     expect(names(snapshot, inFlight)).toEqual(['o/r@a hugi / platform']);
   });
 
+  test('a verdict that a later snapshot read settles the lane an earlier one selects on the same head', () => {
+    const snapshot = [
+      repo(
+        'o/r',
+        NOTHING,
+        pull('o/r', 4, lanes({}, TEST_MAC), MAIN),
+        pull('o/r', 5, lanes({ 'HUGI / TEST (MACOS-LATEST)': 'success' }, PLATFORM), MAIN),
+      ),
+    ];
+    expect(names(snapshot)).toEqual(['o/r@a hugi / platform']);
+  });
+
+  test('a hugi verdict that a later snapshot read settles the commit for the earlier ones', () => {
+    const snapshot = [
+      repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, lanes({ Hugi: 'failure' }, TEST_MAC), MAIN)),
+    ];
+    expect(names(snapshot)).toEqual([]);
+  });
+
   test('a declaration refused by a later snapshot of an accepted commit adds no report', () => {
     const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
     const queue = deriveQueue([
