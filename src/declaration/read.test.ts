@@ -517,6 +517,19 @@ describe('status names', () => {
     },
   );
 
+  test('lanes in two workflows whose status names differ only in case refuse the declaration', async () => {
+    const cause = await refusalOf(
+      'lanes:\n  - workflow: ci.yml\n    jobs: [build]\n  - workflow: .github/hugi/ci.yml\n    jobs: [BUILD]\n',
+      {
+        '.github/hugi/ci.yml': workflow({ BUILD: {} }),
+        [CI]: workflow({ build: {} }),
+      },
+    );
+    expect(cause).toMatch(
+      /two lanes have the status names "hugi \/ build" and "hugi \/ BUILD", which GitHub treats as one: job "build" with row \{\} in \.github\/workflows\/ci\.yml and job "BUILD"/,
+    );
+  });
+
   test('lanes whose status names differ are accepted', async () => {
     const result = await read('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
       [CI]: workflow({

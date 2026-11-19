@@ -20,3 +20,12 @@ export function laneStatusName(lane: LaneRef): string {
   const name = `${DECLARATION_STATUS} / ${lane.job}`;
   return values.length === 0 ? name : `${name} (${values.join(', ')})`;
 }
+
+/**
+ * The key two status names are compared by. GitHub treats contexts that differ only in case as
+ * one, so a verdict posted as `HUGI / BUILD` settles `hugi / build`, and two lanes may not have
+ * names that differ only in case.
+ */
+export function statusNameKey(name: string): string {
+  return name.toLowerCase();
+}

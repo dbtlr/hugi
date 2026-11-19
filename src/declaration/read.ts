@@ -5,7 +5,7 @@
  * whole declaration. Files are data: nothing in them runs here.
  */
 import { messageOf } from '../errors';
-import { laneStatusName } from '../github/status-name';
+import { laneStatusName, statusNameKey } from '../github/status-name';
 import { jobSettingScope, laneValues } from '../lane/contexts';
 import { matchesValue, matrixRows, readMatrixEntries, selectRow } from '../lane/matrix';
 import type { Combination, MatrixEntryProblem, Scalar } from '../lane/matrix';
@@ -284,7 +284,8 @@ function described(lane: LaneRef): string {
  * with a repeated identity, or with a repeated status name is refused at that lane and the rest is
  * never expanded. A lane's identity is its job id with its complete row; the workflow path is not
  * part of it. Two lanes of different identities can still share a status name when a matrix value
- * holds `, `, and a status with a verdict would then settle both, so names must be unique too.
+ * holds `, `, and a status with a verdict would then settle both, so names must be unique too,
+ * ignoring case as GitHub does.
  */
 class DeclaredLanes {
   readonly lanes: LaneRef[] = [];
@@ -307,13 +308,18 @@ class DeclaredLanes {
       );
     }
     const statusName = laneStatusName(lane);
-    const named = this.#statusNames.get(statusName);
+    const named = this.#statusNames.get(statusNameKey(statusName));
     if (named !== undefined) {
+      const earlier = laneStatusName(named);
+      const names =
+        earlier === statusName
+          ? `the status name "${statusName}"`
+          : `the status names "${earlier}" and "${statusName}", which GitHub treats as one`;
       throw new DeclarationRefusalError(
-        `two lanes have the status name "${statusName}": ${described(named)} and ${described(lane)}`,
+        `two lanes have ${names}: ${described(named)} and ${described(lane)}`,
       );
     }
-    this.#statusNames.set(statusName, lane);
+    this.#statusNames.set(statusNameKey(statusName), lane);
     bucket.push(lane);
     this.#buckets.set(key, bucket);
     this.lanes.push(lane);
