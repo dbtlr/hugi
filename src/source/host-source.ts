@@ -73,6 +73,12 @@ export type HostSource = {
    */
   readonly readFile: (path: string) => Promise<string | undefined>;
   /**
+   * The files the push or pull request changed, for a workflow's path filters (ADR-0004): a
+   * commit's files against its first parent, every file of a root commit, and for a pull request
+   * its head against the merge base of the head and the base tip. A failed read throws `SourceError`.
+   */
+  readonly changedFiles: () => Promise<readonly string[]>;
+  /**
    * Whether the commit argument named a branch or a tag; absent for a sha. A name that is both is
    * refused when the source opens, with `AmbiguousRefError`.
    */
@@ -310,6 +316,43 @@ function sourceGit(spec: RepositorySpec, options: HostSourceOptions): Git {
   });
 }
 
+/**
+ * The paths that differ between two trees, read from the trees alone: no rename detection, so no
+ * blob is fetched, and a renamed file lists both its old and new path. `from` undefined compares
+ * a root commit with the empty tree.
+ */
+async function treeDiff(
+  git: Git,
+  repository: Repository,
+  from: string | undefined,
+  to: string,
+): Promise<string[]> {
+  const commits = from === undefined ? ['--root', to] : [from, to];
+  const listing = await gitOrThrow(git, repository.gitDir, [
+    'diff-tree',
+    '-r',
+    '-z',
+    '--no-renames',
+    '--no-commit-id',
+    '--name-only',
+    ...commits,
+  ]);
+  return listing.split('\0').filter((path) => path !== '');
+}
+
+/** A commit's changed files: against its first parent, or every file when it has none. */
+function firstParentChanges(git: Git, repository: Repository, sha: string) {
+  return async () => treeDiff(git, repository, (await parentsOf(git, repository, sha))[0], sha);
+}
+
+/** A pull request's changed files: the head against its merge base with the base tip. */
+function threeDotChanges(git: Git, repository: Repository, baseTip: string, head: string) {
+  return async () => {
+    const base = (await gitOrThrow(git, repository.gitDir, ['merge-base', baseTip, head])).trim();
+    return treeDiff(git, repository, base, head);
+  };
+}
+
 /** The source pinned to `sha`: files read there, and the guest fetches that commit. */
 function pinnedSource(
   spec: RepositorySpec,
@@ -317,8 +360,10 @@ function pinnedSource(
   repository: Repository,
   sha: string,
   options: HostSourceOptions,
+  changedFiles: HostSource['changedFiles'],
 ): HostSource {
   return {
+    changedFiles,
     guestSource: guestSourceOf(spec, sha, options),
     readFile: fileReader(git, repository.gitDir, sha),
     sha,
@@ -354,7 +399,7 @@ export async function openHostSource(
     kind === undefined ? commit : `${REF_PREFIXES[kind]}${commit}`,
   );
   return {
-    ...pinnedSource(spec, git, repository, sha, options),
+    ...pinnedSource(spec, git, repository, sha, options, firstParentChanges(git, repository, sha)),
     ...(kind === undefined ? {} : { refKind: kind }),
   };
 }
@@ -468,5 +513,7 @@ export async function openPullRequestSource(
   if (parents.length !== 2 || parents[1] !== facts.headSha) {
     throw notComputed(facts, `${merge} is not a merge of the head into the base`);
   }
-  return pinnedSource(spec, git, repository, merge, options);
+  // GitHub's merge commit has the base tip as its first parent and the head as its second.
+  const changes = threeDotChanges(git, repository, parents[0]!, facts.headSha);
+  return pinnedSource(spec, git, repository, merge, options, changes);
 }

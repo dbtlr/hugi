@@ -50,6 +50,7 @@ const REMOTE_GUEST: GuestSource = {
 
 function source(files: Record<string, string>, refKind?: 'branch' | 'tag'): HostSource {
   return {
+    changedFiles: async () => [],
     guestSource: async () => REMOTE_GUEST,
     readFile: async (path) => files[path],
     sha: SHA,
@@ -408,6 +409,7 @@ test('the report names a VM the run leaked, and omits the field otherwise', asyn
 /** A source whose reads of `failing` throw `error`; other paths read from `files`. */
 function failingSource(files: Record<string, string>, failing: string, error: Error): HostSource {
   return {
+    changedFiles: async () => [],
     guestSource: async () => REMOTE_GUEST,
     readFile: async (path) => {
       if (path === failing) {

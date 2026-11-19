@@ -508,6 +508,40 @@ async function committedRepo(name: string, files: Record<string, string>) {
   return { path, sha: await gitIn(path, 'rev-parse', 'HEAD') };
 }
 
+describe("a commit's changed files, for path filters", () => {
+  let changes: { path: string; sha: string };
+  let next: string;
+
+  beforeAll(async () => {
+    changes = await committedRepo('changes', {
+      'a.txt': 'a\n',
+      'c.txt': 'c\n',
+      'dir/with space.txt': 'b\n',
+    });
+    await writeFile(join(changes.path, 'a.txt'), 'changed\n');
+    await rm(join(changes.path, 'c.txt'));
+    await writeFile(join(changes.path, 'd.txt'), 'd\n');
+    await gitIn(changes.path, 'add', '-A');
+    await gitIn(changes.path, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'next');
+    next = await gitIn(changes.path, 'rev-parse', 'HEAD');
+  });
+
+  const openAt = (commit: string) =>
+    openHostSource({ kind: 'local', path: changes.path }, commit, hostOptions(join(root, 'cache')));
+
+  test('compare the commit with its first parent: modified, deleted, and added files', async () => {
+    expect(await (await openAt(next)).changedFiles()).toEqual(['a.txt', 'c.txt', 'd.txt']);
+  });
+
+  test('are every file of a root commit', async () => {
+    expect(await (await openAt(changes.sha)).changedFiles()).toEqual([
+      'a.txt',
+      'c.txt',
+      'dir/with space.txt',
+    ]);
+  });
+});
+
 test('git never reads the home directory, so a .netrc there cannot authenticate a fetch', async () => {
   const seen: Readonly<Record<string, string | undefined>>[] = [];
   const env = { ...handle.env, HOME: join(root, 'operator-home') };
@@ -816,5 +850,16 @@ describe('a pull request opens at its merge commit only when the merge is curren
     const { message, reason } = await refusal(current(number, { mergeCommitSha: sha() }));
     expect(reason).toBe('not-computed');
     expect(message).toContain('has not computed the merge');
+  });
+
+  test("a pull request's changed files are the head against its merge base with the base tip", async () => {
+    const source = await openPullRequestSource(spec(), current(7), pullsOptions());
+    // main.txt changed on the base after the head branched, so the three-dot diff leaves it out.
+    expect(await source.changedFiles()).toEqual(['feature.txt']);
+  });
+
+  test('a pushed merge commit is compared with its first parent', async () => {
+    const source = await openHostSource({ kind: 'local', path: upstream }, merge, pullsOptions());
+    expect(await source.changedFiles()).toEqual(['feature.txt']);
   });
 });
