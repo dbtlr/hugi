@@ -78,21 +78,39 @@ export function ownValue(mapping: Readonly<Record<string, unknown>>, key: string
   return Object.hasOwn(mapping, key) ? mapping[key] : undefined;
 }
 
-/** A filter's values: a string or a list of strings, or undefined when the key is absent or null. */
+/**
+ * A number or boolean as GitHub's workflow parser reads it where a string is expected: converted
+ * to its text. Anything else, `null` included, is not a filter value.
+ */
+function filterText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) {
+    return String(value);
+  }
+  return undefined;
+}
+
+/**
+ * A filter's values: one scalar or a list of them, each read as text, or undefined when the key is
+ * absent. GitHub's schema has no null filter, so `branches:` with no value is refused.
+ */
 export function filterList(
   event: TriggerEventKind,
   filters: Readonly<Record<string, unknown>>,
   key: string,
 ): readonly string[] | undefined {
   const value = ownValue(filters, key);
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return undefined;
   }
-  const list: unknown = typeof value === 'string' ? [value] : value;
-  if (!Array.isArray(list) || !list.every((item) => typeof item === 'string')) {
+  const items: readonly unknown[] = Array.isArray(value) ? value : [value];
+  const texts = items.map(filterText);
+  if (!texts.every((text) => text !== undefined)) {
     throw new TriggerError(`on.${event}.${key} must be a string or a list of strings`);
   }
-  return list;
+  return texts;
 }
 
 function checkPatterns(event: TriggerEventKind, key: string, patterns: readonly string[]) {
