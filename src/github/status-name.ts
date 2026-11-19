@@ -24,8 +24,10 @@ export function laneStatusName(lane: LaneRef): string {
 /**
  * The key two status names are compared by. GitHub treats contexts that differ only in case as
  * one, so a verdict posted as `HUGI / BUILD` settles `hugi / build`, and two lanes may not have
- * names that differ only in case.
+ * names that differ only in case. The name is upper-cased before it is lower-cased so that every
+ * case variant of a letter folds to one key: lower-casing alone keeps `σ` and `ς` (the lower case
+ * of a word-final `Σ`) apart, and keeps `ß` apart from `SS`.
  */
 export function statusNameKey(name: string): string {
-  return name.toLowerCase();
+  return name.toUpperCase().toLowerCase();
 }

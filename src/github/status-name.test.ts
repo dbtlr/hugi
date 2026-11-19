@@ -35,3 +35,11 @@ test('two names that differ only in case have one key, as GitHub treats them as 
   expect(statusNameKey('HUGI / Build (macOS-15)')).toBe(statusNameKey('hugi / build (macos-15)'));
   expect(statusNameKey('hugi / build')).not.toBe(statusNameKey('hugi / build2'));
 });
+
+test.each([
+  ['sigma, final sigma, and capital sigma', ['aσ', 'aς', 'aΣ', 'AΣ']],
+  ['the Kelvin sign and k', ['\u212A', 'k', 'K']],
+  ['sharp s and SS', ['ß', 'SS', 'ss']],
+])('%s have one key, however the case maps them', (_label, names) => {
+  expect(new Set(names.map(statusNameKey)).size).toBe(1);
+});

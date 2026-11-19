@@ -530,6 +530,28 @@ describe('status names', () => {
     );
   });
 
+  test('the case collision is found whichever case the first lane uses', async () => {
+    const cause = await refusalOf(
+      'lanes:\n  - workflow: ci.yml\n    jobs: [BUILD]\n  - workflow: .github/hugi/ci.yml\n    jobs: [build]\n',
+      {
+        '.github/hugi/ci.yml': workflow({ build: {} }),
+        [CI]: workflow({ BUILD: {} }),
+      },
+    );
+    expect(cause).toMatch(
+      /two lanes have the status names "hugi \/ BUILD" and "hugi \/ build", which GitHub treats as one/,
+    );
+  });
+
+  test('rows whose values differ only by a final and a medial sigma refuse the declaration', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({ build: { strategy: { matrix: { v: ['aσ', 'aΣ'] } } } }),
+    });
+    expect(cause).toMatch(
+      /two lanes have the status names "hugi \/ build \(aσ\)" and "hugi \/ build \(aΣ\)", which GitHub treats as one/,
+    );
+  });
+
   test('lanes whose status names differ are accepted', async () => {
     const result = await read('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
       [CI]: workflow({
