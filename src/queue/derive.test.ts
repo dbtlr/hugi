@@ -287,6 +287,33 @@ describe('status names compare ignoring case, as GitHub compares contexts', () =
     ]);
   });
 
+  test.each([
+    [
+      'pending first',
+      [
+        ['hugi / platform', 'pending'],
+        ['HUGI / PLATFORM', 'success'],
+      ],
+    ],
+    [
+      'verdict first',
+      [
+        ['HUGI / PLATFORM', 'success'],
+        ['hugi / platform', 'pending'],
+      ],
+    ],
+  ] as const)(
+    'a name is settled when any entry in any case carries a verdict, %s',
+    (_label, entries) => {
+      const read: CommitRead = {
+        kind: 'lanes',
+        lanes: [{ kind: 'runs', lane: PLATFORM }],
+        statuses: new Map<string, CommitStatusState>(entries),
+      };
+      expect(names([repo('o/r', read)])).toEqual([]);
+    },
+  );
+
   test('two lanes of one commit whose names differ only in case are queued once', () => {
     const upper = { ...PLATFORM, job: 'PLATFORM' };
     expect(names([repo('o/r', lanes({}, PLATFORM, upper))])).toEqual(['o/r@a hugi / platform']);

@@ -22,17 +22,17 @@ const VERDICTS: ReadonlySet<CommitStatusState> = new Set(['success', 'failure', 
 
 /**
  * The status names on a commit that carry a verdict, by `statusNameKey`, so a verdict posted in
- * any case settles the name GitHub treats as the same context.
+ * any case settles the name GitHub treats as the same context. A name is settled when any of its
+ * entries carries a verdict, whatever order GitHub lists its case variants in.
  */
 function verdictsOf(statuses: CommitStatuses): ReadonlySet<string> {
-  const latest = new Map<string, CommitStatusState>();
+  const settled = new Set<string>();
   for (const [name, state] of statuses) {
-    const key = statusNameKey(name);
-    if (!latest.has(key)) {
-      latest.set(key, state);
+    if (VERDICTS.has(state)) {
+      settled.add(statusNameKey(name));
     }
   }
-  return new Set([...latest].flatMap(([key, state]) => (VERDICTS.has(state) ? [key] : [])));
+  return settled;
 }
 
 /** The key that identifies one commit status: its repository, commit, and name. */
