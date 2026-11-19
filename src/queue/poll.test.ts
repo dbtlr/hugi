@@ -376,6 +376,13 @@ const pullsWorld = (pulls: PullFixture[], statuses: World['statuses'] = {}): Wor
   statuses,
 });
 
+/** A job whose `if:` holds only when `github.sha` is `commit`. */
+const onlyAt = (commit: string) => ({
+  if: `github.sha == '${commit}'`,
+  'runs-on': 'macos-latest',
+  steps: [{ run: 'true' }],
+});
+
 describe('a pull request', () => {
   test('runs at its merge commit; its candidates are its head with each lane its event selects', async () => {
     const { opened, queue } = await poll(
@@ -403,6 +410,24 @@ describe('a pull request', () => {
       'o/r@4 hugi / platform',
       'o/r@4 hugi / test (macos-latest)',
     ]);
+  });
+
+  test("a job's if: sees the merge commit as github.sha, not the head", async () => {
+    const state = pullsWorld([
+      { author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 },
+    ]);
+    state.commits[sha('8')] = {
+      files: {
+        '.github/hugi.yaml': stringify({
+          lanes: [{ jobs: ['on-merge', 'on-head'], workflow: 'ci.yml' }],
+        }),
+        '.github/workflows/ci.yml': stringify({
+          jobs: { 'on-head': onlyAt(sha('4')), 'on-merge': onlyAt(sha('8')) },
+          on: { pull_request: null },
+        }),
+      },
+    };
+    expect(named((await poll(state)).queue)).toEqual(['o/r@4 hugi / on-merge']);
   });
 
   test('statuses are read on the head commit, not the merge commit', async () => {
