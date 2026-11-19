@@ -4,6 +4,8 @@ import type { View } from '@loomcli/core';
 import { format } from '@loomcli/plugins/format';
 import { help } from '@loomcli/plugins/help';
 
+import { configCommand } from './commands/config';
+import type { ConfigCommandOverrides } from './commands/config';
 import { runCommand } from './commands/run';
 import type { RunCommandOverrides } from './commands/run';
 import { VERSION } from './version';
@@ -25,7 +27,7 @@ const textView: View<{ text: string }> = { render: (data) => `${data.text}\n` };
  */
 export const SHUTDOWN_BUDGET_MS = 180_000;
 
-export function createApp(run: RunCommandOverrides = {}) {
+export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOverrides = {}) {
   return new Application('hugi', {
     description: 'Run macOS CI lanes in throwaway VMs and report the verdicts to GitHub.',
     plugins: [format(), help()],
@@ -36,6 +38,7 @@ export function createApp(run: RunCommandOverrides = {}) {
     .result<{ text: string }>({ views: { text: textView } })
     .views({ text: textView }, { default: 'text' })
     .command(runCommand(run))
+    .command(configCommand(config))
     .action(async ({ options, out }) => {
       await out.results({ text: options.version ? VERSION : USAGE });
     });

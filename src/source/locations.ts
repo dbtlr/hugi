@@ -18,6 +18,15 @@ export function resolveCacheDir(flag: string | undefined, env: Env, home: string
   );
 }
 
+/** Hugi's configuration file: the flag, else `HUGI_CONFIG`, else `hugi/config.yaml` in the XDG config home. */
+export function resolveConfigPath(flag: string | undefined, env: Env, home: string): string {
+  return (
+    present(flag) ??
+    present(env.HUGI_CONFIG) ??
+    join(present(env.XDG_CONFIG_HOME) ?? join(home, '.config'), 'hugi', 'config.yaml')
+  );
+}
+
 /** The parent of every run's log directory. */
 export function resolveRunsDir(env: Env, home: string): string {
   return join(present(env.XDG_STATE_HOME) ?? join(home, '.local', 'state'), 'hugi', 'runs');

@@ -107,6 +107,25 @@ Deleting the VM is best effort. When a delete fails, Hugi warns with the VM's na
 
 Every accepted macOS `runs-on` label, such as `macos-26` or `macos-latest`, runs on the golden image, which is built from macOS 15. A step that checks the macOS version sees 15 whatever label the lane names.
 
+## Configuration
+
+Hugi's configuration says which repositories are enrolled and whose pull requests may run. It never says what runs: lanes come from each repository's `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)), so a `lanes` key here is refused.
+
+Hugi reads one YAML file: `--config <path>`, else `HUGI_CONFIG`, else `$XDG_CONFIG_HOME/hugi/config.yaml` (`~/.config/hugi/config.yaml` when `XDG_CONFIG_HOME` is unset). Unknown keys are refused.
+
+```yaml
+repositories: # required, at least one owner/name; names compare case-insensitively
+  - dbtlr/hugi
+allowlist: # required, may be empty: GitHub logins whose pull requests run on every enrolled repository
+  - dbtlr
+poll_interval: 60 # optional, seconds between polls of GitHub, 15 to 3600, default 60
+vm: # optional, the size of each run's VM (ADR-0003)
+  cpus: 4 # 1 to 16, default 4
+  memory_gb: 4 # 2 to 64, default 4
+```
+
+Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
+
 ## Documentation
 
 - [Architecture decisions](docs/decisions/README.md): the decisions that bind the design, starting with [GitHub never schedules](docs/decisions/0001-github-never-schedules.md), [verification only](docs/decisions/0002-verification-only.md), and [one throwaway VM per run](docs/decisions/0003-one-throwaway-vm-per-run.md).
