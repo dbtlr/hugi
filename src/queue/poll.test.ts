@@ -1,14 +1,19 @@
 /* Workflow expression delimiters are literal input to the lane reader. */
 /* eslint-disable no-template-curly-in-string */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
 
 import { stringify } from 'yaml';
 
 import { createGitHubReader } from '../github/client';
-import type { CommitStatusState } from '../github/client';
+import type { CommitStatusState, GitHubReader } from '../github/client';
 import type { Fetch, PullRequestFacts } from '../github/pull-request';
-import { NoCurrentMergeError, SourceError } from '../source/host-source';
+// The spies need the modules' namespaces to count how often a workflow is parsed and triggered.
+// eslint-disable-next-line import/no-namespace
+import * as laneParse from '../lane/parse';
+import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
+// eslint-disable-next-line import/no-namespace
+import * as trigger from '../trigger';
 import { deriveQueue } from './derive';
 import { pollRepositories } from './poll';
 import type { CommitSource, PollDeps } from './poll';
@@ -30,7 +35,6 @@ async function recorded<Shape>(name: string): Promise<Shape> {
 
 const RECORDED = {
   branch: await recorded<RecordedBranch>('branch-main'),
-  commit: await recorded<Fields>('git-commit-44'),
   pull: await recorded<RecordedPull>('pull-44'),
   pulls: await recorded<RecordedPull[]>('pulls-page-1'),
   repository: await recorded<Fields>('repository'),
@@ -110,6 +114,9 @@ type World = {
   statuses?: Record<string, Record<string, CommitStatusState>>;
 };
 
+/** What a test sees of the sources a poll opens: each commit opened, and each file read. */
+type Seen = { opened: string[]; reads: string[]; changed: string[] };
+
 /** The recorded combined status, holding `states` for `commit`. */
 function statusesOf(commit: string, states: Record<string, CommitStatusState>) {
   const [recordedStatus] = RECORDED.status.statuses;
@@ -158,11 +165,6 @@ function github(world: World): Fetch {
         mergeable: merge !== null,
         number: pull.number,
       });
-      routes.set(`${base}/git/commits/${pull.head}`, {
-        ...RECORDED.commit,
-        message: pull.message ?? 'Change things',
-        sha: pull.head,
-      });
     }
   }
   return async (url) => {
@@ -181,17 +183,34 @@ function github(world: World): Fetch {
 /** Sources read from the world's commits, as the host source would read them. */
 function sources(
   world: World,
-  opened: string[] = [],
+  seen: Seen = { changed: [], opened: [], reads: [] },
 ): Pick<PollDeps, 'openPush' | 'openPullRequest'> {
+  // The source reads a pull request's head message from git, as the host source does.
+  const messages = new Map(
+    world.repos.flatMap((repo) =>
+      (repo.pulls ?? []).map((pull) => [pull.head, pull.message ?? 'Change things'] as const),
+    ),
+  );
   const at = (commit: string): CommitSource => {
     const fixture = world.commits[commit];
     if (fixture === undefined) {
       throw new SourceError(`The commit "${commit}" does not exist in the repository.`);
     }
-    opened.push(commit);
+    seen.opened.push(commit);
     return {
-      changedFiles: async () => fixture.changed ?? [],
-      readFile: async (path) => fixture.files[path],
+      changedFiles: async () => {
+        seen.changed.push(commit);
+        return fixture.changed ?? [];
+      },
+      commitMessage: async (head) => messages.get(head) ?? 'Change things',
+      readFile: async (path) => {
+        seen.reads.push(path);
+        const text = fixture.files[path];
+        if (text === DIRECTORY) {
+          throw new NotAFileError(`${path} is a tree, not a file, at ${commit}.`);
+        }
+        return text;
+      },
       sha: commit,
     };
   };
@@ -209,16 +228,26 @@ function sources(
   };
 }
 
-async function poll(world: World, allowlist = ['ada'], inFlight?: RunInFlight) {
-  const opened: string[] = [];
+/** A file the source holds as a directory, which reads as `NotAFileError`. */
+const DIRECTORY = '<directory>';
+
+/** Poll the world; `deps` replaces any of the dependencies built from it. */
+async function poll(
+  world: World,
+  allowlist = ['ada'],
+  inFlight: RunInFlight[] = [],
+  deps: (built: PollDeps) => Partial<PollDeps> = () => ({}),
+) {
+  const seen: Seen = { changed: [], opened: [], reads: [] };
+  const built: PollDeps = {
+    github: createGitHubReader({ fetch: github(world), token: async () => 'ghs_token' }),
+    ...sources(world, seen),
+  };
   const snapshot = await pollRepositories(
     { allowlist, repositories: world.repos.map((repo) => repo.name) },
-    {
-      github: createGitHubReader({ fetch: github(world), token: async () => 'ghs_token' }),
-      ...sources(world, opened),
-    },
+    { ...built, ...deps(built) },
   );
-  return { opened, queue: deriveQueue(snapshot, inFlight), snapshot };
+  return { ...seen, queue: deriveQueue(snapshot, inFlight), snapshot };
 }
 
 /** Each candidate as `repository@sha-digit status-name`. */
@@ -406,8 +435,8 @@ describe('a pull request', () => {
     });
   });
 
-  test("whose head commit's message carries a skip instruction yields nothing", async () => {
-    const { opened, queue } = await poll(
+  test("whose head commit's message, read from git at the head, carries a skip instruction yields nothing", async () => {
+    const { queue, reads } = await poll(
       pullsWorld([
         {
           author: 'ada',
@@ -419,7 +448,7 @@ describe('a pull request', () => {
       ]),
     );
     expect(queue.candidates).toEqual([]);
-    expect(opened).toEqual([sha('1')]);
+    expect(reads).toEqual(['.github/hugi.yaml']);
   });
 
   test("superseded: only the new head's lanes are queued, and the old head's run in flight stays out", async () => {
@@ -431,7 +460,7 @@ describe('a pull request', () => {
     const { queue } = await poll(
       pullsWorld([{ author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 }]),
       ['ada'],
-      oldHeadRun,
+      [oldHeadRun],
     );
     expect(queue.candidates.every((candidate) => candidate.commit === sha('4'))).toBe(true);
     expect(named(queue)).toContain('o/r@4 hugi / platform');
@@ -493,18 +522,28 @@ test('a repository whose reads fail is reported, and the others still yield cand
   );
 });
 
-test('a repository whose source cannot be read is reported like a failed API read', async () => {
+test("a default branch head whose source cannot be read is reported, and the repository's pull requests are still read", async () => {
   const { queue } = await poll({
-    commits: { [sha('2')]: { files: DECLARED } },
+    commits: { [sha('2')]: { files: DECLARED }, [sha('8')]: { files: DECLARED } },
     repos: [
-      { head: sha('1'), name: 'o/gone' },
+      {
+        head: sha('1'),
+        name: 'o/gone',
+        pulls: [{ author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 }],
+      },
       { head: sha('2'), name: 'o/r' },
     ],
   });
   expect(queue.failures).toEqual([
-    { cause: `The commit "${sha('1')}" does not exist in the repository.`, repository: 'o/gone' },
+    {
+      cause: `The commit "${sha('1')}" does not exist in the repository.`,
+      defaultBranch: 'main',
+      repository: 'o/gone',
+    },
   ]);
-  expect(queue.candidates.length).toBeGreaterThan(0);
+  expect(new Set(named(queue).map((name) => name.split(' ')[0]))).toEqual(
+    new Set(['o/gone@4', 'o/r@2']),
+  );
 });
 
 test('a pull request whose read fails is skipped alone, and named in the failure', async () => {
@@ -536,4 +575,202 @@ test('a pull request whose read fails is skipped alone, and named in the failure
   expect(new Set(queue.candidates.map((candidate) => candidate.commit[0]))).toEqual(
     new Set(['1', '6']),
   );
+});
+
+/** `opened`, with `readFile` throwing a plain error when it is at `commit`. */
+async function brokenAt(commit: string, source: Promise<CommitSource>): Promise<CommitSource> {
+  const opened = await source;
+  return opened.sha === commit
+    ? {
+        ...opened,
+        readFile: async () => {
+          throw new Error('a bug in the reader');
+        },
+      }
+    : opened;
+}
+
+/** The world's sources, with `readFile` at `commit` throwing a plain error. */
+function throwingAt(commit: string) {
+  return (built: PollDeps): Partial<PollDeps> => ({
+    openPullRequest: async (repository, facts) =>
+      brokenAt(commit, built.openPullRequest(repository, facts)),
+    openPush: async (repository, head) => brokenAt(commit, built.openPush(repository, head)),
+  });
+}
+
+/** Two repositories, the first with two pull requests, every commit declaring lanes. */
+const twoRepositories = (): World => ({
+  commits: {
+    [sha('1')]: { files: DECLARED },
+    [sha('2')]: { files: DECLARED },
+    [sha('8')]: { files: DECLARED },
+    [sha('9')]: { files: DECLARED },
+  },
+  repos: [
+    {
+      head: sha('1'),
+      name: 'o/r',
+      pulls: [
+        { author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 },
+        { author: 'ada', head: sha('5'), merge: { sha: sha('9') }, number: 45 },
+      ],
+    },
+    { head: sha('2'), name: 'o/s' },
+  ],
+});
+
+/** A workflow whose one macOS job runs only when `docs/**` changed. */
+const pathFiltered = (job: string) =>
+  stringify({
+    jobs: { [job]: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
+    on: { pull_request: { paths: ['docs/**'] }, push: { paths: ['docs/**'] } },
+  });
+
+describe('an error no read expects', () => {
+  test('while reading one pull request skips it alone, marked unexpected', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], throwingAt(sha('8')));
+    expect(queue.failures).toEqual([
+      { cause: 'a bug in the reader', pullRequest: 44, repository: 'o/r', unexpected: true },
+    ]);
+    expect(new Set(named(queue).map((name) => name.split(' ')[0]))).toEqual(
+      new Set(['o/r@1', 'o/s@2', 'o/r@5']),
+    );
+  });
+
+  test('while reading the default branch head skips it alone, marked unexpected', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], throwingAt(sha('1')));
+    expect(queue.failures).toEqual([
+      { cause: 'a bug in the reader', defaultBranch: 'main', repository: 'o/r', unexpected: true },
+    ]);
+    expect(new Set(named(queue).map((name) => name.split(' ')[0]))).toEqual(
+      new Set(['o/s@2', 'o/r@4', 'o/r@5']),
+    );
+  });
+
+  test('in a repository-level read skips that repository, marked unexpected', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        openPullRequests: async (repository) => {
+          if (repository === 'o/r') {
+            throw new TypeError('listing is not iterable');
+          }
+          return built.github.openPullRequests(repository);
+        },
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([
+      { cause: 'listing is not iterable', repository: 'o/r', unexpected: true },
+    ]);
+    expect(named(queue).map((name) => name.split(' ')[0])).toContain('o/s@2');
+  });
+});
+
+test('a declared workflow path that is a directory refuses the declaration and polls on', async () => {
+  const { queue } = await poll({
+    commits: {
+      [sha('1')]: { files: { ...DECLARED, '.github/workflows/docs.yml': DIRECTORY } },
+    },
+    repos: [{ head: sha('1'), name: 'o/r' }],
+  });
+  expect(queue.failures).toEqual([]);
+  expect(queue.declarationReports).toEqual([
+    {
+      cause: expect.stringContaining('docs.yml does not exist at the commit'),
+      commit: sha('1'),
+      repository: 'o/r',
+    },
+  ]);
+});
+
+test('three admitted pull requests all yield candidates', async () => {
+  const { queue } = await poll(
+    pullsWorld([
+      { author: 'ada', head: sha('4'), merge: { sha: sha('8') }, number: 44 },
+      { author: 'ada', head: sha('5'), merge: { sha: sha('8') }, number: 45 },
+      { author: 'ada', head: sha('6'), merge: { sha: sha('8') }, number: 46 },
+    ]),
+  );
+  expect(named(queue).filter((name) => name.endsWith('platform'))).toEqual([
+    'o/r@4 hugi / platform',
+    'o/r@5 hugi / platform',
+    'o/r@6 hugi / platform',
+  ]);
+});
+
+describe("a commit's reads", () => {
+  test('read the changed files at most once, however many workflows filter by path', async () => {
+    const { changed, queue } = await poll({
+      commits: {
+        [sha('1')]: {
+          changed: ['docs/index.md'],
+          files: {
+            '.github/hugi.yaml': stringify({
+              lanes: ['a', 'b', 'c'].map((job) => ({ jobs: [job], workflow: `${job}.yml` })),
+            }),
+            ...Object.fromEntries(
+              ['a', 'b', 'c'].map((job) => [`.github/workflows/${job}.yml`, pathFiltered(job)]),
+            ),
+          },
+        },
+      },
+      repos: [{ head: sha('1'), name: 'o/r' }],
+    });
+    expect(named(queue)).toHaveLength(3);
+    expect(changed).toEqual([sha('1')]);
+  });
+
+  test('read, parse, and trigger each workflow once, however many lanes it holds', async () => {
+    const loads = spyOn(laneParse, 'loadWorkflow');
+    const starts = spyOn(trigger, 'workflowStarts');
+    try {
+      const { queue, reads } = await poll({
+        commits: { [sha('1')]: { files: DECLARED } },
+        repos: [{ head: sha('1'), name: 'o/r' }],
+      });
+      expect(named(queue)).toHaveLength(4);
+      expect(reads.toSorted()).toEqual(Object.keys(DECLARED).toSorted());
+      // Once in the declaration reader and once to decide the lanes, for each of the two workflows.
+      expect(loads).toHaveBeenCalledTimes(4);
+      expect(starts).toHaveBeenCalledTimes(2);
+    } finally {
+      loads.mockRestore();
+      starts.mockRestore();
+    }
+  });
+
+  test('of a large workflow with many declared lanes take well under a second', async () => {
+    const rows = Array.from({ length: 256 }, (_, index) => index);
+    const padding = Array.from({ length: 2000 }, (_, index) => ({
+      name: `pad ${index}`,
+      run: `echo ${'x'.repeat(260)}`,
+    }));
+    const large = stringify({
+      jobs: {
+        build: {
+          'runs-on': 'macos-latest',
+          steps: [{ run: 'echo ${{ matrix.n }}' }],
+          strategy: { matrix: { n: rows } },
+        },
+        pad: { 'runs-on': 'ubuntu-latest', steps: padding },
+      },
+      on: { pull_request: null, push: { branches: ['main'] } },
+    });
+    expect(large.length).toBeGreaterThan(600 * 1024);
+    const started = performance.now();
+    const { queue } = await poll({
+      commits: {
+        [sha('1')]: {
+          files: {
+            '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['build'], workflow: 'ci.yml' }] }),
+            '.github/workflows/ci.yml': large,
+          },
+        },
+      },
+      repos: [{ head: sha('1'), name: 'o/r' }],
+    });
+    expect(queue.candidates).toHaveLength(256);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
 });

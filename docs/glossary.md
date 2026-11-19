@@ -25,7 +25,7 @@ The merge of a pull request's head into its base branch that GitHub keeps at `re
 _Avoid_: Test merge, merge ref (when the commit is meant)
 
 **Candidate**:
-A commit with one lane that still lacks a verdict, which the coordinator's queue holds until a run takes it. A pull request's candidate is its head commit, where the verdict is posted, though the lane was selected at its merge commit. A lane with a `pending` status and no run in flight is a candidate again, so the queue is derived from GitHub's state alone.
+A commit with one lane that still lacks a verdict, which the coordinator's queue holds until a run takes it. The lane is one that the commit's event selects: its workflow's trigger starts it for the event, and its job's `if:` holds. A pull request's candidate is its head commit, where the verdict is posted, though the lane was selected at its merge commit. A lane with a `pending` status and no run in flight is a candidate again, so the queue is derived from GitHub's state alone.
 _Avoid_: Job, task, queue entry
 
 **Verdict**:

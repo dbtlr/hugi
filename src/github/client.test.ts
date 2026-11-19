@@ -85,6 +85,22 @@ describe('the default branch head', () => {
   });
 });
 
+/** Page `page` of the open pull requests listing. */
+const pageAt = (page: number) => (page === 1 ? PULLS : `${PULLS}&page=${page}`);
+
+/** A listing of `count` pages, each linking to the next, with one pull request on the last. */
+async function pages(count: number) {
+  const [pull] = JSON.parse(await recorded('pulls-page-1'));
+  const routes: Record<string, Answer> = {};
+  for (let page = 1; page <= count; page += 1) {
+    routes[pageAt(page)] =
+      page === count
+        ? { body: JSON.stringify([pull]) }
+        : { body: '[]', headers: { link: `<${pageAt(page + 1)}>; rel="next"` } };
+  }
+  return serving(routes);
+}
+
 describe('open pull requests', () => {
   test('follow the Link header across pages', async () => {
     const { fetch } = serving({
@@ -134,20 +150,6 @@ describe('open pull requests', () => {
     expect(failure.message).toContain('more than');
     expect(calls.length).toBeGreaterThan(1);
   });
-
-  /** A listing of `count` pages, each linking to the next, with one pull request on the last. */
-  async function pages(count: number) {
-    const [pull] = JSON.parse(await recorded('pulls-page-1'));
-    const at = (page: number) => (page === 1 ? PULLS : `${PULLS}&page=${page}`);
-    const routes: Record<string, Answer> = {};
-    for (let page = 1; page <= count; page += 1) {
-      routes[at(page)] =
-        page === count
-          ? { body: JSON.stringify([pull]) }
-          : { body: '[]', headers: { link: `<${at(page + 1)}>; rel="next"` } };
-    }
-    return serving(routes);
-  }
 
   test('a listing of 50 pages, the most Hugi reads, is read whole', async () => {
     const { calls, fetch } = await pages(50);
@@ -200,16 +202,6 @@ describe('one pull request', () => {
     const failure = await failureOf(reader(fetch).pullRequest(REPO, 45));
     expect(failure.message).toContain('describes pull request 44');
   });
-});
-
-test("a commit's message is read from the git commit endpoint", async () => {
-  const sha = '4'.repeat(40);
-  const { fetch } = serving({
-    [`${API}/repos/${REPO}/git/commits/${sha}`]: { body: await recorded('git-commit-44') },
-  });
-  expect(await reader(fetch).commitMessage(REPO, sha)).toBe(
-    'Add a cache\n\nKeep fetched objects between runs.',
-  );
 });
 
 describe("a commit's statuses", () => {
@@ -330,7 +322,10 @@ describe('a failed read is one error naming the repository and endpoint', () => 
       createGitHubReader({
         fetch,
         timeoutMs: 50,
-        token: () => new Promise<string>(() => {}),
+        token: async () => {
+          await once(new EventTarget(), 'never');
+          return TOKEN;
+        },
       }).defaultBranchHead(REPO),
     );
     expect(failure.message).toBe(`Cannot get a GitHub token for ${endpoint} within 0.05 s.`);

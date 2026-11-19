@@ -1,9 +1,11 @@
 /**
  * Reads what the poller needs from GitHub's REST API with an installation token: a repository's
- * default branch head, its open pull requests, one pull request's merge facts, a commit's message,
+ * default branch head with its message, its open pull requests, one pull request's merge facts,
  * and a commit's statuses. Every read is bounded by a time limit, and every failure is one
  * `GitHubReadError` naming the repository and the endpoint.
  */
+import { setTimeout as sleep } from 'node:timers/promises';
+
 import { messageOf } from '../errors';
 import { isMapping } from '../yaml/strict';
 import { API_HEADERS, FULL_SHA, factsOf, READ_TIMEOUT_MS } from './pull-request';
@@ -55,7 +57,6 @@ export type GitHubReader = {
   readonly defaultBranchHead: (repository: string) => Promise<BranchHead>;
   readonly openPullRequests: (repository: string) => Promise<OpenPullRequest[]>;
   readonly pullRequest: (repository: string, number: number) => Promise<PullRequestFacts>;
-  readonly commitMessage: (repository: string, sha: string) => Promise<string>;
   /** The latest state of each status context on the commit. */
   readonly commitStatuses: (
     repository: string,
@@ -77,6 +78,9 @@ const PER_PAGE = 100;
 
 /** A Link header that never ends cannot hold a poll: 50 pages is 5000 entries. */
 const MAX_PAGES = 50;
+
+/** What the token's time limit resolves to when it runs out first. */
+const EXPIRED = Symbol('expired');
 
 const STATUS_STATES: readonly CommitStatusState[] = ['success', 'failure', 'error', 'pending'];
 
@@ -137,22 +141,23 @@ class Endpoint {
   /** The provider's token, bounded by the same time limit as a request, so it cannot hold a poll. */
   async #token(): Promise<string> {
     const timeoutMs = this.#timeoutMs;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        reject(this.fail(`Cannot get a GitHub token for ${this.#name} within ${timeoutMs / 1000} s.`));
-      }, timeoutMs);
-    });
+    // Aborted once the race settles, so the timer stops; the race has already handled its rejection.
+    const settled = new AbortController();
+    let token: string | typeof EXPIRED;
     try {
-      return await Promise.race([this.#options.token(), timedOut]);
+      token = await Promise.race([
+        this.#options.token(),
+        sleep(timeoutMs, EXPIRED, { signal: settled.signal }),
+      ]);
     } catch (error) {
-      if (error instanceof GitHubReadError) {
-        throw error;
-      }
       throw this.fail(`Cannot get a GitHub token for ${this.#name}: ${messageOf(error)}`);
     } finally {
-      clearTimeout(timer);
+      settled.abort();
     }
+    if (token === EXPIRED) {
+      throw this.fail(`Cannot get a GitHub token for ${this.#name} within ${timeoutMs / 1000} s.`);
+    }
+    return token;
   }
 
   #statusFailure(response: Response): GitHubReadError {
@@ -319,13 +324,6 @@ function statusOf(entry: unknown): Parsed<Status> {
   return { context: entry.context, state: entry.state };
 }
 
-function messageOfCommit(body: unknown): Parsed<string> {
-  if (!isMapping(body) || typeof body.message !== 'string') {
-    return new Malformed('it has no message');
-  }
-  return body.message;
-}
-
 /** A reader of GitHub's API that sends the provider's token with every request. */
 export function createGitHubReader(options: GitHubReaderOptions): GitHubReader {
   const at = (repository: string, path: string) => {
@@ -333,10 +331,6 @@ export function createGitHubReader(options: GitHubReaderOptions): GitHubReader {
     return { endpoint: new Endpoint(options, repository, full), url: `${API}${full}` };
   };
   return {
-    commitMessage: async (repository, sha) => {
-      const { endpoint, url } = at(repository, `/git/commits/${sha}`);
-      return endpoint.read(url, messageOfCommit);
-    },
     commitStatuses: async (repository, sha) => {
       const { endpoint, url } = at(repository, `/commits/${sha}/status`);
       const statuses = await endpoint.readAll(`${url}?per_page=${PER_PAGE}`, (body) =>

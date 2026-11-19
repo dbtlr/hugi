@@ -7,14 +7,16 @@
 import type { HugiConfig } from '../config/schema';
 import { readDeclaration } from '../declaration/read';
 import type { CommitFiles } from '../declaration/read';
+import { messageOf } from '../errors';
 import { GitHubReadError } from '../github/client';
 import type { BranchHead, GitHubReader, OpenPullRequest } from '../github/client';
+import { pullRequestEvent, pullRequestRef } from '../github/pull-request';
 import type { PullRequestFacts } from '../github/pull-request';
 import { loadWorkflow } from '../lane/parse';
-import { JobSkippedError, LaneReadError, readLane } from '../lane/reader';
-import type { EventContext, LaneRef, PullRequestRef } from '../lane/step-plan';
+import { JobSkippedError, LaneReadError, readLaneFrom } from '../lane/reader';
+import type { EventContext, LaneRef } from '../lane/step-plan';
 import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
-import type { HostSource } from '../source/host-source';
+import type { OpenedSource } from '../source/host-source';
 import { skipsWorkflows, workflowStarts } from '../trigger';
 import type { TriggerEvent } from '../trigger';
 import { GUEST_RUNNER_PATHS } from '../vm';
@@ -23,12 +25,16 @@ import type {
   CommitSnapshot,
   LaneDecision,
   PullRequestReadFailure,
+  ReadFailure,
   RepositorySnapshot,
   Snapshot,
 } from './types';
 
-/** The parts of a repository at one commit a poll reads: `HostSource` is one. */
-export type CommitSource = Pick<HostSource, 'sha' | 'readFile' | 'changedFiles'>;
+/** The parts of a repository at one commit a poll reads: an opened `HostSource` is one. */
+export type CommitSource = Pick<
+  OpenedSource,
+  'sha' | 'readFile' | 'changedFiles' | 'commitMessage'
+>;
 
 export type PollDeps = {
   readonly github: GitHubReader;
@@ -48,11 +54,12 @@ type Considered = {
 };
 
 /**
- * The source's files as the declaration reader takes them. A path that names a directory reads
- * as absent: a workflow that is a directory refuses the declaration as missing.
+ * The source's files as the declaration reader takes them, each path read at most once for the
+ * commit. A path that names a directory reads as absent: a workflow that is a directory refuses
+ * the declaration as missing.
  */
 function commitFiles(source: CommitSource): CommitFiles {
-  return async (path) => {
+  const read = async (path: string) => {
     try {
       return (await source.readFile(path)) ?? null;
     } catch (error) {
@@ -61,6 +68,15 @@ function commitFiles(source: CommitSource): CommitFiles {
       }
       throw error;
     }
+  };
+  const texts = new Map<string, Promise<string | null>>();
+  return (path) => {
+    let text = texts.get(path);
+    if (text === undefined) {
+      text = read(path);
+      texts.set(path, text);
+    }
+    return text;
   };
 }
 
@@ -73,26 +89,56 @@ function once(read: () => Promise<readonly string[]>): () => Promise<readonly st
   };
 }
 
+/** A workflow file loaded once for a commit, with whether its `on:` starts it for the event. */
+type ConsideredWorkflow = {
+  readonly workflow: Record<string, unknown>;
+  readonly starts: boolean;
+} | null;
+
+/**
+ * Each workflow at the commit, loaded and its trigger decided at most once however many lanes it
+ * holds, so a poll's cost grows with the workflows' size plus the lanes, not their product.
+ */
+function workflowsAt(files: CommitFiles, trigger: TriggerEvent) {
+  const load = async (path: string): Promise<ConsideredWorkflow> => {
+    const text = await files(path);
+    if (text === null) {
+      return null;
+    }
+    const workflow = loadWorkflow(text);
+    return { starts: await workflowStarts(workflow.on, trigger), workflow };
+  };
+  const loaded = new Map<string, Promise<ConsideredWorkflow>>();
+  return (path: string) => {
+    let each = loaded.get(path);
+    if (each === undefined) {
+      each = load(path);
+      loaded.set(path, each);
+    }
+    return each;
+  };
+}
+
 /**
  * Whether the lane runs for the event: its workflow's `on:` must start it, then its job's `if:`
  * must hold. A lane the reader cannot otherwise read runs, so its run yields the fail verdict.
  * An accepted declaration's workflows already loaded and passed trigger validation, so a failure
- * to read `on:` here breaches that invariant: it propagates and fails the repository's read.
+ * to load a workflow or read its `on:` here breaches that invariant: it is an unexpected error,
+ * which skips the commit's pull request, or the default branch head, for this poll.
  */
 async function decideLane(
   lane: LaneRef,
-  files: CommitFiles,
-  considered: Considered,
+  considered: ConsideredWorkflow,
+  context: EventContext,
 ): Promise<LaneDecision> {
-  const text = await files(lane.workflow);
-  if (text === null) {
+  if (considered === null) {
     return { kind: 'runs', lane };
   }
-  if (!(await workflowStarts(loadWorkflow(text).on, considered.trigger))) {
+  if (!considered.starts) {
     return { kind: 'left-out', lane };
   }
   try {
-    readLane(text, lane, considered.context, GUEST_RUNNER_PATHS);
+    readLaneFrom(considered.workflow, lane, context, GUEST_RUNNER_PATHS);
   } catch (error) {
     if (error instanceof JobSkippedError) {
       return { kind: 'left-out', lane };
@@ -121,15 +167,31 @@ async function readCommit(
     const statuses = await github.commitStatuses(repository, commit);
     return { cause: declaration.cause, kind: 'refused', statuses };
   }
+  const workflowAt = workflowsAt(files, considered.trigger);
   const lanes: LaneDecision[] = [];
   for (const lane of declaration.lanes) {
     // oxlint-disable-next-line no-await-in-loop -- one lane at a time, in declaration order
-    lanes.push(await decideLane(lane, files, considered));
+    lanes.push(await decideLane(lane, await workflowAt(lane.workflow), considered.context));
   }
   return { kind: 'lanes', lanes, statuses: await github.commitStatuses(repository, commit) };
 }
 
-/** The default branch head, as a `push` of that branch. */
+/** A failed GitHub or git read, which skips what was being read for this poll. */
+function isReadFailure(error: unknown): error is GitHubReadError | SourceError {
+  return error instanceof GitHubReadError || error instanceof SourceError;
+}
+
+/** Why a read failed; any error other than a failed GitHub or git read is marked unexpected. */
+function failureOf(error: unknown): ReadFailure {
+  return isReadFailure(error)
+    ? { cause: error.message }
+    : { cause: messageOf(error), unexpected: true };
+}
+
+/**
+ * The default branch head, as a `push` of that branch. A failure to open or read its source is
+ * its `failed` read, so the repository's pull requests are still read.
+ */
 async function readPush(
   deps: PollDeps,
   repository: string,
@@ -144,6 +206,15 @@ async function readPush(
   if (skipsWorkflows(head.message)) {
     return snapshot({ kind: 'skipped' });
   }
+  try {
+    return snapshot(await readPushAt(deps, repository, head));
+  } catch (error) {
+    return snapshot({ kind: 'failed', ...failureOf(error) });
+  }
+}
+
+/** The default branch head's read, at its source. */
+async function readPushAt(deps: PollDeps, repository: string, head: BranchHead) {
   const source = await deps.openPush(repository, head.sha);
   const considered: Considered = {
     context: {
@@ -155,7 +226,7 @@ async function readPush(
     },
     trigger: { branch: head.branch, changedFiles: once(source.changedFiles), kind: 'push' },
   };
-  return snapshot(await readCommit(deps.github, repository, head.sha, source, considered));
+  return readCommit(deps.github, repository, head.sha, source, considered);
 }
 
 /** An open pull request, at the merge commit current now; its outcome belongs on its head. */
@@ -165,21 +236,12 @@ async function readPull(
   number: number,
 ): Promise<CommitSnapshot> {
   const facts = await deps.github.pullRequest(repository, number);
-  const pullRequest: PullRequestRef = {
-    baseRef: facts.baseRef,
-    headRef: facts.headRef,
-    headSha: facts.headSha,
-    number,
-  };
   const snapshot = (read: CommitRead): CommitSnapshot => ({
     commit: facts.headSha,
-    event: { kind: 'pull_request', pullRequest },
+    event: { kind: 'pull_request', pullRequest: pullRequestRef(facts) },
     read,
     repository,
   });
-  if (skipsWorkflows(await deps.github.commitMessage(repository, facts.headSha))) {
-    return snapshot({ kind: 'skipped' });
-  }
   let source: CommitSource;
   try {
     source = await deps.openPullRequest(repository, facts);
@@ -189,8 +251,12 @@ async function readPull(
     }
     throw error;
   }
+  // The opener fetched the head and checked it is the head GitHub reported, so git reads its message.
+  if (skipsWorkflows(await source.commitMessage(facts.headSha))) {
+    return snapshot({ kind: 'skipped' });
+  }
   const considered: Considered = {
-    context: { event: 'pull_request', pullRequest, repository, sha: source.sha },
+    context: pullRequestEvent(facts, repository, source.sha),
     trigger: {
       baseRef: facts.baseRef,
       changedFiles: once(source.changedFiles),
@@ -211,54 +277,43 @@ function admitted(
   );
 }
 
-/** A failed GitHub or git read, which skips what was being read for this poll. */
-function isReadFailure(error: unknown): error is GitHubReadError | SourceError {
-  return error instanceof GitHubReadError || error instanceof SourceError;
-}
-
 /**
- * Read one repository. A failed repository-level read (the repository, the open-pull-request
- * listing, the default branch head) fails the repository; a failed read of one pull request skips
- * only that pull request.
+ * Read one repository. Every error is kept to the scope it was read in: a failed
+ * repository-level read (the repository, its default branch, the open-pull-request listing) fails
+ * the repository; a failed read of the default branch head's source fails only that head; a failed
+ * read of one pull request skips only that pull request.
  */
 async function readRepository(
   config: Pick<HugiConfig, 'allowlist'>,
   deps: PollDeps,
   repository: string,
 ): Promise<RepositorySnapshot> {
+  let head: BranchHead;
+  let pulls: OpenPullRequest[];
   try {
-    const defaultBranch = await readPush(
-      deps,
-      repository,
-      await deps.github.defaultBranchHead(repository),
-    );
-    const pulls = admitted(await deps.github.openPullRequests(repository), config.allowlist);
-    const pullRequests: CommitSnapshot[] = [];
-    const pullRequestFailures: PullRequestReadFailure[] = [];
-    for (const pull of pulls) {
-      try {
-        // oxlint-disable-next-line no-await-in-loop -- one pull request at a time in the shared clone
-        pullRequests.push(await readPull(deps, repository, pull.number));
-      } catch (error) {
-        if (!isReadFailure(error)) {
-          throw error;
-        }
-        pullRequestFailures.push({ cause: error.message, number: pull.number });
-      }
-    }
-    return { defaultBranch, kind: 'read', pullRequestFailures, pullRequests, repository };
+    head = await deps.github.defaultBranchHead(repository);
+    pulls = admitted(await deps.github.openPullRequests(repository), config.allowlist);
   } catch (error) {
-    if (isReadFailure(error)) {
-      return { cause: error.message, kind: 'failed', repository };
-    }
-    throw error;
+    return { kind: 'failed', repository, ...failureOf(error) };
   }
+  const defaultBranch = await readPush(deps, repository, head);
+  const pullRequests: CommitSnapshot[] = [];
+  const pullRequestFailures: PullRequestReadFailure[] = [];
+  for (const pull of pulls) {
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- one pull request at a time in the shared clone
+      pullRequests.push(await readPull(deps, repository, pull.number));
+    } catch (error) {
+      pullRequestFailures.push({ number: pull.number, ...failureOf(error) });
+    }
+  }
+  return { defaultBranch, kind: 'read', pullRequestFailures, pullRequests, repository };
 }
 
 /**
- * Read every enrolled repository, one at a time in configuration order. A repository whose own GitHub
- * or git reads fail is recorded as failed for this poll, and a pull request whose reads fail is
- * skipped alone; the others are still read.
+ * Read every enrolled repository, one at a time in configuration order. It never rejects: a read
+ * that fails, for any reason, is recorded in the snapshot for the repository, default branch
+ * head, or pull request it belongs to, and the others are still read.
  */
 export async function pollRepositories(
   config: Pick<HugiConfig, 'allowlist' | 'repositories'>,
