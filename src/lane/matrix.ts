@@ -99,7 +99,20 @@ function combinations(matrix: Record<string, unknown>) {
     }
   }
   checkSize(expanded.length);
-  return expanded;
+  const order = [...new Set([...axes.map(([key]) => key), ...included.flatMap(Object.keys)])];
+  return expanded.map((row) => inKeyOrder(row, order));
+}
+
+/**
+ * The row with its keys in `order`, the order the workflow lists them: its axes, then the keys
+ * its include entries add, as each first appears. An appended include entry is written in its own
+ * order, and a lane's status name lists the row's values in the workflow's order.
+ */
+function inKeyOrder(row: Combination, order: readonly string[]): Combination {
+  // `fromEntries` defines each key, so a `__proto__` key stays an own key.
+  return Object.fromEntries(
+    order.filter((key) => Object.hasOwn(row, key)).map((key) => [key, row[key]!]),
+  );
 }
 
 /**
