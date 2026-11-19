@@ -10,10 +10,16 @@ function isBlank(line: string): boolean {
   return line.trim() === '';
 }
 
+/** A `Token: value` line, the token made of letters, digits and hyphens, as git reads one. */
+const TRAILER_LINE = /^[A-Za-z0-9-]+[ \t]*:/u;
+
 /**
- * A `skip-checks: true` trailer. GitHub wants it at the end of the message, after the other
- * trailers, in a trailers paragraph set off by blank lines: it must be the last non-blank line,
- * and a blank line (whitespace-only counts) must separate its paragraph from the subject or body.
+ * A `skip-checks: true` trailer. It must be the last non-blank line of a trailer block, which
+ * follows git (`git interpret-trailers --parse`): the final paragraph, after the last blank or
+ * whitespace-only line, is a trailer block only when every line in it is a trailer line or a
+ * continuation line (starting with whitespace). GitHub's documentation asks for "two empty
+ * lines" before the trailer; that is read as a blank-line separator, so one or more blank lines
+ * are accepted, as git accepts them. The block cannot be the message's first paragraph.
  */
 function hasSkipTrailer(message: string): boolean {
   const lines = message.replaceAll('\r\n', '\n').split('\n');
@@ -23,8 +29,12 @@ function hasSkipTrailer(message: string): boolean {
   if (lines.length === 0 || !SKIP_TRAILER.test(lines.at(-1)!.trimEnd())) {
     return false;
   }
-  const firstText = lines.findIndex((line) => !isBlank(line));
-  return lines.slice(firstText).some(isBlank);
+  const lastBlank = lines.findLastIndex(isBlank);
+  const block = lines.slice(lastBlank + 1);
+  if (lastBlank === -1 || lines.slice(0, lastBlank).every(isBlank)) {
+    return false;
+  }
+  return block.every((line) => TRAILER_LINE.test(line) || /^[ \t]/u.test(line));
 }
 
 /** Whether a commit message carries one of GitHub's skip instructions. */

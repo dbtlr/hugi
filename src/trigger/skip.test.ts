@@ -29,6 +29,31 @@ describe('skipsWorkflows', () => {
     ['trailer after only blank lines', '\n\nskip-checks: true', false],
     ['trailer indented', 'fix\n\n  skip-checks: true', false],
     ['trailer in subject then blank lines', 'skip-checks: true\n\n', false],
+    [
+      'prose paragraph ending in the trailer',
+      'Fix\n\nline one\nline two\nline three\nline four\nskip-checks: true',
+      false,
+    ],
+    [
+      'Signed-off-by then skip-checks',
+      'Fix\n\nbody\n\nSigned-off-by: a <a@b>\nskip-checks: true',
+      true,
+    ],
+    [
+      'skip-checks then Signed-off-by',
+      'Fix\n\nbody\n\nskip-checks: true\nSigned-off-by: a <a@b>',
+      false,
+    ],
+    [
+      'trailer block with a continuation line',
+      'Fix\n\nbody\n\nSigned-off-by: a\n  continued\nskip-checks: true',
+      true,
+    ],
+    [
+      'continuation line alone does not make a block',
+      'Fix\n\nprose\n  indented\nskip-checks: true',
+      false,
+    ],
     ['bracket instruction in another case', '[SKIP CI] fix', false],
   ];
   test.each(cases)('%s', (_, message, expected) => {

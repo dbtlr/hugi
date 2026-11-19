@@ -32,6 +32,31 @@ const EXCLUSIVE_PAIRS = [
   ['paths', 'paths-ignore'],
 ] as const;
 
+/** The activity types GitHub documents for `pull_request`; any other `types` value is refused. */
+const PULL_REQUEST_TYPES = new Set([
+  'assigned',
+  'unassigned',
+  'labeled',
+  'unlabeled',
+  'opened',
+  'edited',
+  'closed',
+  'reopened',
+  'synchronize',
+  'converted_to_draft',
+  'ready_for_review',
+  'locked',
+  'unlocked',
+  'review_requested',
+  'review_request_removed',
+  'auto_merge_enabled',
+  'auto_merge_disabled',
+  'milestoned',
+  'demilestoned',
+  'enqueued',
+  'dequeued',
+]);
+
 export type TriggerEventKind = keyof typeof FILTER_KEYS;
 
 /** A YAML mapping: a plain object, never an array, a Date, or another class instance. */
@@ -68,6 +93,9 @@ export function filterList(
 function checkPatterns(event: TriggerEventKind, key: string, patterns: readonly string[]) {
   const include = INCLUDE_KEYS.has(key);
   for (const [index, pattern] of patterns.entries()) {
+    if (pattern === '') {
+      throw new TriggerError(`on.${event}.${key}[${index}] is an empty pattern`);
+    }
     try {
       parsePattern(include && pattern.startsWith('!') ? pattern.slice(1) : pattern);
     } catch (error) {
@@ -78,6 +106,14 @@ function checkPatterns(event: TriggerEventKind, key: string, patterns: readonly 
   if (include && patterns.some((pattern) => pattern.startsWith('!'))) {
     if (patterns.every((pattern) => pattern.startsWith('!'))) {
       throw new TriggerError(`on.${event}.${key} needs at least one pattern without a leading !`);
+    }
+  }
+}
+
+function checkTypes(event: TriggerEventKind, types: readonly string[]) {
+  for (const [index, type] of types.entries()) {
+    if (!PULL_REQUEST_TYPES.has(type)) {
+      throw new TriggerError(`on.${event}.types[${index}] is not an activity type of ${event}`);
     }
   }
 }
@@ -104,6 +140,9 @@ function checkEntry(event: TriggerEventKind, entry: unknown) {
   for (const [key, list] of lists) {
     if (list && PATTERN_KEYS.has(key)) {
       checkPatterns(event, key, list);
+    }
+    if (list && key === 'types') {
+      checkTypes(event, list);
     }
   }
 }

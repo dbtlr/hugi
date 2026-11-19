@@ -209,6 +209,19 @@ describe('TriggerError', () => {
       { pull_request: { branchs: ['main'] } },
       /pull_request.*"branchs"/,
     ],
+    [
+      'unknown activity type',
+      { pull_request: { types: ['opened', 'closed', 'openend'] } },
+      /pull_request\.types\[2\]/,
+    ],
+    ['unknown activity type as string', { pull_request: { types: 'openend' } }, /types\[0\]/],
+    ['empty branch pattern', { push: { branches: [''] } }, /push\.branches\[0\]/],
+    [
+      'empty paths-ignore pattern',
+      { pull_request: { 'paths-ignore': ['a', ''] } },
+      /paths-ignore\[1\]/,
+    ],
+    ['empty tags-ignore pattern', { push: { 'tags-ignore': [''] } }, /tags-ignore\[0\]/],
     ['unparsable branch pattern', { push: { branches: ['main', '[z-a]'] } }, /push\.branches\[1\]/],
     ['unparsable negative pattern', { push: { paths: ['**', '![]'] } }, /push\.paths\[1\]/],
     [
