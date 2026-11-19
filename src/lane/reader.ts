@@ -226,10 +226,10 @@ export function jobSelects(
 }
 
 /**
- * `readLane` for a workflow already loaded with `loadWorkflow`, so a caller deciding many lanes of
- * one file parses and validates it once.
+ * `readLane` for a workflow already loaded with `loadWorkflow`. A caller deciding many lanes of
+ * one loaded file uses `jobSelects`, which decides each lane's `if:` without building its plan.
  */
-export function readLaneFrom(
+function readLaneFrom(
   workflow: Record<string, unknown>,
   lane: LaneRef,
   event: EventContext,

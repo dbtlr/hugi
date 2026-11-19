@@ -6,14 +6,7 @@ import { stringify } from 'yaml';
 
 import { messageOf } from '../errors';
 import { loadWorkflow } from './parse';
-import {
-  JobSkippedError,
-  jobSelects,
-  LaneReadError,
-  LaneSelectionError,
-  readLane,
-  readLaneFrom,
-} from './reader';
+import { JobSkippedError, jobSelects, LaneReadError, LaneSelectionError, readLane } from './reader';
 import type { EventContext, LaneRef } from './step-plan';
 
 const lane: LaneRef = { job: 'build', matrix: {}, workflow: '.github/workflows/ci.yml' };
@@ -1043,17 +1036,17 @@ describe('a workflow GitHub would reject is a fail verdict before the lane is re
   });
 });
 
-/** Whether `readLaneFrom` leaves the lane out: it throws `JobSkippedError` for that alone. */
+/** Whether `readLane` leaves the lane out: it throws `JobSkippedError` for that alone. */
 function readerSkips(text: string, selected: LaneRef, at: EventContext): boolean {
   try {
-    readLaneFrom(loadWorkflow(text), selected, at, paths);
+    readLane(text, selected, at, paths);
   } catch (error) {
     return error instanceof JobSkippedError;
   }
   return false;
 }
 
-describe("jobSelects decides a job's if: as readLaneFrom does", () => {
+describe("jobSelects decides a job's if: as readLane does", () => {
   const row: LaneRef = { ...lane, matrix: { os: 'macos-latest' } };
   const matrixJob = (condition: string | undefined) =>
     workflow({
