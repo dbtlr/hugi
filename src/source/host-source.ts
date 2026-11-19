@@ -325,6 +325,21 @@ function pinnedSource(
   };
 }
 
+/**
+ * A pull request's refs stay in the cache after it is read, and git would resolve a name such as
+ * `pull/7/merge` to one. Running it would skip the checks that make a merge current (ADR-0005), so a
+ * name that resolves under `refs/pull/` is refused in favour of `pull/<n>`.
+ */
+async function refusePullRef(git: Git, gitDir: string, name: string): Promise<void> {
+  const outcome = await git(gitDir, ['rev-parse', '--symbolic-full-name', name]);
+  const full = outcome.ok ? outcome.stdout.trim() : '';
+  if (full.startsWith('refs/pull/')) {
+    throw new SourceError(
+      `"${name}" names a pull request's ref (${full}); run the pull request as pull/<n> instead.`,
+    );
+  }
+}
+
 /** Resolve `commit` in the repository and return a reader pinned to the resulting sha. */
 export async function openHostSource(
   spec: RepositorySpec,
@@ -341,6 +356,9 @@ export async function openHostSource(
   }
   // A branch or tag resolves through its own namespace, so the sha and the ref kind agree.
   const kind = await refKindOf(git, repository.gitDir, commit);
+  if (spec.kind === 'github' && kind === undefined) {
+    await refusePullRef(git, repository.gitDir, commit);
+  }
   const sha = await resolveSha(
     git,
     repository,

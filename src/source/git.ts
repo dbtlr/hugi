@@ -63,7 +63,10 @@ export function hardenedConfig(transport: GitTransport): string[] {
   return settings.flatMap((setting) => ['-c', setting]);
 }
 
-/** The host's environment without any `GIT_*` variable or home, plus the hardening variables. */
+/**
+ * The host's environment without any `GIT_*` variable or home, plus the hardening variables. git
+ * runs in the C locale, because Hugi reads some of its error messages to tell one failure from another.
+ */
 export function hardenedEnv(
   inherited: Readonly<Record<string, string | undefined>>,
   lazyFetch: boolean,
@@ -79,6 +82,8 @@ export function hardenedEnv(
     GIT_NO_REPLACE_OBJECTS: '1',
     GIT_TERMINAL_PROMPT: '0',
     HOME: '/dev/null',
+    LANGUAGE: 'C',
+    LC_ALL: 'C',
     ...(lazyFetch ? {} : { GIT_NO_LAZY_FETCH: '1' }),
   };
 }

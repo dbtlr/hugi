@@ -21,11 +21,14 @@ const BODY = {
 type Call = { readonly url: string; readonly headers: Readonly<Record<string, string>> };
 
 /** A fetch that records each call and answers with `status` and `body`. */
-function serving(status: number, body: unknown = BODY) {
+function serving(status: number, body: unknown = BODY, headers: Record<string, string> = {}) {
   const calls: Call[] = [];
   const fetch: Fetch = async (url, init) => {
     calls.push({ headers: init.headers, url });
-    return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+    return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+      headers,
+      status,
+    });
   };
   return { calls, fetch };
 }
@@ -76,16 +79,21 @@ test('a merge GitHub has not computed reads as null mergeable and no merge commi
 });
 
 test.each([
-  [404, /pull request 7 does not exist in example\/project/u],
-  [403, /GitHub's anonymous rate limit/u],
-  [429, /GitHub's anonymous rate limit/u],
-  [500, /GitHub's API answered 500/u],
-])('an answer of %i is a read error that names the cause', async (status, message) => {
-  const { fetch } = serving(status, { message: 'whatever' });
-  const failure = await failureOf(readPullRequest('example/project', 7, fetch));
-  expect(failure).toBeInstanceOf(PullRequestReadError);
-  expect(messageOf(failure)).toMatch(message);
-});
+  [404, {}, /pull request 7 does not exist in example\/project/u],
+  [403, { 'x-ratelimit-remaining': '0' }, /GitHub's anonymous rate limit/u],
+  [403, { 'x-ratelimit-remaining': '42' }, /GitHub's API answered 403/u],
+  [403, {}, /GitHub's API answered 403/u],
+  [429, {}, /GitHub's anonymous rate limit/u],
+  [500, {}, /GitHub's API answered 500/u],
+])(
+  'an answer of %i with %o is a read error that names the cause',
+  async (status, headers, message) => {
+    const { fetch } = serving(status, { message: 'whatever' }, headers);
+    const failure = await failureOf(readPullRequest('example/project', 7, fetch));
+    expect(failure).toBeInstanceOf(PullRequestReadError);
+    expect(messageOf(failure)).toMatch(message);
+  },
+);
 
 const unreachable: Fetch = async () => {
   throw new TypeError('getaddrinfo ENOTFOUND api.github.com');

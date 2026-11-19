@@ -87,12 +87,16 @@ function factsOf(body: unknown, number: number): PullRequestFacts | string {
   };
 }
 
-/** Why a non-2xx answer failed the read. */
-function statusFailure(status: number, repository: string, number: number): string {
+/**
+ * Why a non-2xx answer failed the read. GitHub answers 429, or 403 with no requests remaining, when
+ * the rate limit is used up; a 403 with requests left is some other refusal.
+ */
+function statusFailure(response: Response, repository: string, number: number): string {
+  const { status } = response;
   if (status === 404) {
     return `The pull request ${number} does not exist in ${repository}, or the repository is not public.`;
   }
-  if (status === 403 || status === 429) {
+  if (status === 429 || (status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
     return `GitHub's anonymous rate limit of 60 requests an hour is used up (status ${status}); try again later.`;
   }
   return `GitHub's API answered ${status} for pull request ${number} in ${repository}.`;
@@ -115,7 +119,7 @@ export async function readPullRequest(
     throw new PullRequestReadError(`Cannot reach GitHub's API: ${messageOf(error)}`);
   }
   if (!response.ok) {
-    throw new PullRequestReadError(statusFailure(response.status, repository, number));
+    throw new PullRequestReadError(statusFailure(response, repository, number));
   }
   let body: unknown;
   try {

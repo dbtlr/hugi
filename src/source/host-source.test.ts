@@ -5,6 +5,7 @@ import { join, relative } from 'node:path';
 
 import { processHandle } from '@loomcli/core';
 
+import { messageOf } from '../errors';
 import type { PullRequestFacts } from '../github/pull-request';
 import {
   AmbiguousRefError,
@@ -209,6 +210,23 @@ test('git runs with no inherited GIT_* variable and with system and global confi
       GIT_NO_LAZY_FETCH: '1',
       GIT_TERMINAL_PROMPT: '0',
     });
+  }
+});
+
+test("git runs in the C locale, so the messages Hugi reads do not depend on the user's language", async () => {
+  const seen: Readonly<Record<string, string | undefined>>[] = [];
+  const env = { ...handle.env, LANG: 'de_DE.UTF-8', LANGUAGE: 'de', LC_ALL: 'de_DE.UTF-8' };
+  const base = hostOptions(join(root, 'cache'), { env });
+  await openHostSource({ kind: 'local', path: repo }, 'main', {
+    ...base,
+    spawn: (command, args, options) => {
+      seen.push(options?.env ?? {});
+      return base.spawn(command, args, options);
+    },
+  });
+  expect(seen.length).toBeGreaterThan(0);
+  for (const gitEnv of seen) {
+    expect(gitEnv).toMatchObject({ LANGUAGE: 'C', LC_ALL: 'C' });
   }
 });
 
@@ -682,6 +700,16 @@ describe('a pull request opens at its merge commit only when the merge is curren
     expect(reason).toBe('closed');
     expect(message).toContain('is closed');
     expect(spawned).toBe(0);
+  });
+
+  test('a pull-request ref left in the cache cannot be run by name, past the merge checks', async () => {
+    await openPullRequestSource(spec(), current(7), pullsOptions());
+    for (const name of ['pull/7/merge', 'refs/pull/7/merge', 'pull/7/head']) {
+      // oxlint-disable-next-line no-await-in-loop -- each name opens the same cache in turn
+      const failure = await failureOf(openHostSource(spec(), name, pullsOptions()));
+      expect(failure).toBeInstanceOf(SourceError);
+      expect(messageOf(failure)).toContain('pull/7');
+    }
   });
 
   test('a pull request with a merge conflict is refused', async () => {
