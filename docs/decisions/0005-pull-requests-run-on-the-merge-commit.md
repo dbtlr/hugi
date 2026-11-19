@@ -49,7 +49,7 @@ Every status Hugi posts for a pull request goes on its head commit, where branch
 
 ### The values the run sees
 
-For a pull-request run, the `github.*` contexts and the environment of every step hold:
+For a pull-request run, the `github.*` contexts and the runner's environment for every step hold the values below. As for every runner variable, a workflow, job, or step `env:` that sets one of these names, or a `GITHUB_ENV` write, takes precedence in the steps it covers; this decision does not change that layering, so in such a step the variable can differ from its `github.*` context:
 
 | Variable | Context | Value |
 | --- | --- | --- |
