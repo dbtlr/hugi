@@ -106,7 +106,9 @@ function combinations(matrix: Record<string, unknown>) {
 /**
  * The row with its keys in `order`, the order the workflow lists them: its axes, then the keys
  * its include entries add, as each first appears. An appended include entry is written in its own
- * order, and a lane's status name lists the row's values in the workflow's order.
+ * order, and a lane's status name lists the row's values in the workflow's order. A key that looks
+ * like an integer, such as `'2'`, still comes first, because JavaScript orders such object keys
+ * first in every object.
  */
 function inKeyOrder(row: Combination, order: readonly string[]): Combination {
   // `fromEntries` defines each key, so a `__proto__` key stays an own key.

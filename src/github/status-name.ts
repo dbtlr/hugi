@@ -1,7 +1,9 @@
 /**
- * The names of the commit statuses Hugi posts. A lane's status is named from its identity alone
- * (ADR-0004), its job id and matrix row, so promotion, which moves the job to another file, keeps
- * the name branch protection requires.
+ * The names of the commit statuses Hugi posts. A lane's status is named from its identity
+ * (ADR-0004), its job id and matrix row, and not from its workflow path. Promotion, which moves
+ * the job to another file, keeps the name branch protection requires as long as the Hugi workflow
+ * lists the job's matrix keys in the original order, because the name lists the row's values in
+ * that order.
  */
 import type { LaneRef } from '../lane/step-plan';
 

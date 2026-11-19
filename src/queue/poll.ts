@@ -102,8 +102,10 @@ type ConsideredWorkflow = {
 } | null;
 
 /**
- * Each workflow at the commit, loaded and its trigger decided at most once however many lanes it
- * holds, so a poll's cost grows with the workflows' size plus the lanes, not their product.
+ * Each workflow at the commit, loaded and its trigger decided once however many lanes it holds.
+ * Its text is read once for the commit, through `commitFiles`, and parsed twice: by the
+ * declaration reader, and once more here. A poll's cost so grows with the workflows' size plus the
+ * lanes, not their product.
  */
 function workflowsAt(files: CommitFiles, trigger: TriggerEvent) {
   const load = async (path: string): Promise<ConsideredWorkflow> => {
@@ -128,10 +130,14 @@ function workflowsAt(files: CommitFiles, trigger: TriggerEvent) {
 /**
  * Whether the lane runs for the event: its workflow's `on:` must start it, then its job's `if:`
  * must hold. Only the `if:` is decided, not the lane's step plan, so a large job's many lanes stay
- * cheap. A lane the reader cannot otherwise read runs, so its run yields the fail verdict. An
- * accepted declaration's workflows already loaded and passed trigger validation, so a failure to
- * load a workflow or read its `on:` here breaches that invariant: it is an unexpected error,
- * which skips the commit's pull request, or the default branch head, for this poll.
+ * cheap. A lane the reader cannot otherwise read runs, so its run yields the fail verdict.
+ *
+ * An accepted declaration's workflows exist, loaded, and passed trigger validation, and this reads
+ * the same file texts, so neither case below happens after an accepted declaration. A missing
+ * workflow (`considered` is null) runs, as an unreadable lane does: the run reads the declaration
+ * again and reports what it finds. A failure to load a workflow or read its `on:` throws an
+ * unexpected error, which skips the commit's pull request, or the default branch head, for this
+ * poll.
  */
 function decideLane(
   lane: LaneRef,
