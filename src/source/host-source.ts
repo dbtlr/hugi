@@ -76,6 +76,8 @@ export type HostSource = {
    * The files the push or pull request changed, for a workflow's path filters (ADR-0004): a
    * commit's files against its first parent, every file of a root commit, and for a pull request
    * its head against the merge base of the head and the base tip. A failed read throws `SourceError`.
+   * A path that is not valid UTF-8 is decoded lossily, with replacement characters; filter
+   * patterns are UTF-8 text, so this cannot make a path filter match wrongly in practice.
    */
   readonly changedFiles: () => Promise<readonly string[]>;
   /**
@@ -95,7 +97,8 @@ export type CommitMessageReader = {
   /**
    * The full message of commit `sha` as git stores it, every byte after the header kept. `sha`
    * must be a full sha the source holds, such as a pull request's checked head; otherwise it
-   * throws `SourceError`.
+   * throws `SourceError`. A message that is not valid UTF-8 is decoded lossily, with replacement
+   * characters; skip instructions are ASCII, so this cannot make one match wrongly in practice.
    */
   readonly commitMessage: (sha: string) => Promise<string>;
 };
