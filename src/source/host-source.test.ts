@@ -726,13 +726,24 @@ describe('a pull request opens at its merge commit only when the merge is curren
     expect(spawned).toBe(0);
   });
 
-  test('a pull-request ref left in the cache cannot be run by name, past the merge checks', async () => {
+  test('a pull-request ref left in the cache cannot be run by any name, past the merge checks', async () => {
     await openPullRequestSource(spec(), current(7), pullsOptions());
-    for (const name of ['pull/7/merge', 'refs/pull/7/merge', 'pull/7/head']) {
+    const names = [
+      'pull/7/merge',
+      'refs/pull/7/merge',
+      'pull/7/head',
+      'pull/7/merge~0',
+      'pull/7/merge^0',
+      'pull/7/merge^{}',
+      'refs/pull/7/merge^{commit}',
+      'pull/7/head~0',
+      'main~0',
+    ];
+    for (const name of names) {
       // oxlint-disable-next-line no-await-in-loop -- each name opens the same cache in turn
       const failure = await failureOf(openHostSource(spec(), name, pullsOptions()));
       expect(failure).toBeInstanceOf(SourceError);
-      expect(messageOf(failure)).toContain('pull/7');
+      expect(messageOf(failure)).toContain('not a sha, a branch, or a tag');
     }
   });
 
