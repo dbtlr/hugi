@@ -28,7 +28,10 @@ import type { TeardownOutcome, TeardownTuning } from './teardown';
 
 export const VM_NAME_PREFIX = 'hugi-run-';
 
-/** The VM size every run gets. */
+/**
+ * The default VM size (ADR-0003). `hugi run` always uses it; the coordinator takes its size from
+ * Hugi's configuration, whose `vm` defaults are these values.
+ */
 export const VM_RESOURCES = { cpus: 4, memoryMb: 4096 } as const;
 
 export type RunTuning = StepTuning &
