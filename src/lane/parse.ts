@@ -36,9 +36,3 @@ export function jobOf(workflow: Record<string, unknown>, jobId: string): Record<
   }
   return mapping(jobs[jobId], `jobs.${jobId}`);
 }
-
-/** The workflow and the lane's job, once GitHub would accept the workflow as a whole. */
-export function loadJob(text: string, jobId: string) {
-  const workflow = loadWorkflow(text);
-  return { job: jobOf(workflow, jobId), workflow };
-}
