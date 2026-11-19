@@ -4,6 +4,7 @@
  * current, since GitHub leaves a stale merge ref in place after a conflict or a close.
  */
 import { messageOf } from '../errors';
+import type { PullRequestEvent, PullRequestRef } from '../lane/step-plan';
 
 /** The facts Hugi reads from GitHub's single-pull-request endpoint. */
 export type PullRequestFacts = {
@@ -18,6 +19,21 @@ export type PullRequestFacts = {
   readonly headRef: string;
   readonly baseRef: string;
 };
+
+/** The pull request as a run's event names it, from the facts GitHub reported. */
+export function pullRequestRef(facts: PullRequestFacts): PullRequestRef {
+  const { baseRef, headRef, headSha, number } = facts;
+  return { baseRef, headRef, headSha, number };
+}
+
+/** The `pull_request` event of a run of the pull request at its merge commit `sha` (ADR-0005). */
+export function pullRequestEvent(
+  facts: PullRequestFacts,
+  repository: string,
+  sha: string,
+): PullRequestEvent {
+  return { event: 'pull_request', pullRequest: pullRequestRef(facts), repository, sha };
+}
 
 /** The one network call this module makes; production passes the runtime's `fetch`. */
 export type Fetch = (

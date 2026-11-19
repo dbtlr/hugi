@@ -13,7 +13,7 @@ import { expand } from './expressions';
 import type { Context } from './expressions';
 import { checkJobKeys, checkStepKeys, checkStrategyKeys, rejectMergeKeys } from './keys';
 import { selectCombination } from './matrix';
-import { loadJob, mapping, scalar } from './parse';
+import { jobOf, loadWorkflow, mapping, scalar } from './parse';
 import {
   actionReference,
   continueOnError,
@@ -122,8 +122,27 @@ export function readLane(
   event: EventContext,
   paths: RunnerPaths,
 ): StepPlan {
+  let workflow: Record<string, unknown>;
   try {
-    const { job, workflow } = loadJob(text, lane.job);
+    workflow = loadWorkflow(text);
+  } catch (cause) {
+    throw withContext(`job "${lane.job}"`, cause, LaneReadError);
+  }
+  return readLaneFrom(workflow, lane, event, paths);
+}
+
+/**
+ * `readLane` for a workflow already loaded with `loadWorkflow`, so a caller deciding many lanes of
+ * one file parses and validates it once.
+ */
+export function readLaneFrom(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): StepPlan {
+  try {
+    const job = jobOf(workflow, lane.job);
     checkJobKeys(job);
     rejectMergeKeys(job, 'the job');
     rejectMergeKeys(workflow.env, 'workflow env');
