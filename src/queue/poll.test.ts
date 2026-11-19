@@ -665,6 +665,75 @@ describe('an error no read expects', () => {
     ]);
     expect(named(queue).map((name) => name.split(' ')[0])).toContain('o/s@2');
   });
+
+  test('a default branch head whose message is not text skips that head alone, marked unexpected', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        defaultBranchHead: async (repository) => {
+          const head = { ...(await built.github.defaultBranchHead(repository)) };
+          if (repository === 'o/r') {
+            Object.defineProperty(head, 'message', { value: 42 });
+          }
+          return head;
+        },
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([
+      expect.objectContaining({ defaultBranch: 'main', repository: 'o/r', unexpected: true }),
+    ]);
+    expect(new Set(named(queue).map((name) => name.split(' ')[0]))).toEqual(
+      new Set(['o/s@2', 'o/r@4', 'o/r@5']),
+    );
+  });
+
+  test.each([
+    ['opening the default branch head', 'openPush', { defaultBranch: 'main' }],
+    ['opening a pull request', 'openPullRequest', { pullRequest: 44 }],
+  ] as const)(
+    'a thrown value with no string form while %s is described by a fixed text',
+    async (_label, dependency, scope) => {
+      const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+        [dependency]: async (repository: string, at: never) => {
+          if (dependency === 'openPush' || (at as PullRequestFacts).number === 44) {
+            if (repository === 'o/r') {
+              throw Object.create(null);
+            }
+          }
+          return (built[dependency] as (repository: string, at: never) => Promise<CommitSource>)(
+            repository,
+            at,
+          );
+        },
+      }));
+      expect(queue.failures).toEqual([
+        {
+          cause: 'an error that cannot be described',
+          repository: 'o/r',
+          unexpected: true,
+          ...scope,
+        },
+      ]);
+    },
+  );
+
+  test('a thrown value with no string form in a repository-level read skips that repository', async () => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        openPullRequests: async (repository) => {
+          if (repository === 'o/r') {
+            throw Object.create(null);
+          }
+          return built.github.openPullRequests(repository);
+        },
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([
+      { cause: 'an error that cannot be described', repository: 'o/r', unexpected: true },
+    ]);
+    expect(named(queue).map((name) => name.split(' ')[0])).toContain('o/s@2');
+  });
 });
 
 test('a declared workflow path that is a directory refuses the declaration and polls on', async () => {

@@ -181,16 +181,23 @@ function isReadFailure(error: unknown): error is GitHubReadError | SourceError {
   return error instanceof GitHubReadError || error instanceof SourceError;
 }
 
-/** Why a read failed; any error other than a failed GitHub or git read is marked unexpected. */
+/**
+ * Why a read failed; any error other than a failed GitHub or git read is marked unexpected. It
+ * never throws, whatever was thrown, so recording a failure cannot fail the poll.
+ */
 function failureOf(error: unknown): ReadFailure {
-  return isReadFailure(error)
-    ? { cause: error.message }
-    : { cause: messageOf(error), unexpected: true };
+  let expected = false;
+  try {
+    expected = isReadFailure(error);
+  } catch {
+    // A value whose class cannot be checked, such as a hostile proxy, is unexpected.
+  }
+  return expected ? { cause: messageOf(error) } : { cause: messageOf(error), unexpected: true };
 }
 
 /**
- * The default branch head, as a `push` of that branch. A failure to open or read its source is
- * its `failed` read, so the repository's pull requests are still read.
+ * The default branch head, as a `push` of that branch. Any failure to decide it, from its skip
+ * instruction to its source, is its `failed` read, so the repository's pull requests are still read.
  */
 async function readPush(
   deps: PollDeps,
@@ -203,10 +210,10 @@ async function readPush(
     read,
     repository,
   });
-  if (skipsWorkflows(head.message)) {
-    return snapshot({ kind: 'skipped' });
-  }
   try {
+    if (skipsWorkflows(head.message)) {
+      return snapshot({ kind: 'skipped' });
+    }
     return snapshot(await readPushAt(deps, repository, head));
   } catch (error) {
     return snapshot({ kind: 'failed', ...failureOf(error) });
