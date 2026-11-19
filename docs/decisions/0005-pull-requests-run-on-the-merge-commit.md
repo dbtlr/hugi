@@ -30,20 +30,22 @@ Branch protection counts a required status on the pull request's head commit.
 A pull-request run checks out GitHub's merge commit. When the run starts, Hugi reads the pull request from GitHub's single-pull-request endpoint and, on the host, fetches `refs/pull/<n>/head` and `refs/pull/<n>/merge` from the base repository. It uses the merge commit only when all of these hold:
 
 1. the pull request's `state` is `open`;
-2. its `merge_commit_sha` is not `null`;
+2. its `mergeable` is `true`, and its `merge_commit_sha` is not `null`;
 3. `refs/pull/<n>/merge` is that `merge_commit_sha`;
 4. `refs/pull/<n>/head` is the pull request's `head.sha`;
 5. the merge commit has exactly two parents, and its second parent is `head.sha`.
 
-Otherwise the pull request has no current merge and does not run. Hugi names the first condition that failed: the pull request is closed (1); it has a merge conflict (2, with `mergeable` `false`); GitHub has not computed the merge for its head yet (2 with `mergeable` `null`, 3, or 5); or the pull request moved while Hugi read it (4). The coordinator considers the pull request again at its next poll. `hugi run` exits with no verdict, as it does for a commit it cannot fetch.
+Otherwise the pull request has no current merge and does not run. Hugi names the first condition that failed: the pull request is closed (1); it has a merge conflict (2, with `mergeable` `false`); GitHub has not computed the merge for its head yet (2 with `mergeable` `null` or `merge_commit_sha` `null`, 3, or 5); or the pull request moved while Hugi read it (4). The coordinator considers the pull request again at its next poll. `hugi run` exits with no verdict, as it does for a commit it cannot fetch.
 
 The merge is resolved when the run starts, not when the pull request is queued, so a queued run never checks out a merge its head has left behind. If the VM later cannot fetch the merge commit, the run has no verdict, and the coordinator resolves the merge again before it retries.
 
 The lane declaration and the workflow files are read at the merge commit, and the VM checks it out. A draft pull request runs like any other, as on GitHub.
 
+The coordinator's queue holds candidates, a pull request's head commit with a lane, found by reading the declaration and triggers at the merge current when it polled. When a run starts, Hugi reads the declaration, the lane's trigger, and its `if:` again at the merge it resolved, and those decide. A lane that merge no longer selects is dropped with no status, and a declaration that merge refuses posts the declaration status.
+
 ### Where the outcome belongs
 
-Every status Hugi posts for a pull request goes on its head commit, where branch protection reads it: each lane's verdict, and the declaration status when the declaration at the merge commit is refused. The head commit is also what the coordinator reconciles. A lane that already has a status on the head commit does not run again. A lane with no status there runs at the merge commit current when the run starts. A refused declaration's status on the head commit settles every lane of that head.
+Every status Hugi posts for a pull request goes on its head commit, where branch protection reads it: each lane's verdict, and the declaration status when the declaration at the merge commit is refused. The head commit is also what the coordinator reconciles. A lane whose status on the head commit carries a verdict does not run again; a `pending` status settles nothing. A lane with no status there runs at the merge commit current when the run starts. A refused declaration's status on the head commit settles every lane of that head that has no verdict yet; verdicts already on the head stand. The same holds when the refusal comes from a newer merge after the base branch moved: the declaration status is posted, and lanes without a verdict do not run.
 
 ### The values the run sees
 
@@ -78,6 +80,7 @@ The event contract carries these facts. A `pull_request` event holds the pull re
 - A pull-request run waits until GitHub has computed the merge for the latest push. The wait is usually seconds; the coordinator absorbs it by polling again.
 - A conflicting or closed pull request has no run and no status, as on GitHub. After promotion a conflicting pull request's required status stays pending until the conflict is resolved, as a hosted check does.
 - The merge commit's base is the base branch's tip when GitHub last computed the merge, which can be newer than the tip when GitHub ran its own workflow. A lane runs once per head commit: a base branch that moves while the head stays put starts no new run of a lane that has a status, as on GitHub. A lane the base branch newly declares does run, against the newer merge, where GitHub would wait for the pull request's next event.
+- A declaration refused because of the base branch's `hugi.yaml` stays on every open pull request's head after the base is fixed, until each pull request gets a new head commit. After promotion that blocks those pull requests' merges, as a hosted check that failed on a broken base branch stays failed until the pull request is pushed again or the check is re-run.
 - In shadow, Hugi's verdict and the hosted result for the same head commit can come from merges with different bases. A mismatch whose two merge commits differ is not evidence against Hugi until the hosted run's merge is compared; the shadow report records the merge commit each side tested.
 - A lane's status on a commit settles that lane for the commit, whichever event produced it. Two pull requests with the same head commit, or a pull request whose head is also a default-branch commit, share one status per lane, and the second is treated as decided. GitHub would run each event. This is a known gap: it needs a pull request opened from a commit that already has a verdict, which the enrolled repositories' branch workflow does not produce.
 - A branch that predates a repository's enrolment or promotion still runs the base branch's declaration and Hugi workflows, because both are part of the merge.

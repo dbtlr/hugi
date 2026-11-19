@@ -60,7 +60,7 @@ Hugi refuses the whole declaration when:
 - a selected lane's `runs-on` does not resolve to a macOS label Hugi runs, so an entry that forgets the filter on an `[ubuntu-latest, macos-latest]` matrix is refused rather than run on Linux legs;
 - two lanes have the same identity, with values compared as the filter compares them.
 
-A refused declaration is reported as one failure status on the commit, the declaration status, whose description names the cause. It settles the commit: Hugi runs none of its lanes, and the poller treats the commit as decided. Everything the list above does not cover, such as a job's `if:`, its steps, its tools, and its timeout, belongs to the lane's run and yields that lane's verdict as `hugi run` does.
+A refused declaration is reported as one failure status on the commit (for a pull request, its head commit; [ADR-0005](0005-pull-requests-run-on-the-merge-commit.md)), the declaration status, whose description names the cause. It settles the commit: Hugi runs none of its lanes, and the poller treats the commit as decided. Everything the list above does not cover, such as a job's `if:`, its steps, its tools, and its timeout, belongs to the lane's run and yields that lane's verdict as `hugi run` does.
 
 An enrolled repository whose commit has no `.github/hugi.yaml` has no lanes at that commit, and Hugi posts nothing for it.
 
