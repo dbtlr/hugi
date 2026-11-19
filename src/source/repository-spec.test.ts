@@ -23,6 +23,13 @@ test('an ambiguous bare word is refused', () => {
   expect(() => parse('hugi')).toThrow(RepositorySpecError);
 });
 
+test.each(['owner/..', 'owner/.', 'owner/..git'])(
+  '%s names no GitHub repository and is refused',
+  (text) => {
+    expect(() => parse(text)).toThrow(RepositorySpecError);
+  },
+);
+
 test('the label is the GitHub name, or local/<directory>', () => {
   expect(repositoryLabel(parse('dbtlr/hugi'))).toBe('dbtlr/hugi');
   expect(repositoryLabel(parse('/abs/repo'))).toBe('local/repo');

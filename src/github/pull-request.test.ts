@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { once } from 'node:events';
 
 import { messageOf } from '../errors';
 import { PullRequestReadError, readPullRequest } from './pull-request';
@@ -99,6 +100,18 @@ const unreachable: Fetch = async () => {
   throw new TypeError('getaddrinfo ENOTFOUND api.github.com');
 };
 
+/** A GitHub that never answers: the read ends only when its signal aborts. */
+const hanging: Fetch = async (_url, init) => {
+  await once(init.signal, 'abort');
+  throw init.signal.reason;
+};
+
+test('a read GitHub never answers is abandoned after the timeout', async () => {
+  const failure = await failureOf(readPullRequest('example/project', 7, hanging, 20));
+  expect(failure).toBeInstanceOf(PullRequestReadError);
+  expect(messageOf(failure)).toContain('did not answer within');
+});
+
 test('a network failure is a read error that names it', async () => {
   const failure = await failureOf(readPullRequest('example/project', 7, unreachable));
   expect(failure).toBeInstanceOf(PullRequestReadError);
@@ -111,6 +124,8 @@ test.each([
   ['a head sha that is not a full sha', { ...BODY, head: { ...BODY.head, sha: 'abc' } }],
   ['a mergeable that is not true, false, or null', { ...BODY, mergeable: 'yes' }],
   ['a merge commit sha that is a number', { ...BODY, merge_commit_sha: 7 }],
+  ['a merge commit sha that is not a full sha', { ...BODY, merge_commit_sha: 'abc' }],
+  ['an empty head branch', { ...BODY, head: { ...BODY.head, ref: '' } }],
   ['an unknown state', { ...BODY, state: 'merged' }],
   ['another pull request', { ...BODY, number: 8 }],
 ])('%s is a malformed answer', async (_name, body) => {

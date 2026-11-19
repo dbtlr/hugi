@@ -22,8 +22,11 @@ export type PullRequestFacts = {
 /** The one network call this module makes; production passes the runtime's `fetch`. */
 export type Fetch = (
   url: string,
-  init: { readonly headers: Readonly<Record<string, string>> },
+  init: { readonly headers: Readonly<Record<string, string>>; readonly signal: AbortSignal },
 ) => Promise<Response>;
+
+/** How long a read waits for GitHub before it gives up, so a hung API cannot hold a run. */
+const READ_TIMEOUT_MS = 30_000;
 
 /** GitHub could not tell Hugi about the pull request: it does not exist, or the read failed. */
 export class PullRequestReadError extends Error {
@@ -110,13 +113,19 @@ export async function readPullRequest(
   repository: string,
   number: number,
   fetch: Fetch,
+  timeoutMs: number = READ_TIMEOUT_MS,
 ): Promise<PullRequestFacts> {
   const url = `https://api.github.com/repos/${repository}/pulls/${number}`;
   let response: Response;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
-    response = await fetch(url, { headers: HEADERS });
+    response = await fetch(url, { headers: HEADERS, signal });
   } catch (error) {
-    throw new PullRequestReadError(`Cannot reach GitHub's API: ${messageOf(error)}`);
+    throw new PullRequestReadError(
+      signal.aborted
+        ? `GitHub's API did not answer within ${timeoutMs / 1000} s for pull request ${number}.`
+        : `Cannot reach GitHub's API: ${messageOf(error)}`,
+    );
   }
   if (!response.ok) {
     throw new PullRequestReadError(statusFailure(response, repository, number));

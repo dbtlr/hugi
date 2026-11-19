@@ -594,8 +594,28 @@ describe('a pull request opens at its merge commit only when the merge is curren
   let staleMerge: string;
   let foreignMerge: string;
   let mainTip: string;
+  let baseTip: string;
   const spec = () =>
     ({ cloneUrl: `file://${upstream}`, kind: 'github', name: 'example/pulls' }) as const;
+
+  /** A three-parent commit whose second parent is `secondParent`, as no GitHub merge ever is. */
+  async function octopusOf(firstParent: string, secondParent: string, thirdParent: string) {
+    const merged = await mergeOf(firstParent, secondParent);
+    const tree = await gitIn(upstream, 'rev-parse', `${merged}^{tree}`);
+    return gitIn(
+      upstream,
+      'commit-tree',
+      tree,
+      '-p',
+      firstParent,
+      '-p',
+      secondParent,
+      '-p',
+      thirdParent,
+      '-m',
+      'octopus',
+    );
+  }
 
   /** A two-parent merge commit of `first` and `second`, with the tree git merges them to. */
   async function mergeOf(firstParent: string, secondParent: string) {
@@ -618,7 +638,7 @@ describe('a pull request opens at its merge commit only when the merge is curren
   beforeAll(async () => {
     const created = await committedRepo('pulls', { 'base.txt': 'base\n' });
     upstream = created.path;
-    const base = created.sha;
+    baseTip = created.sha;
     await gitIn(upstream, 'config', 'uploadpack.allowFilter', 'true');
     await gitIn(upstream, 'checkout', '--quiet', '-b', 'feature');
     await writeFile(join(upstream, 'feature.txt'), 'feature\n');
@@ -631,8 +651,8 @@ describe('a pull request opens at its merge commit only when the merge is curren
     await gitIn(upstream, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'main');
     mainTip = await gitIn(upstream, 'rev-parse', 'HEAD');
     merge = await mergeOf(mainTip, head);
-    staleMerge = await mergeOf(base, head);
-    foreignMerge = await mergeOf(base, mainTip);
+    staleMerge = await mergeOf(baseTip, head);
+    foreignMerge = await mergeOf(baseTip, mainTip);
     const refs: [string, string][] = [
       ['refs/pull/7/head', head],
       ['refs/pull/7/merge', merge],
@@ -644,6 +664,10 @@ describe('a pull request opens at its merge commit only when the merge is curren
       ['refs/pull/11/merge', foreignMerge],
       ['refs/pull/12/head', head],
       ['refs/pull/12/merge', mainTip],
+      ['refs/pull/13/head', head],
+      ['refs/pull/13/merge', await octopusOf(mainTip, head, baseTip)],
+      ['refs/pull/14/head', head],
+      ['refs/pull/14/merge', await mergeOf(head, mainTip)],
     ];
     for (const [ref, sha] of refs) {
       // oxlint-disable-next-line no-await-in-loop -- one ref at a time keeps git's ref locks apart
@@ -735,6 +759,28 @@ describe('a pull request opens at its merge commit only when the merge is curren
     expect(message).toContain('has not computed the merge');
     expect(message).toContain(staleMerge);
   });
+
+  test('a conflict is refused even while GitHub still reports an old merge commit', async () => {
+    const { reason } = await refusal(current(7, { mergeable: false }));
+    expect(reason).toBe('conflict');
+  });
+
+  test('a pull request with neither ref is a merge GitHub has not computed', async () => {
+    const { reason } = await refusal(current(99));
+    expect(reason).toBe('not-computed');
+  });
+
+  test.each([
+    ['with three parents', 13],
+    ['whose head is its first parent', 14],
+  ] as const)(
+    'a merge %s, though it has the head as a parent, is refused',
+    async (_name, number) => {
+      const sha = await gitIn(upstream, 'rev-parse', `refs/pull/${number}/merge`);
+      const { reason } = await refusal(current(number, { mergeCommitSha: sha }));
+      expect(reason).toBe('not-computed');
+    },
+  );
 
   test('a missing merge ref is a merge GitHub has not computed', async () => {
     const { reason } = await refusal(current(8));

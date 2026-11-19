@@ -26,7 +26,10 @@ export function parseRepository(text: string, cwd: string, home: string): Reposi
   }
   if (GITHUB_NAME.test(text)) {
     const name = text.replace(/\.git$/, '');
-    return { cloneUrl: `https://github.com/${name}.git`, kind: 'github', name };
+    // `.` and `..` would make the clone and API URLs name another path.
+    if (!name.split('/').some((part) => part === '.' || part === '..')) {
+      return { cloneUrl: `https://github.com/${name}.git`, kind: 'github', name };
+    }
   }
   throw new RepositorySpecError(
     `"${text}" is neither owner/name nor a path; start a local path with ./ or /.`,
