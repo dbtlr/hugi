@@ -321,7 +321,7 @@ describe('status names compare ignoring case, as GitHub compares contexts', () =
 });
 
 describe('one commit in two snapshots', () => {
-  test('a pull request whose head is the default branch head adds nothing; the push candidate wins', () => {
+  test('a lane both a push and a pull request sharing its commit select runs once, for the push', () => {
     const queue = deriveQueue([
       repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, lanes({}, PLATFORM), MAIN)),
     ]);
@@ -353,7 +353,7 @@ describe('one commit in two snapshots', () => {
     ]);
   });
 
-  test('a refused merge declaration on a pull request whose head is the default branch head adds nothing', () => {
+  test('a declaration a later pull request refuses on an accepted default branch head adds no report', () => {
     const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
     const queue = deriveQueue([repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, refused, MAIN))]);
     expect(queue.declarationReports).toEqual([]);
@@ -362,7 +362,7 @@ describe('one commit in two snapshots', () => {
     ).toEqual([['hugi / platform', 'push']]);
   });
 
-  test('a refused push declaration decides the commit: one report, and no pull request candidates', () => {
+  test('a declaration the push refuses: one report, and no pull request candidates for the commit', () => {
     const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
     const queue = deriveQueue([repo('o/r', refused, pull('o/r', 4, lanes({}, PLATFORM), MAIN))]);
     expect(queue.declarationReports).toEqual([
@@ -371,14 +371,100 @@ describe('one commit in two snapshots', () => {
     expect(queue.candidates).toEqual([]);
   });
 
-  test('a pull request whose head is the default branch head adds no lane the push leaves out', () => {
-    const snapshot = [
+  test('a pull request whose head is the default branch head adds the lanes the push does not declare', () => {
+    const queue = deriveQueue([
       repo('o/r', lanes({}, PLATFORM), pull('o/r', 4, lanes({}, PLATFORM, TEST_MAC), MAIN)),
-    ];
-    expect(names(snapshot)).toEqual(['o/r@a hugi / platform']);
+    ]);
+    expect(
+      queue.candidates.map((candidate) => [candidate.statusName, candidate.event.kind]),
+    ).toEqual([
+      ['hugi / platform', 'push'],
+      ['hugi / test (macos-latest)', 'pull_request'],
+    ]);
   });
 
-  test('of two pull requests sharing a head, the lower number decides it wholly', () => {
+  test('a lane the push leaves out runs for a pull request whose head is the default branch head', () => {
+    // A workflow on `pull_request` alone, and a pull request from the default branch to a release
+    // branch: the push leaves the lane out, so only the pull request can give it a verdict.
+    const pushRead: CommitRead = {
+      kind: 'lanes',
+      lanes: [{ kind: 'left-out', lane: PLATFORM }],
+      statuses: statuses(),
+    };
+    const queue = deriveQueue([repo('o/r', pushRead, pull('o/r', 4, lanes({}, PLATFORM), MAIN))]);
+    expect(queue.candidates.map((candidate) => [candidate.commit, candidate.event.kind])).toEqual([
+      [MAIN, 'pull_request'],
+    ]);
+  });
+
+  test('a push with no declaration leaves the commit to a pull request whose merge declares lanes', () => {
+    const queue = deriveQueue([repo('o/r', NOTHING, pull('o/r', 4, lanes({}, PLATFORM), MAIN))]);
+    expect(queue.candidates.map((candidate) => [candidate.commit, candidate.event.kind])).toEqual([
+      [MAIN, 'pull_request'],
+    ]);
+    expect(queue.declarationReports).toEqual([]);
+  });
+
+  test('two pull requests sharing a head each add the lanes only their own base selects', () => {
+    const only = (selected: LaneRef): CommitRead => ({
+      kind: 'lanes',
+      lanes: [PLATFORM, TEST_MAC].map((lane) => ({
+        kind: lane === selected ? 'runs' : 'left-out',
+        lane,
+      })),
+      statuses: statuses(),
+    });
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 9, only(TEST_MAC)), pull('o/r', 4, only(PLATFORM))),
+    ]);
+    expect(
+      queue.candidates.map((candidate) => [
+        candidate.statusName,
+        candidate.event.kind === 'pull_request' ? candidate.event.pullRequest.number : 0,
+      ]),
+    ).toEqual([
+      ['hugi / platform', 4],
+      ['hugi / test (macos-latest)', 9],
+    ]);
+  });
+
+  test("a later snapshot's lane is settled by a verdict and kept out by a run in flight", () => {
+    const snapshot = [
+      repo(
+        'o/r',
+        lanes({}, PLATFORM),
+        pull('o/r', 4, lanes({ 'HUGI / TEST (MACOS-LATEST)': 'success' }, TEST_MAC), MAIN),
+        pull('o/r', 5, lanes({}, { ...TEST_MAC, job: 'other' }), MAIN),
+      ),
+    ];
+    expect(names(snapshot)).toEqual(['o/r@a hugi / platform', 'o/r@a hugi / other (macos-latest)']);
+    const inFlight = [
+      { commit: MAIN, repository: 'o/r', statusName: 'Hugi / Other (macos-latest)' },
+    ];
+    expect(names(snapshot, inFlight)).toEqual(['o/r@a hugi / platform']);
+  });
+
+  test('a declaration refused by a later snapshot of an accepted commit adds no report', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 4, lanes({}, PLATFORM)), pull('o/r', 9, refused)),
+    ]);
+    expect(queue.declarationReports).toEqual([]);
+    expect(queue.candidates.map((candidate) => candidate.statusName)).toEqual(['hugi / platform']);
+  });
+
+  test('a declaration refused by the first snapshot holds back the lanes a later one declares', () => {
+    const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
+    const queue = deriveQueue([
+      repo('o/r', NOTHING, pull('o/r', 4, refused), pull('o/r', 9, lanes({}, PLATFORM))),
+    ]);
+    expect(queue.declarationReports).toEqual([
+      { cause: 'lanes[0]: bad', commit: HEAD, repository: 'o/r' },
+    ]);
+    expect(queue.candidates).toEqual([]);
+  });
+
+  test('of two pull requests sharing a head, the lower number decides whether it is refused', () => {
     const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
     const queue = deriveQueue([
       repo('o/r', NOTHING, pull('o/r', 9, refused), pull('o/r', 4, lanes({}, PLATFORM))),
@@ -407,7 +493,7 @@ describe('one commit in two snapshots', () => {
     ]);
   });
 
-  test('a failed pull request read does not claim its head: the next one sharing it decides wholly', () => {
+  test('a failed pull request read does not claim its head: the next one sharing it decides whether it is refused', () => {
     const failed: CommitRead = { cause: 'boom', kind: 'failed', unexpected: true };
     const refused: CommitRead = { cause: 'lanes[0]: bad', kind: 'refused', statuses: statuses() };
     const queue = deriveQueue([
@@ -425,7 +511,7 @@ describe('one commit in two snapshots', () => {
     expect(queue.candidates).toEqual([]);
   });
 
-  test('a skipped read claims its commit', () => {
+  test('a skip instruction on the first snapshot leaves the commit no candidates', () => {
     const queue = deriveQueue([
       repo('o/r', { kind: 'skipped' }, pull('o/r', 4, lanes({}, PLATFORM), MAIN)),
     ]);
