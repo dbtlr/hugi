@@ -21,13 +21,24 @@ export function mapping(value: unknown, field: string): Record<string, unknown> 
   return Object.fromEntries(Object.entries(value));
 }
 
-/** The workflow and the lane's job, once GitHub would accept the workflow as a whole. */
-export function loadJob(text: string, jobId: string) {
+/** The workflow, once GitHub would accept it as a whole. */
+export function loadWorkflow(text: string): Record<string, unknown> {
   const workflow = mapping(parse(text), 'workflow');
   validateWorkflow(workflow);
+  return workflow;
+}
+
+/** The job a validated workflow holds under `jobId`. */
+export function jobOf(workflow: Record<string, unknown>, jobId: string): Record<string, unknown> {
   const jobs = mapping(workflow.jobs, 'jobs');
   if (!Object.hasOwn(jobs, jobId)) {
     throw new LaneSelectionError(`the workflow has no job named "${jobId}"`);
   }
-  return { job: mapping(jobs[jobId], `jobs.${jobId}`), workflow };
+  return mapping(jobs[jobId], `jobs.${jobId}`);
+}
+
+/** The workflow and the lane's job, once GitHub would accept the workflow as a whole. */
+export function loadJob(text: string, jobId: string) {
+  const workflow = loadWorkflow(text);
+  return { job: jobOf(workflow, jobId), workflow };
 }

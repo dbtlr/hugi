@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node_linux:
+    name: node / ubuntu-latest
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo node tests
+
+  bun_linux:
+    name: bun / ubuntu-latest
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo bun tests
+
+  node_matrix:
+    name: node / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - run: echo node matrix tests
+
+  node_macos:
+    name: node / macos-latest
+    runs-on: macos-latest
+    env:
+      LOOM_TEST_RUNTIME: node
+    steps:
+      - run: echo node tests
+
+  bun_macos:
+    name: bun / macos-latest
+    runs-on: macos-latest
+    env:
+      LOOM_TEST_RUNTIME: bun
+    steps:
+      - run: echo bun tests
