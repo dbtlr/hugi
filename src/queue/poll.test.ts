@@ -842,6 +842,26 @@ describe('a poll is total: a malformed value from a dependency fails only its sc
     },
   );
 
+  test.each([
+    ['another number', { number: 45 }],
+    ['a number that is not a number', { number: Symbol('44') }],
+    ['a head sha that is not text', { headSha: 44 }],
+  ])('pull request facts that name %s fail that pull request alone', async (_label, fields) => {
+    const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
+      github: {
+        ...built.github,
+        pullRequest: async (repository, number) => {
+          const facts = await built.github.pullRequest(repository, number);
+          return number === 44 ? malformed({ ...facts, ...fields }) : facts;
+        },
+      } satisfies GitHubReader,
+    }));
+    expect(queue.failures).toEqual([
+      expect.objectContaining({ pullRequest: 44, repository: 'o/r', unexpected: true }),
+    ]);
+    expect(candidateCommits(queue)).toEqual(new Set(['o/r@1', 'o/s@2', 'o/r@5']));
+  });
+
   test("commit statuses that are null on a pull request's head fail that pull request alone", async () => {
     const { queue } = await poll(twoRepositories(), ['ada'], [], (built) => ({
       github: {

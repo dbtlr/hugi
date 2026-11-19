@@ -296,15 +296,16 @@ async function readPull(
   number: number,
 ): Promise<CommitSnapshot> {
   const facts = await deps.github.pullRequest(repository, number);
-  // Read before the opener can fail, so recording its outcome reads nothing that can fail.
-  const commit: unknown = facts.headSha;
-  if (typeof commit !== 'string') {
-    throw new TypeError("the pull request's head sha is not text");
+  // Read and checked before the opener can fail, so recording its outcome reads nothing that can
+  // fail, and the queue sorts and keys by plain, well-formed values.
+  const pullRequest = pullRequestRef(facts);
+  const commit: unknown = pullRequest.headSha;
+  if (typeof commit !== 'string' || pullRequest.number !== number) {
+    throw new TypeError(
+      `the facts read for pull request ${number} lack a head sha or name another pull request`,
+    );
   }
-  const event: CommitSnapshot['event'] = {
-    kind: 'pull_request',
-    pullRequest: pullRequestRef(facts),
-  };
+  const event: CommitSnapshot['event'] = { kind: 'pull_request', pullRequest };
   const snapshot = (read: CommitRead): CommitSnapshot => ({ commit, event, read, repository });
   let source: CommitSource;
   try {
@@ -316,7 +317,7 @@ async function readPull(
     throw error;
   }
   // The opener fetched the head and checked it is the head GitHub reported, so git reads its message.
-  if (skipsWorkflows(await source.commitMessage(facts.headSha))) {
+  if (skipsWorkflows(await source.commitMessage(commit))) {
     return snapshot({ kind: 'skipped' });
   }
   const considered: Considered = {
@@ -402,11 +403,13 @@ async function readRepository(
 }
 
 /**
- * Read every enrolled repository, one at a time in configuration order. For a valid
- * configuration it never rejects, whatever its dependencies return, throw, or reject with: a read
- * that fails, or yields a value of the wrong shape, is recorded as the `failed` read of the
+ * Read every enrolled repository, one at a time in configuration order. Given a valid
+ * configuration, it never rejects, whatever its dependencies return, throw, or reject with: a
+ * read that fails, or answers a value of the wrong shape, is recorded as the `failed` read of the
  * repository, default branch head, or pull request it belongs to, and the others are still read.
- * Every snapshot it returns holds only checked values, so `deriveQueue` accepts it.
+ * The values `deriveQueue` reads from the snapshot, each commit's sha, its default branch or pull
+ * request number, and its statuses, are checked as they are read, so deriving the queue from the
+ * snapshot never throws.
  */
 export async function pollRepositories(
   config: Pick<HugiConfig, 'allowlist' | 'repositories'>,
