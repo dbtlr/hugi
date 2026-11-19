@@ -36,6 +36,7 @@ const source = (
   files: Record<string, string> = { '.github/workflows/ci.yml': WORKFLOW },
   commit = 'main',
 ): HostSource => ({
+  changedFiles: async () => [],
   guestSource: async () => ({
     location: { cloneUrl: 'https://github.com/example/project.git', kind: 'remote' },
     release: async () => {},

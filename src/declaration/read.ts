@@ -5,6 +5,7 @@
  * whole declaration. Files are data: nothing in them runs here.
  */
 import { messageOf } from '../errors';
+import { laneStatusName, statusNameKey } from '../github/status-name';
 import { jobSettingScope, laneValues } from '../lane/contexts';
 import { matchesValue, matrixRows, readMatrixEntries, selectRow } from '../lane/matrix';
 import type { Combination, MatrixEntryProblem, Scalar } from '../lane/matrix';
@@ -273,14 +274,23 @@ function identityBucket(lane: LaneRef): string {
   return JSON.stringify([lane.job, Object.keys(lane.matrix).toSorted()]);
 }
 
+/** A lane as a refusal names it: its job id, its row, and the workflow it is in. */
+function described(lane: LaneRef): string {
+  return `job "${lane.job}" with row ${JSON.stringify(lane.matrix)} in ${lane.workflow}`;
+}
+
 /**
- * The lanes declared so far. A lane is checked as it is added, so a declaration over the cap or
- * with a repeated identity is refused at that lane and the rest is never expanded. A lane's
- * identity is its job id with its complete row; the workflow path is not part of it.
+ * The lanes declared so far. A lane is checked as it is added, so a declaration over the cap,
+ * with a repeated identity, or with a repeated status name is refused at that lane and the rest is
+ * never expanded. A lane's identity is its job id with its complete row; the workflow path is not
+ * part of it. Two lanes of different identities can still share a status name when a matrix value
+ * holds `, `, and a status with a verdict would then settle both, so names must be unique too,
+ * ignoring case as GitHub does.
  */
 class DeclaredLanes {
   readonly lanes: LaneRef[] = [];
   readonly #buckets = new Map<string, LaneRef[]>();
+  readonly #statusNames = new Map<string, LaneRef>();
 
   add(lane: LaneRef, where: string) {
     if (this.lanes.length >= MAX_DECLARED_LANES) {
@@ -297,6 +307,19 @@ class DeclaredLanes {
           `(in ${first.workflow} and ${lane.workflow})`,
       );
     }
+    const statusName = laneStatusName(lane);
+    const named = this.#statusNames.get(statusNameKey(statusName));
+    if (named !== undefined) {
+      const earlier = laneStatusName(named);
+      const names =
+        earlier === statusName
+          ? `the status name "${statusName}"`
+          : `the status names "${earlier}" and "${statusName}", which GitHub treats as one`;
+      throw new DeclarationRefusalError(
+        `two lanes have ${names}: ${described(named)} and ${described(lane)}`,
+      );
+    }
+    this.#statusNames.set(statusNameKey(statusName), lane);
     bucket.push(lane);
     this.#buckets.set(key, bucket);
     this.lanes.push(lane);

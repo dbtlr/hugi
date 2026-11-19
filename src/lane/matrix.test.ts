@@ -109,3 +109,20 @@ describe('matrix entries', () => {
     expect(readMatrixEntries(entries)).toEqual({ problem });
   });
 });
+
+test('every row lists its keys in the order the workflow lists them: axes, then keys includes add', () => {
+  const rows = matrixRows({
+    matrix: {
+      include: [
+        { arch: 'arm', node: 2, os: 'b' },
+        { extra: 'x', os: 'a' },
+      ],
+      node: [1],
+      os: ['a'],
+    },
+  });
+  expect(rows?.map((row) => Object.keys(row))).toEqual([
+    ['node', 'os', 'extra'],
+    ['node', 'os', 'arch'],
+  ]);
+});

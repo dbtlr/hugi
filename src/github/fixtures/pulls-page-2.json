@@ -1,0 +1,21 @@
+[
+  {
+    "number": 7,
+    "state": "open",
+    "draft": false,
+    "title": "Orphaned by a deleted account",
+    "user": null,
+    "head": {
+      "label": "example:old",
+      "ref": "old",
+      "sha": "7777777777777777777777777777777777777777",
+      "repo": { "full_name": "example/project" }
+    },
+    "base": {
+      "label": "example:release",
+      "ref": "release",
+      "sha": "0000000000000000000000000000000000000007",
+      "repo": { "full_name": "example/project" }
+    }
+  }
+]

@@ -5,7 +5,7 @@
  * of operations is testable without a VM or GitHub.
  */
 import { messageOf } from '../errors';
-import { PullRequestReadError } from '../github/pull-request';
+import { pullRequestEvent, PullRequestReadError } from '../github/pull-request';
 import type { PullRequestFacts } from '../github/pull-request';
 import { JobSkippedError, LaneReadError, LaneSelectionError, readLane } from '../lane/reader';
 import type { EventContext, LaneRef, PushEvent, StepPlan } from '../lane/step-plan';
@@ -293,7 +293,7 @@ async function openPullRequest(request: PullRequestRunRequest, deps: RunLaneDeps
     }
     throw error;
   }
-  const { baseRef, headRef, headSha, number } = facts;
+  const { headSha, number } = facts;
   let source: HostSource;
   try {
     source = await deps.openPullRequestSource(request.repository, facts);
@@ -309,11 +309,8 @@ async function openPullRequest(request: PullRequestRunRequest, deps: RunLaneDeps
     throw error;
   }
   const event: EventContext = {
-    event: 'pull_request',
+    ...pullRequestEvent(facts, request.repository.name, source.sha),
     needs: request.needs,
-    pullRequest: { baseRef, headRef, headSha, number },
-    repository: request.repository.name,
-    sha: source.sha,
   };
   return { event, source };
 }

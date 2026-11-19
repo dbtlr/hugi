@@ -73,6 +73,14 @@ export type HostSource = {
    */
   readonly readFile: (path: string) => Promise<string | undefined>;
   /**
+   * The files the push or pull request changed, for a workflow's path filters (ADR-0004): a
+   * commit's files against its first parent, every file of a root commit, and for a pull request
+   * its head against the merge base of the head and the base tip. A failed read throws `SourceError`.
+   * A path that is not valid UTF-8 is decoded lossily: invalid bytes become U+FFFD, so only a
+   * path filter pattern that itself contains U+FFFD can match differently from the raw bytes.
+   */
+  readonly changedFiles: () => Promise<readonly string[]>;
+  /**
    * Whether the commit argument named a branch or a tag; absent for a sha. A name that is both is
    * refused when the source opens, with `AmbiguousRefError`.
    */
@@ -83,6 +91,21 @@ export type HostSource = {
    */
   readonly guestSource: () => Promise<GuestSource>;
 };
+
+/** Reads a commit's message from the source's git, for GitHub's skip instructions (ADR-0004). */
+export type CommitMessageReader = {
+  /**
+   * The full message of commit `sha` as git stores it, every byte after the header kept. `sha`
+   * must be a full sha the source holds, such as a pull request's checked head; otherwise it
+   * throws `SourceError`. A message that is not valid UTF-8 is decoded lossily: invalid bytes
+   * become U+FFFD, so only a skip instruction that itself contains U+FFFD could match differently
+   * from the raw bytes, and GitHub's skip instructions are ASCII.
+   */
+  readonly commitMessage: (sha: string) => Promise<string>;
+};
+
+/** A source as an opener returns it: the commit's files, and the messages of commits it holds. */
+export type OpenedSource = HostSource & CommitMessageReader;
 
 export type HostSourceOptions = {
   readonly cacheDir: string;
@@ -265,6 +288,24 @@ function fileReader(git: Git, gitDir: string, sha: string) {
   };
 }
 
+/** A full sha, SHA-1 or SHA-256, so the argument git gets can never read as an option. */
+const FULL_OBJECT_NAME = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+/**
+ * Reads a commit's raw object: the header ends at the first empty line, and the message is
+ * everything after it, byte for byte, so no format placeholder or separator can cut it short.
+ */
+function messageReader(git: Git, gitDir: string): CommitMessageReader['commitMessage'] {
+  return async (sha) => {
+    if (!FULL_OBJECT_NAME.test(sha)) {
+      throw new SourceError(`"${sha}" is not a full commit sha, so its message is not read.`);
+    }
+    const object = await gitOrThrow(git, gitDir, ['cat-file', 'commit', sha]);
+    const end = object.indexOf('\n\n');
+    return end === -1 ? '' : object.slice(end + 2);
+  };
+}
+
 const NOTHING_TO_RELEASE = async (): Promise<void> => {};
 
 /** The guest's source: the clone URL, or a fresh snapshot of `sha` for a local repository. */
@@ -310,6 +351,43 @@ function sourceGit(spec: RepositorySpec, options: HostSourceOptions): Git {
   });
 }
 
+/**
+ * The paths that differ between two trees, read from the trees alone: no rename detection, so no
+ * blob is fetched, and a renamed file lists both its old and new path. `from` undefined compares
+ * a root commit with the empty tree.
+ */
+async function treeDiff(
+  git: Git,
+  repository: Repository,
+  from: string | undefined,
+  to: string,
+): Promise<string[]> {
+  const commits = from === undefined ? ['--root', to] : [from, to];
+  const listing = await gitOrThrow(git, repository.gitDir, [
+    'diff-tree',
+    '-r',
+    '-z',
+    '--no-renames',
+    '--no-commit-id',
+    '--name-only',
+    ...commits,
+  ]);
+  return listing.split('\0').filter((path) => path !== '');
+}
+
+/** A commit's changed files: against its first parent, or every file when it has none. */
+function firstParentChanges(git: Git, repository: Repository, sha: string) {
+  return async () => treeDiff(git, repository, (await parentsOf(git, repository, sha))[0], sha);
+}
+
+/** A pull request's changed files: the head against its merge base with the base tip. */
+function threeDotChanges(git: Git, repository: Repository, baseTip: string, head: string) {
+  return async () => {
+    const base = (await gitOrThrow(git, repository.gitDir, ['merge-base', baseTip, head])).trim();
+    return treeDiff(git, repository, base, head);
+  };
+}
+
 /** The source pinned to `sha`: files read there, and the guest fetches that commit. */
 function pinnedSource(
   spec: RepositorySpec,
@@ -317,8 +395,11 @@ function pinnedSource(
   repository: Repository,
   sha: string,
   options: HostSourceOptions,
-): HostSource {
+  changedFiles: HostSource['changedFiles'],
+): OpenedSource {
   return {
+    changedFiles,
+    commitMessage: messageReader(git, repository.gitDir),
     guestSource: guestSourceOf(spec, sha, options),
     readFile: fileReader(git, repository.gitDir, sha),
     sha,
@@ -330,7 +411,7 @@ export async function openHostSource(
   spec: RepositorySpec,
   commit: string,
   options: HostSourceOptions,
-): Promise<HostSource> {
+): Promise<OpenedSource> {
   const git = sourceGit(spec, options);
   const repository =
     spec.kind === 'local'
@@ -354,7 +435,7 @@ export async function openHostSource(
     kind === undefined ? commit : `${REF_PREFIXES[kind]}${commit}`,
   );
   return {
-    ...pinnedSource(spec, git, repository, sha, options),
+    ...pinnedSource(spec, git, repository, sha, options, firstParentChanges(git, repository, sha)),
     ...(kind === undefined ? {} : { refKind: kind }),
   };
 }
@@ -451,7 +532,7 @@ export async function openPullRequestSource(
   spec: GitHubRepositorySpec,
   facts: PullRequestFacts,
   options: HostSourceOptions,
-): Promise<HostSource> {
+): Promise<OpenedSource> {
   const reported = reportedMerge(facts);
   const git = sourceGit(spec, options);
   const repository = await cachedClone(git, spec, options);
@@ -468,5 +549,7 @@ export async function openPullRequestSource(
   if (parents.length !== 2 || parents[1] !== facts.headSha) {
     throw notComputed(facts, `${merge} is not a merge of the head into the base`);
   }
-  return pinnedSource(spec, git, repository, merge, options);
+  // GitHub's merge commit has the base tip as its first parent and the head as its second.
+  const changes = threeDotChanges(git, repository, parents[0]!, facts.headSha);
+  return pinnedSource(spec, git, repository, merge, options, changes);
 }

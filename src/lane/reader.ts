@@ -12,8 +12,9 @@ import { JobSkippedError, LaneReadError, LaneSelectionError, withContext } from 
 import { expand } from './expressions';
 import type { Context } from './expressions';
 import { checkJobKeys, checkStepKeys, checkStrategyKeys, rejectMergeKeys } from './keys';
-import { selectCombination } from './matrix';
-import { loadJob, mapping, scalar } from './parse';
+import { matrixRows, selectRow } from './matrix';
+import type { Combination } from './matrix';
+import { jobOf, loadWorkflow, mapping, scalar } from './parse';
 import {
   actionReference,
   continueOnError,
@@ -122,18 +123,120 @@ export function readLane(
   event: EventContext,
   paths: RunnerPaths,
 ): StepPlan {
+  let workflow: Record<string, unknown>;
   try {
-    const { job, workflow } = loadJob(text, lane.job);
-    checkJobKeys(job);
-    rejectMergeKeys(job, 'the job');
-    rejectMergeKeys(workflow.env, 'workflow env');
-    rejectMergeKeys(workflow.defaults, 'workflow defaults');
-    if (job.strategy !== undefined) {
-      checkStrategyKeys(mapping(job.strategy, 'strategy'));
+    workflow = loadWorkflow(text);
+  } catch (cause) {
+    throw withContext(`job "${lane.job}"`, cause, LaneReadError);
+  }
+  return readLaneFrom(workflow, lane, event, paths);
+}
+
+/** A job's matrix rows as `matrixRows` expands them, or why they cannot be expanded. */
+type ExpandedMatrix =
+  | { readonly rows: readonly Combination[] | undefined }
+  | { readonly failure: unknown };
+
+/** Each loaded job's expanded matrix, by its `strategy` mapping. */
+const expandedMatrices = new WeakMap<object, ExpandedMatrix>();
+
+/**
+ * The job's matrix rows, as `matrixRows` answers them, expanded at most once for each loaded
+ * workflow however many of the job's lanes are read or decided: a large matrix expanded again for
+ * each of its lanes costs their product. A loaded workflow is never changed, so its `strategy`
+ * mapping keys the expansion, and a matrix that cannot be expanded throws the same error each time.
+ */
+function jobMatrixRows(strategy: unknown): readonly Combination[] | undefined {
+  if (typeof strategy !== 'object' || strategy === null) {
+    return matrixRows(strategy);
+  }
+  let expanded = expandedMatrices.get(strategy);
+  if (expanded === undefined) {
+    try {
+      expanded = { rows: matrixRows(strategy) };
+    } catch (failure) {
+      expanded = { failure };
     }
-    const needs = neededJobs(job.needs);
-    refuseUnneededJobs(event, needs);
-    const values = laneValues(event, paths, selectCombination(job.strategy, lane.matrix), needs);
+    expandedMatrices.set(strategy, expanded);
+  }
+  if ('failure' in expanded) {
+    throw expanded.failure;
+  }
+  return expanded.rows;
+}
+
+/** A lane's job with what its `if:` reads: the upstream jobs it needs and the lane's values. */
+type SelectedJob = {
+  readonly job: Record<string, unknown>;
+  readonly needs: readonly string[];
+  readonly values: LaneValues;
+};
+
+/**
+ * The checks a lane passes before its job's `if:` is decided, and the values the `if:` reads:
+ * the job's keys, its matrix row, and its upstream jobs. `readLaneFrom` and `jobSelects` share it,
+ * so they cannot disagree on which lanes reach the `if:`.
+ */
+function selectJob(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): SelectedJob {
+  const job = jobOf(workflow, lane.job);
+  checkJobKeys(job);
+  rejectMergeKeys(job, 'the job');
+  rejectMergeKeys(workflow.env, 'workflow env');
+  rejectMergeKeys(workflow.defaults, 'workflow defaults');
+  if (job.strategy !== undefined) {
+    checkStrategyKeys(mapping(job.strategy, 'strategy'));
+  }
+  const needs = neededJobs(job.needs);
+  refuseUnneededJobs(event, needs);
+  const values = laneValues(
+    event,
+    paths,
+    selectRow(jobMatrixRows(job.strategy), lane.matrix),
+    needs,
+  );
+  return { job, needs, values };
+}
+
+/**
+ * Whether the job's `if:` lets the lane run for the event, decided without building its step
+ * plan, so deciding many lanes of a large job costs little. It is false exactly when
+ * `readLaneFrom` would throw `JobSkippedError`. A lane the reader would reject for any other
+ * reason runs, so its run yields the fail verdict.
+ */
+export function jobSelects(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): boolean {
+  try {
+    const { job, needs, values } = selectJob(workflow, lane, event, paths);
+    requireJobRuns(job.if, values, needs, event);
+  } catch (error) {
+    // `readLaneFrom` keeps a skip's class through every layer of context, and makes any other
+    // failure a read error, so only a skip leaves the lane out.
+    return !(error instanceof JobSkippedError);
+  }
+  return true;
+}
+
+/**
+ * `readLane` for a workflow already loaded with `loadWorkflow`. A caller deciding many lanes of
+ * one loaded file uses `jobSelects`, which decides each lane's `if:` without building its plan.
+ */
+function readLaneFrom(
+  workflow: Record<string, unknown>,
+  lane: LaneRef,
+  event: EventContext,
+  paths: RunnerPaths,
+): StepPlan {
+  try {
+    const { job, needs, values } = selectJob(workflow, lane, event, paths);
     requireJobRuns(job.if, values, needs, event);
     const settings = jobSettingScope(values);
     runnerLabels(job['runs-on'], settings);
