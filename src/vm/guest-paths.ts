@@ -63,3 +63,17 @@ export function stepFiles(index: number): StepFiles {
 /** The name of the read-only host share, and where tart automounts it in the guest. */
 export const LOCAL_SOURCE_SHARE_NAME = 'source';
 export const LOCAL_SOURCE_GUEST_PATH = `/Volumes/My Shared Files/${LOCAL_SOURCE_SHARE_NAME}`;
+
+/** Files the runner's own tool steps leave in the guest for the host to read. */
+export const GUEST_TOOL_FILES = {
+  /** The tool environment of the repository's mise config. */
+  configEnvironment: `${GUEST_CONTROL_DIR}/mise-config-environment.json`,
+  /** The config files mise loaded in the workspace, resolved. */
+  configListing: `${GUEST_CONTROL_DIR}/mise-config-listing.txt`,
+  /** What the workspace's config requests: `mise ls --current --json`. */
+  configRequests: `${GUEST_CONTROL_DIR}/mise-config-requests.json`,
+  /** The tool environment of the workflow's tools: `mise env --json`. */
+  environment: `${GUEST_CONTROL_DIR}/tool-environment.json`,
+  /** The workflow tools' bin directories, one per line. */
+  workflowBins: `${GUEST_CONTROL_DIR}/workflow-bins.txt`,
+} as const;

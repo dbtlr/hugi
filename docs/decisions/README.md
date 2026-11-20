@@ -8,8 +8,9 @@ Each record captures one decision that is hard to reverse, with its context and 
 
 ## How a status binds
 
-- **accepted**: load-bearing. Code and plans must comply; a violation fails review. Change it only by superseding it with a new record.
+- **accepted**: load-bearing. Code and plans must comply; a violation fails review. Change it only by superseding it with a new record, or by amending it as below.
 - **proposed**: the early shape of a decision. A violation is a warning that reopens the decision.
+- An accepted record can also be **amended** by a later accepted one that names each passage it changes. The amended record links to the amendment at each of those passages, and both bind.
 - **superseded** and **deprecated**: kept for history. They no longer bind.
 
 ## Records
@@ -21,3 +22,4 @@ Each record captures one decision that is hard to reverse, with its context and 
 | [ADR-0003](0003-one-throwaway-vm-per-run.md) | accepted | Every run happens in a fresh VM cloned from the golden image and deleted afterwards. |
 | [ADR-0004](0004-lanes-declared-in-hugi-yaml.md) | accepted | A repository declares its lanes in `.github/hugi.yaml`; promotion moves them into a Hugi workflow GitHub never runs. |
 | [ADR-0005](0005-pull-requests-run-on-the-merge-commit.md) | accepted | A pull request runs on GitHub's merge commit, with the ref values GitHub's runner gives a `pull_request` job; its status goes on the head commit. |
+| [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) | accepted | A lane takes its tools from its workflow; a lane entry's `tools: mise` adds the repository's root mise config, which must agree with the workflow's pins. Steps find tools on a computed `PATH`, not through mise's shims. |

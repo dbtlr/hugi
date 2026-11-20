@@ -15,7 +15,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 ## Principles
 
 - **GitHub supplies commits and receives verdicts; it never schedules.** No run waits on a GitHub runner.
-- **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them.
+- **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them. A lane takes its tools from the workflow, and also from the repository's mise config when its declaration opts in ([ADR-0006](docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md)).
 - **Nothing from a pull request runs on the host.** The host reads a commit's files only as data. Every run happens in a VM cloned for that run and deleted afterwards.
 - **The repository says what to run; Hugi's configuration says who may run.** A repository lists its lanes in `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)). Enrolled repositories and allowlisted authors live outside the repositories.
 - **Verification only.** The VM holds no secret and publishes nothing.
@@ -84,6 +84,21 @@ hugi run dbtlr/mimir 810a1fb3f release.yml:build \
   --ref-type tag --ref-name v0.29.0
 ```
 
+### Where a lane's tools come from
+
+Hugi resolves a lane's **workflow tools** from the job's setup actions and the repository's Rust toolchain files ([supported actions](docs/supported-actions.md)), and installs them in an "Install tools" step. It then computes the lane's **tool environment** once, with `mise env --json` in a directory outside the workspace, and every step of the lane runs with that environment's `PATH` and the variables it exports, such as `RUSTUP_TOOLCHAIN`. The environment holds the workflow tools and the golden image's default tools. mise's shims are not on a step's `PATH`, so a step runs its tools directly. Each step also keeps the per-tool version variables (`MISE_NODE_VERSION` and the like) and has `MISE_IGNORED_CONFIG_PATHS` set to the workspace, so a step that runs `mise` itself does not read the repository's config. That variable is a runner variable, so a workflow or step can override it. `GITHUB_PATH` additions still go in front of `PATH`.
+
+`--tools workflow|mise` chooses the lane's source of tools, and the default is `workflow`: the tool environment is the only source, and the repository's `mise.toml` or `.tool-versions` changes nothing. A repository that keeps its tool versions in mise sets the same choice per entry in `.github/hugi.yaml` with the optional `tools` key, which takes the string `workflow` (the default) or `mise` and is not part of a lane's identity or status name:
+
+```yaml
+lanes:
+  - workflow: ci.yml
+    jobs: [node_macos]
+    tools: mise
+```
+
+With `mise`, a step named "Install tools from mise config" runs straight after the plan's `actions/checkout` step. It reads the config files at the workspace root, fails the lane when a workflow tool and the config request different versions (naming the tool, both versions and the file), installs the config's tools with mise's lockfile off, and gives the later steps a `PATH` of the workflow tools' bin directories, then the config environment's `PATH`, then the rest. A `tools: mise` lane whose job has no `actions/checkout` step fails before the VM boots. [ADR-0006](docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md) has the rules and their limits.
+
 A pull request runs on its merge commit:
 
 ```sh
@@ -111,18 +126,20 @@ Every accepted macOS `runs-on` label, such as `macos-26` or `macos-latest`, runs
 
 Each run that boots a VM has a run directory under `$XDG_STATE_HOME/hugi/runs`, and a record in it, from the moment the run starts. The directory's name is the run id, such as `2026-11-19T233200Z-abcdef123-Xy7Kq2`. It holds the step logs and `run.json`. `hugi run` writes `run.json` as `running` when it creates the directory, before the VM boots, and rewrites it as `finished` when the run ends; both writes are atomic, so a reader sees the old record or the whole new one. A run that stops before a VM boots (a lane that cannot be read, a tool that cannot be resolved, a commit that cannot be fetched) has no directory and no record.
 
-The record holds the run id, the lane (workflow, job id, complete matrix row, and its status name), the repository, the head commit and, for a pull request, the merge commit that was tested, the event, and the start time. A finished record adds the end time, the verdict with its reason (the cause, when there is no verdict), and each step's index, name, outcome, and log file name. Times are ISO 8601 UTC, as `Date.prototype.toISOString` writes them, and a log file name is `NN-<slug>.log`; `hugi logs` refuses a record that says otherwise. A directory that has no usable `run.json` is an orphan, left by a run that did not finish (for example, `hugi run` was killed before it wrote the record, or the file cannot be read).
+The record holds the run id, the lane (workflow, job id, complete matrix row, and its status name), the repository, the head commit and, for a pull request, the merge commit that was tested, the event, and the start time. A finished record adds the end time, the verdict with its reason (the cause, when there is no verdict), and each step's index, name, outcome, and log file name. Times are ISO 8601 UTC, as `Date.prototype.toISOString` writes them, and a log file name is `NN-<slug>.log`; `hugi logs` refuses a record that says otherwise. A directory that has no `run.json` is an orphan, left by a run that did not finish (for example, `hugi run` was killed before it wrote the record); `hugi logs` says so. A record that cannot be read or is refused makes `hugi logs` fail, and retention ages that directory as it ages an orphan.
 
 `hugi logs <run>` prints a run's summary and the failing step's log. `<run>` is a run id; a prefix works while it names one run. `--all` prints every step's log, and `--format json` prints the record with each printed log's path and contents, for agents. A running run is shown as running, and an orphan as "no record, left by a run that did not finish". `hugi logs` never reads outside the run directory: it refuses a `run.json` that is a symlink or names another run, and a step log that is a symlink or not a regular file. An unknown id, or a record it refuses, fails with exit code 1 and says why. A run kept in a `--logs` directory is not found by id.
 
-A status description ends with the run id, such as `Failed at Test: exit 3 [run 2026-11-19T233200Z-abcdef123-Xy7Kq2] (merge 0123456789ab)`, so `hugi logs 2026-11-19T233200Z-abcdef123-Xy7Kq2` works from it. The run id and the merge commit are always kept within the 140 characters; the failing step's name and the cause are shortened first. A run id that is not a run directory's name, or is longer than 80 characters, is an error, not a description.
+Hugi's own steps are numbered apart from the job's: "Tool environment" and "Install tools" are step 0, and "Install tools from mise config" is numbered one past the plan's highest step number, so the job's own steps keep the numbers the workflow gives them. A log file name's `NN` is that number.
+
+A status description carries the run id, such as `Failed at Test: exit 3 [run 2026-11-19T233200Z-abcdef123-Xy7Kq2] (merge 0123456789ab)`, so `hugi logs 2026-11-19T233200Z-abcdef123-Xy7Kq2` works from it. The run id and the merge commit are always kept within the 140 characters; the failing step's name and the cause are shortened first. A run id that is not a run directory's name, or is longer than 80 characters, is an error, not a description.
 
 Retention runs after each `hugi run` writes its finished record. It deletes only real directories directly inside the runs directory that are named like a run; it follows no symlink, and leaves every other entry alone and out of the size. It never deletes the run just written. Otherwise:
 
 - A finished run is deleted when it ended more than `runs.max_age_days` ago.
 - A running run is never deleted, unless it is stale: it started more than `runs.max_age_days` ago. It is never deleted to make room.
 - An orphan is deleted when its directory's modification time is more than `runs.max_age_days` ago.
-- Then, while the runs directory holds more than `runs.max_size_gb`, the oldest runs go (finished runs and orphans, not running runs). Every run directory counts toward the size, a running run and an orphan included.
+- Then, while the runs directory holds more than `runs.max_size_gb`, the oldest runs go (finished runs, and orphans whose directory has been untouched for an hour, but not running runs). Every run directory counts toward the size, a running run and an orphan included.
 
 `hugi run` reads the limits from the configuration file when there is one. With no file the defaults apply. When the file exists but is refused, `hugi run` warns and skips retention for that run, because limits it could not read are not limits to delete by.
 
@@ -174,7 +191,7 @@ A lane's status is named from its identity, not its workflow path, so promoting 
 
 The name lists the matrix row's values in the order the workflow lists its matrix keys, with one limitation: JavaScript orders integer-like object keys, such as `'2'`, before the others, so such a key's value is listed first whatever its place in the workflow. Two lanes whose names GitHub treats as one context are refused, so names are compared the way GitHub was observed to compare contexts: ignoring case and accents, with `ß` equal to `s` and trailing spaces trimmed. A status name cannot hold an emoji or any other character outside the Basic Multilingual Plane (a 4-byte character in UTF-8), which GitHub refuses, so a declaration with such a name is refused. The name stays stable for a lane. A promoted workflow must list its matrix keys in the same order for the names to match.
 
-A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened, and the merge commit and the run id are always kept ([Run records and logs](#run-records-and-logs)).
+A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed [run 2026-11-19T233200Z-abcdef123-Xy7Kq2] (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened, and the merge commit and the run id are always kept ([Run records and logs](#run-records-and-logs)).
 
 ## Documentation
 

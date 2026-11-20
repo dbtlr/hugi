@@ -2,7 +2,7 @@
 /** Test doubles for the tart port and the clock: a scripted guest and a virtual timeline. */
 import type { Child, ChildExit, Host } from '@loomcli/core';
 
-import { stepFiles } from './guest-paths';
+import { GUEST_TOOL_FILES, stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER, READ_FILE_MARKER } from './housekeeping';
 import { TartCallError } from './tart';
 import type {
@@ -124,7 +124,24 @@ export type Wedged = {
   delete?: number;
 };
 
+/** What the guest's `mise` prints for the runner's tool steps (ADR-0006). */
+export type FakeMise = {
+  /** `mise env --json` of the workflow tools; the default is a `PATH` of `/fake/tools:/usr/bin`. */
+  readonly toolEnvironment?: string;
+  readonly toolEnvironmentExitCode?: number;
+  /** The listing of the config files in the workspace: JSON lines: `{kind: "workspace", real}` and `{kind: "file", real, path}`. */
+  readonly configListing?: string;
+  /** `mise ls --current --json`. */
+  readonly configRequests?: string;
+  /** `mise env --json` of the config, written by the install script. */
+  readonly configEnvironment?: string;
+  readonly workflowBins?: string;
+  /** Exit codes of the mise-config step's scripts. */
+  readonly exitCodes?: Partial<Record<'listing' | 'requests' | 'install', number>>;
+};
+
 export type FakeGuest = {
+  mise?: FakeMise;
   checkoutExitCode?: number;
   /** The checkout never finishes, like a stalled clone. */
   checkoutHangs?: boolean;
@@ -238,8 +255,46 @@ export class FakeTart implements Tart {
       options.onOutput?.('checked out abc123\n');
       return { exitCode: this.guest.materializeExitCode ?? 0 };
     }
+    if (stdin.startsWith('# hugi-tool-env')) {
+      return this.toolEnvironment(options);
+    }
+    const phase = /^# hugi-mise-config (\w+)/.exec(stdin)?.[1];
+    if (phase !== undefined) {
+      return this.miseConfig(phase, options);
+    }
     const index = Number(/^# hugi-step (\d+)/.exec(stdin)?.[1]);
     return this.launch(index);
+  }
+
+  private toolEnvironment(options: ExecOptions): ExecResult {
+    const mise = this.guest.mise ?? {};
+    this.events.push('tool environment');
+    this.files.set(
+      GUEST_TOOL_FILES.environment,
+      mise.toolEnvironment ?? '{"PATH":"/fake/tools:/usr/bin"}',
+    );
+    options.onOutput?.('mise env\n');
+    return { exitCode: mise.toolEnvironmentExitCode ?? 0 };
+  }
+
+  /** The three scripts of the mise-config step: `listing`, `requests`, and `install`. */
+  private miseConfig(phase: string, options: ExecOptions): ExecResult {
+    const mise = this.guest.mise ?? {};
+    this.events.push(`mise config ${phase}`);
+    options.onOutput?.(`mise config ${phase}\n`);
+    if (phase === 'listing') {
+      this.files.set(GUEST_TOOL_FILES.configListing, mise.configListing ?? '');
+    } else if (phase === 'requests') {
+      this.files.set(GUEST_TOOL_FILES.configRequests, mise.configRequests ?? '{}');
+    } else {
+      this.files.set(
+        GUEST_TOOL_FILES.configEnvironment,
+        mise.configEnvironment ?? '{"PATH":"/fake/config:/usr/bin"}',
+      );
+      this.files.set(GUEST_TOOL_FILES.workflowBins, mise.workflowBins ?? '');
+    }
+    const codes: Record<string, number | undefined> = { ...mise.exitCodes };
+    return { exitCode: codes[phase] ?? 0 };
   }
 
   private probe(): ExecResult {

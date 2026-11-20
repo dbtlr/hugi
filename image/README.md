@@ -25,7 +25,7 @@ The first build downloads the base image (about 33 GB) and takes roughly 15 to 3
 | Node, pnpm, Bun, Rust (with clippy and rustfmt), PowerShell | [`tools.toml`](tools.toml), installed by mise as the global config |
 | Warm package caches | [`warm.tsv`](warm.tsv): one install per enrolled lane, then the clone is deleted |
 
-The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash_profile` and `.bashrc`, so zsh and login or interactive bash find the pinned tools ahead of the base image's Homebrew copies. A plain `tart exec` command or a non-interactive, non-login bash (`bash -c`) reads none of these files and finds the Homebrew copies first, so Hugi's VM runner puts the shims directory first on `PATH` for every step, unless the workflow sets `PATH` itself. The image holds no secrets.
+The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash_profile` and `.bashrc`, so zsh and login or interactive bash find the pinned tools ahead of the base image's Homebrew copies. A plain `tart exec` command or a non-interactive, non-login bash (`bash -c`) reads none of these files. Hugi's VM runner does not use the shims either: it computes a tool environment with `mise env` after installing the lane's tools and sets `PATH` and the tool variables for every step ([ADR-0006](../docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md)). The image holds no secrets.
 
 ### Enrolled lanes
 

@@ -6,7 +6,7 @@
  */
 import type { HugiConfig } from '../config/schema';
 import { readDeclaration } from '../declaration/read';
-import type { CommitFiles } from '../declaration/read';
+import type { CommitFiles, DeclaredLane } from '../declaration/read';
 import { messageOf } from '../errors';
 import { GitHubReadError } from '../github/client';
 import type {
@@ -19,7 +19,7 @@ import { pullRequestEvent, pullRequestRef } from '../github/pull-request';
 import type { PullRequestFacts } from '../github/pull-request';
 import { loadWorkflow } from '../lane/parse';
 import { jobSelects } from '../lane/reader';
-import type { EventContext, LaneRef } from '../lane/step-plan';
+import type { EventContext } from '../lane/step-plan';
 import { NoCurrentMergeError, NotAFileError, SourceError } from '../source/host-source';
 import type { OpenedSource } from '../source/host-source';
 import { skipsWorkflows, workflowStarts } from '../trigger';
@@ -140,7 +140,7 @@ function workflowsAt(files: CommitFiles, trigger: TriggerEvent) {
  * poll.
  */
 function decideLane(
-  lane: LaneRef,
+  lane: DeclaredLane,
   considered: ConsideredWorkflow,
   context: EventContext,
 ): LaneDecision {

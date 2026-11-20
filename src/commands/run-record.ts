@@ -81,6 +81,7 @@ export function buildRunRecord(
         name: step.name,
         outcome: step.outcome,
         ...(log ? { log } : {}),
+        ...('continuedOnError' in step && step.continuedOnError ? { continuedOnError: true } : {}),
       };
     }),
     verdict: report.verdict,
@@ -88,27 +89,34 @@ export function buildRunRecord(
   };
 }
 
-/** Write the `running` record into a run's new directory; a failure is a warning. */
+/**
+ * Write the `running` record into a run's new directory. A run whose record cannot be written does
+ * not start: without it, retention would take the run's directory for an abandoned one and could
+ * delete it while the VM runs.
+ */
 export async function recordRunStart(options: {
   readonly request: RunLaneRequest;
   readonly start: RunStart;
   readonly startedAt: Date;
-  readonly warn: (message: string) => void;
 }): Promise<void> {
-  const { request, start, startedAt, warn } = options;
+  const { request, start, startedAt } = options;
   try {
     await writeRunRecord(start.logDir, buildRunningRecord(request, start, startedAt));
   } catch (error) {
-    warn(`could not write the run record in ${start.logDir}: ${messageOf(error)}`);
+    throw new Error(
+      `Cannot write the run record in ${start.logDir}: ${messageOf(error)}. The run does not start, because retention could not tell it is in flight.`,
+      { cause: error },
+    );
   }
 }
 
-async function exists(path: string): Promise<boolean> {
+/** Whether `path` is absent: only a missing file is; any other failure to look is not absence. */
+async function missing(path: string): Promise<boolean> {
   try {
     await access(path);
-    return true;
-  } catch {
     return false;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT';
   }
 }
 
@@ -123,7 +131,7 @@ export async function loadRetentionLimits(
   configPath: string,
   warn: (message: string) => void,
 ): Promise<HugiConfig['runs'] | undefined> {
-  if (!(await exists(configPath))) {
+  if (await missing(configPath)) {
     return { maxAgeDays: DEFAULTS.maxAgeDays, maxSizeGb: DEFAULTS.maxSizeGb };
   }
   try {

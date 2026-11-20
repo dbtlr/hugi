@@ -58,6 +58,7 @@ type Runner = Pick<Host, 'env' | 'home' | 'cwd' | 'spawn'>;
 
 const EVENTS = ['push', 'pull_request'] as const;
 const REF_TYPES = ['branch', 'tag'] as const;
+const TOOL_SOURCES = ['workflow', 'mise'] as const;
 
 function oneOf<const Allowed extends readonly string[]>(
   flag: string,
@@ -158,6 +159,12 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
       description: 'The tart image to clone for the run.',
       type: 'string',
     })
+    .option('tools', {
+      default: 'workflow',
+      description:
+        'Where the lane takes its tools from: workflow (the default), or mise to also install what the repository mise config requests (ADR-0006).',
+      type: 'string',
+    })
     .option('logs', {
       description:
         'Directory for the step logs; default a new directory under the XDG state directory.',
@@ -203,8 +210,7 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
               tart: createTartCli(host.spawn),
               warn: (message) => void out.warn(message),
             })),
-        runStarted: (start) =>
-          recordRunStart({ request, start, startedAt, warn: (message) => void out.warn(message) }),
+        runStarted: (start) => recordRunStart({ request, start, startedAt }),
         warn: (message) => void out.warn(message),
       });
       await storeRun({
@@ -232,6 +238,7 @@ type RunOptions = {
   'ref-type': string | undefined;
   'ref-name': string | undefined;
   image: string;
+  tools: string;
   logs: string | undefined;
 };
 
@@ -257,6 +264,7 @@ function buildRequest(
     lane: parseLaneArgument(args.lane),
     matrix: parseMatrix(options.matrix ?? []),
     needs: parseNeeds(options.needs ?? []),
+    toolSource: oneOf('--tools', options.tools, TOOL_SOURCES) ?? 'workflow',
     ...(options.logs === undefined ? {} : { logDir: resolve(runner.cwd, options.logs) }),
   };
   const event = oneOf('--event', options.event, EVENTS);

@@ -10,6 +10,9 @@
  * A VM that exits, or a guest agent that stops answering, ends the run as
  * `infrastructure`.
  *
+ * After "Install tools" the runner computes the tool environment (`./tool-steps`), and every step
+ * runs with its `PATH` and variables. A `tools: mise` lane gets one more step after the checkout.
+ *
  * GitHub's run-time conditions apply, including to the synthetic "Install
  * tools" step: after a failure, `success` steps are skipped while `always` and
  * `failure` steps still run. One exception: once the job times out, every
@@ -30,6 +33,8 @@ import {
 import type { Environment } from './guest-env';
 import { stepFiles } from './guest-paths';
 import type { StepFiles } from './guest-paths';
+import { runHostStep } from './host-step';
+import type { HostStepContext, HostStepRun, HostStepVerdict } from './host-step';
 import { copyGuestFile, killProcessGroup, readGuestFile } from './housekeeping';
 import type { GuestCall } from './housekeeping';
 import { openLogFile, stepLogName } from './logs';
@@ -37,6 +42,7 @@ import type { RunRequest, StepResult } from './run-request';
 import { shellQuote } from './shell';
 import { buildStepLauncher } from './step-launcher';
 import type { Clock, Tart } from './tart';
+import { runMiseConfigStep, runToolEnvironment, MISE_CONFIG_STEP_NAME } from './tool-steps';
 
 export type StepTuning = {
   /** How often the host asks whether the running step has exited. */
@@ -79,7 +85,20 @@ type StepEnd =
   | 'infrastructure';
 
 /** Values earlier steps handed to later ones. */
-type CarriedState = { readonly fromGithubEnv: Environment; readonly extraPath: readonly string[] };
+type CarriedState = {
+  readonly fromGithubEnv: Environment;
+  readonly extraPath: readonly string[];
+  /** The tool environment (ADR-0006) every step runs with once it is computed. */
+  readonly toolEnvironment?: Environment;
+};
+
+/** Hugi's own step that installs the tools the repository's mise config requests (`tools: mise`). */
+type MiseConfigStep = {
+  readonly kind: 'mise-config';
+  readonly index: number;
+  readonly name: string;
+  readonly when: 'success';
+};
 
 const MILLISECONDS_PER_MINUTE = 60_000;
 
@@ -91,7 +110,7 @@ export function shouldRun(when: StepWhen, anEarlierStepFailed: boolean): boolean
   return when === 'failure' ? anEarlierStepFailed : !anEarlierStepFailed;
 }
 
-function skipped(step: PlanStep): StepResult {
+function skipped(step: Pick<PlanStep, 'index' | 'name'>): StepResult {
   return { index: step.index, name: step.name, outcome: 'skipped', seconds: 0 };
 }
 
@@ -224,6 +243,7 @@ async function applyCommandFiles(
   }
   return {
     carried: {
+      ...carried,
       extraPath: prependPaths(carried.extraPath, parsePathFile(pathText)),
       fromGithubEnv: { ...carried.fromGithubEnv, ...env.env },
     },
@@ -234,56 +254,24 @@ async function applyCommandFiles(
  * The checkout step: materialize the workspace from the staging repository, bounded by the job
  * deadline. Anything but a clean exit ends the run, since the failure lies outside the lane.
  */
-async function runCheckoutStep(
+function runCheckoutStep(
   ctx: StepRunContext,
   step: PlanStep,
   remainingMs: number,
-): Promise<{ readonly result: StepResult; readonly end: Exclude<StepEnd, 'step-timeout'> }> {
-  const log = await openLogFile(ctx.request.logDir, stepLogName(step.index, step.name));
-  const began = ctx.clock.now();
-  try {
-    const checkout = await withDeadline(
-      ctx.clock,
-      remainingMs,
-      (signal) =>
-        ctx.tart.exec(ctx.vm, ['bash', '-s'], {
-          onOutput: (chunk) => log.write(chunk),
-          signal,
-          stdin: buildWorkspaceScript(ctx.request),
-        }),
-      { parent: AbortSignal.any([ctx.interrupt, ctx.vmLost]), waitForWork: true },
-    );
-    const base = {
-      index: step.index,
-      logFile: log.path,
-      name: step.name,
-      seconds: (ctx.clock.now() - began) / 1000,
-    };
-    const failed = (end: 'vm-lost' | 'interrupted' | 'infrastructure', error: string) => ({
-      end,
-      result: { ...base, error, outcome: 'failure' as const },
-    });
-    if (ctx.vmLost.aborted) {
-      return failed('vm-lost', 'the VM exited during the checkout');
-    }
-    if (ctx.interrupt.aborted) {
-      return failed('interrupted', 'interrupted during the checkout');
-    }
-    if (checkout.timedOut) {
-      return { end: 'job-timeout', result: { ...base, outcome: 'timeout' } };
-    }
-    if (!checkout.ok) {
-      return failed('infrastructure', `the checkout failed: ${checkout.why}`);
-    }
-    const { exitCode } = checkout.value;
-    if (exitCode !== 0) {
-      return failed('infrastructure', `the checkout failed with exit code ${exitCode}`);
-    }
-    const note = `checked out ${ctx.request.event.sha}`;
-    return { end: 'exited', result: { ...base, exitCode, note, outcome: 'success' } };
-  } finally {
-    await log.close();
-  }
+): Promise<HostStepRun<never>> {
+  return runHostStep(
+    hostContext(ctx),
+    step,
+    remainingMs,
+    async (tools): Promise<HostStepVerdict<never>> => {
+      const exitCode = await tools.exec(buildWorkspaceScript(ctx.request));
+      if (exitCode !== 0) {
+        return { error: `the checkout failed with exit code ${exitCode}`, exitCode, ok: false };
+      }
+      return { exitCode, note: `checked out ${ctx.request.event.sha}`, ok: true };
+    },
+    true,
+  );
 }
 
 type StepRun = {
@@ -316,6 +304,7 @@ async function runOneStep(
     runner: {
       ...githubEnvironment(ctx.request.event),
       ...toolVersionEnvironment(ctx.request.tools),
+      ...carried.toolEnvironment,
     },
     step: step.env,
   });
@@ -436,6 +425,110 @@ function stopFor(
   return { detail: `${result.error ?? 'the VM was lost'} (${during})`, reason: 'infrastructure' };
 }
 
+function hostContext(ctx: StepRunContext): HostStepContext {
+  return {
+    clock: ctx.clock,
+    housekeepingMs: ctx.tuning.housekeepingMs,
+    interrupt: ctx.interrupt,
+    logDir: ctx.request.logDir,
+    tart: ctx.tart,
+    vm: ctx.vm,
+    vmLost: ctx.vmLost,
+  };
+}
+
+type Walk = {
+  carried: CarriedState;
+  failed: boolean;
+  firstFailure: string | undefined;
+  stop: Required<PlanOutcome> | undefined;
+  /** The tool environment's computation has been tried. */
+  toolEnvironmentTried: boolean;
+  /** The plan's checkout step ran and succeeded. */
+  checkedOut: boolean;
+};
+
+/** The step list: the tool install first, and for `tools: mise` the config install after the checkout. */
+function stepsOf(
+  request: RunRequest,
+  install: RunStep | undefined,
+): readonly (PlanStep | MiseConfigStep)[] {
+  const { plan } = request;
+  const checkout = checkoutStepIndex(plan);
+  // Numbered after the plan's highest step number: the plan's numbers are the job's own, shown in
+  // failure details, results and `hugi logs`, and they can have gaps where the reader dropped a
+  // step whose `if:` was false, so the plan's length could name a real step.
+  const miseStep: MiseConfigStep = {
+    index: Math.max(0, ...plan.steps.map((step) => step.index)) + 1,
+    kind: 'mise-config',
+    name: MISE_CONFIG_STEP_NAME,
+    when: 'success',
+  };
+  const planned = plan.steps.flatMap((step) =>
+    request.toolSource === 'mise' && step.index === checkout ? [step, miseStep] : [step],
+  );
+  return install ? [install, ...planned] : planned;
+}
+
+/**
+ * Compute the tool environment before the first plan step, once "Install tools" has passed; a
+ * failure is a failing step of the lane, as a failed tool install is.
+ */
+async function computeToolEnvironment(
+  ctx: StepRunContext,
+  walk: Walk,
+  results: StepResult[],
+): Promise<void> {
+  walk.toolEnvironmentTried = true;
+  const remainingMs = ctx.jobDeadline - ctx.clock.now();
+  if (walk.stop || walk.failed || remainingMs <= 0) {
+    return;
+  }
+  const run = await runToolEnvironment(hostContext(ctx), ctx.request, remainingMs);
+  if (run.end === 'exited' && run.result.outcome === 'success' && run.value) {
+    walk.carried = { ...walk.carried, toolEnvironment: run.value };
+    return;
+  }
+  results.push(run.result);
+  if (run.end === 'exited') {
+    walk.failed = true;
+    walk.firstFailure ??= describeFailure(run.result);
+  } else {
+    walk.stop = stopFor(ctx, run.end, run.result);
+  }
+}
+
+/** Run Hugi's own mise-config step and fold its verdict into the walk. */
+async function runMiseConfig(
+  ctx: StepRunContext,
+  step: MiseConfigStep,
+  walk: Walk,
+  results: StepResult[],
+  remainingMs: number,
+): Promise<void> {
+  const first = walk.carried.toolEnvironment;
+  if (first === undefined) {
+    results.push(skipped(step));
+    return;
+  }
+  const run = await runMiseConfigStep(
+    hostContext(ctx),
+    step.index,
+    ctx.request,
+    first,
+    remainingMs,
+  );
+  results.push(run.result);
+  if (run.end !== 'exited') {
+    walk.stop = stopFor(ctx, run.end, run.result);
+  } else if (run.result.outcome === 'success' && run.value) {
+    walk.carried = { ...walk.carried, toolEnvironment: run.value };
+  } else {
+    walk.failed = true;
+    walk.firstFailure ??= describeFailure(run.result);
+  }
+}
+
 /**
  * Execute the request's tool install and every step of its plan, appending
  * each step's result to `results` as it finishes, so a caller keeps them even
@@ -443,64 +536,80 @@ function stopFor(
  * the loss of the VM.
  */
 export async function runSteps(ctx: StepRunContext, results: StepResult[]): Promise<PlanOutcome> {
-  let carried: CarriedState = { extraPath: [], fromGithubEnv: {} };
-  let failed = false;
-  let firstFailure: string | undefined;
-  let stop: Required<PlanOutcome> | undefined;
-  const install = installToolsStep(ctx.request.tools);
-  const steps: readonly PlanStep[] = install
-    ? [install, ...ctx.request.plan.steps]
-    : ctx.request.plan.steps;
+  const walk: Walk = {
+    carried: { extraPath: [], fromGithubEnv: {} },
+    checkedOut: false,
+    failed: false,
+    firstFailure: undefined,
+    stop: undefined,
+    toolEnvironmentTried: false,
+  };
   const checkoutIndex = checkoutStepIndex(ctx.request.plan);
+  const install = installToolsStep(ctx.request.tools);
 
-  for (const step of steps) {
+  for (const step of stepsOf(ctx.request, install)) {
+    if (!walk.toolEnvironmentTried && step !== install) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      await computeToolEnvironment(ctx, walk, results);
+    }
     const remainingMs = ctx.jobDeadline - ctx.clock.now();
-    const performed = step.kind === 'run' || step.index === checkoutIndex;
-    if (stop || !performed || !shouldRun(step.when, failed)) {
+    const performed = step.kind !== 'action' || step.index === checkoutIndex;
+    const wanted = step.kind === 'mise-config' ? walk.checkedOut : true;
+    if (walk.stop || !performed || !wanted || !shouldRun(step.when, walk.failed)) {
       results.push(skipped(step));
       continue;
     }
     if (ctx.interrupt.aborted) {
-      stop = { detail: 'interrupted before the plan finished', reason: 'interrupted' };
+      walk.stop = { detail: 'interrupted before the plan finished', reason: 'interrupted' };
       results.push(skipped(step));
       continue;
     }
     if (remainingMs <= 0) {
-      stop = {
+      walk.stop = {
         detail: `job timed out after ${ctx.request.plan.timeoutMinutes} minutes`,
         reason: 'timeout',
       };
       results.push(skipped(step));
       continue;
     }
+    if (step.kind === 'mise-config') {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      await runMiseConfig(ctx, step, walk, results, remainingMs);
+      continue;
+    }
     if (step.kind === 'action') {
       // oxlint-disable-next-line no-await-in-loop -- sequential by design
       const checkout = await runCheckoutStep(ctx, step, remainingMs);
       results.push(checkout.result);
+      walk.checkedOut = checkout.end === 'exited';
       if (checkout.end !== 'exited') {
-        stop = stopFor(ctx, checkout.end, checkout.result);
+        walk.stop = stopFor(ctx, checkout.end, checkout.result);
       }
       continue;
     }
     // oxlint-disable-next-line no-await-in-loop -- sequential by design
-    const run = await runOneStep(ctx, step, carried, remainingMs);
-    results.push(run.result);
-    carried = run.carried;
+    const run = await runOneStep(ctx, step, walk.carried, remainingMs);
+    const continued =
+      (run.end === 'exited' || run.end === 'step-timeout') &&
+      run.result.outcome !== 'success' &&
+      step.continueOnError;
+    results.push(continued ? { ...run.result, continuedOnError: true } : run.result);
+    walk.carried = run.carried;
     if (run.end === 'exited' || run.end === 'step-timeout') {
       if (run.result.outcome !== 'success' && !step.continueOnError) {
-        failed = true;
-        firstFailure ??= describeFailure(run.result);
+        walk.failed = true;
+        walk.firstFailure ??= describeFailure(run.result);
       }
     } else {
-      stop = stopFor(ctx, run.end, run.result);
+      walk.stop = stopFor(ctx, run.end, run.result);
     }
   }
 
-  if (stop) {
-    return stop;
+  if (walk.stop) {
+    return walk.stop;
   }
-  if (failed) {
-    return { detail: firstFailure, reason: 'step-failed' };
+  if (walk.failed) {
+    return { detail: walk.firstFailure, reason: 'step-failed' };
   }
   return { reason: 'passed' };
 }

@@ -55,8 +55,7 @@ function writeFile(path: string, content: string): string[] {
 }
 
 /** The PATH a step gets when its environment sets none; `$HOME` expands in the guest. */
-const BASE_PATH = [
-  '$HOME/.local/share/mise/shims',
+export const BASE_PATH = [
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
   '/usr/local/bin',
@@ -68,19 +67,25 @@ const BASE_PATH = [
 
 /**
  * The PATH a step gets, for use inside double quotes. The base is fixed rather
- * than inherited, since the image's non-login shell puts its Homebrew
- * toolchain first, which would shadow the pinned tools: mise shims lead, then
- * Homebrew, then the system paths. A `PATH` set in the plan's env, the step's
- * env, or `GITHUB_ENV` replaces that base, as on GitHub. `GITHUB_PATH`
- * additions go in front either way.
+ * than inherited, and holds no mise shims (ADR-0006): Homebrew, then the system
+ * paths. A run's tool environment replaces it once computed, and a `PATH` set in
+ * the plan's env, the step's env, or `GITHUB_ENV` replaces that, as on GitHub.
+ * `GITHUB_PATH` additions go in front either way.
  */
 export function guestPath(extraPath: readonly string[], replacement?: string): string {
   const base = replacement === undefined ? BASE_PATH : escapeForDoubleQuotes(replacement);
   return [...extraPath.map(escapeForDoubleQuotes), base].join(':');
 }
 
-/** Perl stands in for `setsid(1)`, which macOS lacks: the step gets a session and process group of its own. */
-const START_SESSION = `/usr/bin/perl -e 'use POSIX (); POSIX::setsid() or die "setsid: $!\\n"; exec @ARGV or die "exec: $!\\n"'`;
+/**
+ * Perl stands in for `setsid(1)`, which macOS lacks: the step gets a session and process group of
+ * its own. It also restores SIGINT and SIGQUIT to their defaults. The launcher starts the
+ * supervisor as a background job of a non-interactive shell, which ignores both, and an ignored
+ * signal stays ignored through every `exec`. A step on GitHub's runner is not immune to them, and
+ * a tool that handles the signals, as mise does when a shim runs the tool, hid this until steps
+ * ran tools directly.
+ */
+const START_SESSION = `/usr/bin/perl -e 'use POSIX (); POSIX::setsid() or die "setsid: $!\\n"; $SIG{INT} = "DEFAULT"; $SIG{QUIT} = "DEFAULT"; exec @ARGV or die "exec: $!\\n"'`;
 
 /** The supervisor: runs the step shell in the working directory, then records its exit status. */
 function supervisorScript(step: RunStep, files: StepFiles): string {
@@ -103,13 +108,18 @@ function supervisorScript(step: RunStep, files: StepFiles): string {
   ].join('\n');
 }
 
+/** `export` lines for every variable but `PATH`, which `guestPath` sets. */
+export function environmentExports(env: Environment): string[] {
+  return Object.entries(env)
+    .filter(([key]) => key !== 'PATH')
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
+}
+
 export function buildStepLauncher(input: LauncherInput): string {
   const { step, env, extraPath, files } = input;
   const directory = files.script.slice(0, files.script.lastIndexOf('/'));
   const supervisorPath = `${directory}/supervisor.sh`;
-  const exports = Object.entries(env)
-    .filter(([key]) => key !== 'PATH')
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
+  const exports = environmentExports(env);
   return [
     `# hugi-step ${step.index}`,
     'set -e',

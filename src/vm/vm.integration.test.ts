@@ -192,6 +192,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       logDir: join(scratch, 'logs', name),
       plan,
       source: snapshot.location,
+      toolSource: 'workflow',
       tools: [],
       ...overrides,
     };
@@ -346,7 +347,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test.skipIf(!goldenEnabled)(
-    'pinned tools resolve through the mise shims by per-tool version overrides',
+    'pinned tools resolve from the tool environment, with no shims on PATH',
     async () => {
       await waitForFreeSlot();
       // Versions other than the golden image's own defaults, so only the overrides can select them.
@@ -365,12 +366,12 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       const result = await runInVm(req, deps);
       expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
       const versions = logOf(req, '01-step-1.log');
-      expect(versions).toContain('/.local/share/mise/shims/node');
+      expect(versions).toContain('/.local/share/mise/installs/node/22.11.0/bin/node');
       expect(versions).toContain('v22.11.0');
       expect(versions).toContain('10.0.0');
-      expect(logOf(req, '02-step-2.log')).toMatch(
-        /PATH=\/opt\/added:\/Users\/admin\/\.local\/share\/mise\/shims:/,
-      );
+      const path = /PATH=(.*)/.exec(logOf(req, '02-step-2.log'))?.[1] ?? '';
+      expect(path).toStartWith('/opt/added:/Users/admin/.local/share/mise/installs/');
+      expect(path).not.toContain('/mise/shims');
       expect(vmRemains(deps.vm)).toBe(false);
     },
     TEST_TIMEOUT_MS,

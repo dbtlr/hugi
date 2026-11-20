@@ -1,6 +1,7 @@
 /**
  * The declaration's schema: a YAML mapping with one key, `lanes`, a nonempty list of entries.
- * Each entry names a workflow file, the jobs in it, and optionally a matrix filter (ADR-0004).
+ * Each entry names a workflow file, the jobs in it, and optionally a matrix filter (ADR-0004) and
+ * where its tools come from (ADR-0006).
  * Everything here works on the parsed text alone; reading the workflow files comes later.
  */
 import { posix } from 'node:path';
@@ -12,11 +13,17 @@ import { DeclarationRefusalError } from './errors';
 
 const HUGI_DIRECTORY = '.github/hugi';
 
+/** Where a lane's tools come from (ADR-0006): the workflow's setup actions alone, or also the repository's mise config. */
+export type ToolsSource = 'workflow' | 'mise';
+
+const TOOLS_SOURCES: readonly ToolsSource[] = ['workflow', 'mise'];
+
 /** One validated entry; `workflow` is already the canonical repository-relative path. */
 export type Entry = {
   readonly workflow: string;
   readonly jobs: readonly string[];
   readonly matrix: Readonly<Record<string, Scalar>>;
+  readonly tools: ToolsSource;
 };
 
 /**
@@ -55,7 +62,7 @@ export function resolveWorkflowPath(name: string): string {
 
 function checkKeys(entry: Record<string, unknown>) {
   const unknown = Object.keys(entry).filter(
-    (key) => key !== 'workflow' && key !== 'jobs' && key !== 'matrix',
+    (key) => key !== 'workflow' && key !== 'jobs' && key !== 'matrix' && key !== 'tools',
   );
   if (unknown.length > 0) {
     throw new DeclarationRefusalError(`has an unknown key "${unknown[0]}"`);
@@ -106,6 +113,17 @@ function readFilter(value: unknown): Record<string, Scalar> {
   return filter;
 }
 
+function readTools(value: unknown): ToolsSource {
+  if (value === undefined) {
+    return 'workflow';
+  }
+  const source = TOOLS_SOURCES.find((candidate) => candidate === value);
+  if (source === undefined) {
+    throw new DeclarationRefusalError('tools must be "workflow" or "mise"');
+  }
+  return source;
+}
+
 function readEntry(value: unknown): Entry {
   if (!isMapping(value)) {
     throw new DeclarationRefusalError('must be a mapping');
@@ -117,6 +135,7 @@ function readEntry(value: unknown): Entry {
   return {
     jobs: readJobs(value.jobs),
     matrix: readFilter(value.matrix),
+    tools: readTools(value.tools),
     workflow: resolveWorkflowPath(value.workflow),
   };
 }

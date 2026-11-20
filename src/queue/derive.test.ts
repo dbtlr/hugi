@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'bun:test';
 
+import type { DeclaredLane } from '../declaration/read';
 import type { CommitStatusState } from '../github/client';
 import { laneStatusName } from '../github/status-name';
-import type { LaneRef } from '../lane/step-plan';
 import { deriveQueue } from './derive';
 import type { CommitRead, CommitSnapshot, RepositorySnapshot } from './types';
 
 const CI = '.github/workflows/ci.yml';
-const PLATFORM: LaneRef = { job: 'platform', matrix: {}, workflow: CI };
-const TEST_MAC: LaneRef = { job: 'test', matrix: { os: 'macos-latest' }, workflow: CI };
+const PLATFORM: DeclaredLane = { job: 'platform', matrix: {}, tools: 'workflow', workflow: CI };
+const TEST_MAC: DeclaredLane = {
+  job: 'test',
+  matrix: { os: 'macos-latest' },
+  tools: 'workflow',
+  workflow: CI,
+};
 
 const MAIN = 'a'.repeat(40);
 const HEAD = 'b'.repeat(40);
@@ -17,7 +22,10 @@ function statuses(states: Record<string, CommitStatusState> = {}) {
   return new Map(Object.entries(states));
 }
 
-function lanes(states: Record<string, CommitStatusState> = {}, ...refs: LaneRef[]): CommitRead {
+function lanes(
+  states: Record<string, CommitStatusState> = {},
+  ...refs: DeclaredLane[]
+): CommitRead {
   const declared = refs.length === 0 ? [PLATFORM, TEST_MAC] : refs;
   return {
     kind: 'lanes',
@@ -411,7 +419,7 @@ describe('one commit in two snapshots', () => {
   });
 
   test('two pull requests sharing a head each add the lanes only their own base selects', () => {
-    const only = (selected: LaneRef): CommitRead => ({
+    const only = (selected: DeclaredLane): CommitRead => ({
       kind: 'lanes',
       lanes: [PLATFORM, TEST_MAC].map((lane) => ({
         kind: lane === selected ? 'runs' : 'left-out',

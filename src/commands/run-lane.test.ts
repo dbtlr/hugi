@@ -70,6 +70,7 @@ const request: PushRunRequest = {
     kind: 'github',
     name: 'example/project',
   },
+  toolSource: 'workflow',
 };
 
 /** `workflow` with an upstream `changes` job the lane can need, and the lane's job needing it. */
@@ -182,6 +183,21 @@ test('the snapshot is released when the VM runner throws', async () => {
     },
   }).catch((error: unknown) => error);
   expect(messageOf(failure)).toBe('tart vanished');
+  expect(events).toEqual(['prepared', 'released']);
+});
+
+test('a run whose start cannot be recorded never boots its VM', async () => {
+  const events: string[] = [];
+  const { calls, deps } = harness({});
+  const failure = await runLane(localRequest, {
+    ...deps,
+    openSource: async () => snapshotSource(events),
+    runStarted: async () => {
+      throw new Error('cannot write run.json');
+    },
+  }).catch((error: unknown) => error);
+  expect(messageOf(failure)).toBe('cannot write run.json');
+  expect(calls).toHaveLength(0);
   expect(events).toEqual(['prepared', 'released']);
 });
 
@@ -632,6 +648,7 @@ describe('a pull request runs at its merge commit', () => {
       kind: 'github',
       name: 'example/project',
     },
+    toolSource: 'workflow',
   };
   const workflow = WORKFLOW.replace('on: push', 'on: pull_request');
 
@@ -698,5 +715,32 @@ describe('a pull request runs at its merge commit', () => {
     });
     expect(report.detail).toContain('merge conflict');
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('a lane that takes its tools from the mise config (ADR-0006)', () => {
+  const miseRequest: PushRunRequest = { ...request, toolSource: 'mise' };
+
+  test('the choice reaches the VM request, and the default is workflow', async () => {
+    const { calls, deps } = harness({ '.github/workflows/ci.yml': WORKFLOW });
+    await runLane(miseRequest, deps);
+    await runLane(request, deps);
+    expect(calls.map((call) => call.toolSource)).toEqual(['mise', 'workflow']);
+  });
+
+  test('a lane with no actions/checkout step fails before the VM boots', async () => {
+    const workflow = WORKFLOW.replace('      - uses: actions/checkout@v7\n', '');
+    const { calls, deps } = harness({ '.github/workflows/ci.yml': workflow });
+    const report = await runLane(miseRequest, deps);
+    expect(report).toMatchObject({ reason: 'toolchain-unresolvable', verdict: 'fail' });
+    expect(report.detail).toContain('actions/checkout');
+    expect(calls).toHaveLength(0);
+  });
+
+  test('the same lane under the default has no such fault', async () => {
+    const workflow = WORKFLOW.replace('      - uses: actions/checkout@v7\n', '');
+    const { calls, deps } = harness({ '.github/workflows/ci.yml': workflow });
+    await runLane(request, deps);
+    expect(calls).toHaveLength(1);
   });
 });

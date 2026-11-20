@@ -273,10 +273,16 @@ describe('a push to the default branch', () => {
       'o/r@1 hugi / test (macos-latest)',
       'o/r@1 hugi / site',
     ]);
+    // The lane also carries where its tools come from, which the candidate passes on.
     expect(queue.candidates[0]).toEqual({
       commit: sha('1'),
       event: { branch: 'main', kind: 'push' },
-      lane: { job: 'platform', matrix: {}, workflow: '.github/workflows/ci.yml' },
+      lane: {
+        job: 'platform',
+        matrix: {},
+        tools: 'workflow',
+        workflow: '.github/workflows/ci.yml',
+      },
       repository: 'o/r',
       statusName: 'hugi / platform',
     });

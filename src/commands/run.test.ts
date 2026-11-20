@@ -1,4 +1,7 @@
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { mockProcess } from '@loomcli/testing';
 
@@ -62,7 +65,11 @@ async function hugi(argv: string[], vm: RunResult | undefined, files?: Record<st
   return { exitCode, requests, stderr: mock.stderr.text, stdout: mock.stdout.text };
 }
 
-const ARGS = ['run', 'example/project', 'main', 'ci.yml:build', '--logs', '/logs'];
+/** A real directory for `--logs`, because a run writes its record there before its VM boots. */
+const LOGS = await mkdtemp(join(tmpdir(), 'hugi-run-test-'));
+afterAll(() => rm(LOGS, { force: true, recursive: true }));
+
+const ARGS = ['run', 'example/project', 'main', 'ci.yml:build', '--logs', LOGS];
 
 test('a passing run exits 0 and prints the steps, verdict, and log directory', async () => {
   const { exitCode, stdout, requests } = await hugi(ARGS, result({}));
@@ -71,7 +78,7 @@ test('a passing run exits 0 and prints the steps, verdict, and log directory', a
   expect(stdout).toContain('step 1');
   expect(stdout).toContain('/logs/1.log');
   expect(stdout).toContain('verdict: pass (passed)');
-  expect(stdout).toContain('logs: /logs');
+  expect(stdout).toContain(`logs: ${LOGS}`);
 });
 
 test('a failing step exits 1', async () => {
@@ -97,7 +104,7 @@ test('a lane that cannot be read exits 1, prints the reader error, and never run
 
 test('a missing job exits 2 with the reader error and never runs the VM', async () => {
   const { exitCode, requests, stderr } = await hugi(
-    ['run', 'example/project', 'main', 'ci.yml:nope', '--logs', '/logs'],
+    ['run', 'example/project', 'main', 'ci.yml:nope', '--logs', LOGS],
     undefined,
   );
   expect(exitCode).toBe(2);
@@ -230,7 +237,7 @@ jobs:
       SHA,
       'ci.yml:build',
       '--logs',
-      '/logs',
+      LOGS,
       '--matrix',
       'os=macos-latest',
       '--needs',
@@ -393,7 +400,7 @@ async function hugiPull(
   return { exitCode, opened, requests, stderr: mock.stderr.text, stdout: mock.stdout.text };
 }
 
-const PULL_ARGS = ['run', 'example/project', 'pull/7', 'ci.yml:build', '--logs', '/logs'];
+const PULL_ARGS = ['run', 'example/project', 'pull/7', 'ci.yml:build', '--logs', LOGS];
 
 test('pull/<n> runs the pull request at its merge commit and reports the head', async () => {
   const { exitCode, requests, stdout } = await hugiPull([...PULL_ARGS, '--format', 'json']);
@@ -461,10 +468,32 @@ test.each(['pull/0', 'pull/abc'])('%s is an ordinary branch name', async (commit
     commit,
     'ci.yml:build',
     '--logs',
-    '/logs',
+    LOGS,
     '--ref-name',
     commit,
   ]);
   expect(exitCode).toBe(0);
   expect(opened).toEqual([commit]);
+});
+
+test('--tools reaches the VM request and defaults to workflow', async () => {
+  const withCheckout = {
+    '.github/workflows/ci.yml': WORKFLOW.replace(
+      '    steps:\n',
+      '    steps:\n      - uses: actions/checkout@v7\n',
+    ),
+  };
+  const withMise = await hugi([...ARGS, '--tools', 'mise'], result({}), withCheckout);
+  expect(withMise.requests[0]!.toolSource).toBe('mise');
+  const explicit = await hugi([...ARGS, '--tools', 'workflow'], result({}));
+  expect(explicit.requests[0]!.toolSource).toBe('workflow');
+  const byDefault = await hugi(ARGS, result({}));
+  expect(byDefault.requests[0]!.toolSource).toBe('workflow');
+});
+
+test('--tools with another value is a usage error and never runs the VM', async () => {
+  const { exitCode, stderr, requests } = await hugi([...ARGS, '--tools', 'brew'], undefined);
+  expect(exitCode).toBe(2);
+  expect(stderr).toContain('--tools must be one of workflow, mise');
+  expect(requests).toHaveLength(0);
 });

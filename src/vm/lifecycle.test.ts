@@ -1,5 +1,5 @@
 /* oxlint-disable node/no-sync, promise/avoid-new, promise/prefer-await-to-then, typescript/parameter-properties -- test support: simple fixtures and a hand-rolled fake */
-import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,6 +61,7 @@ const requestOf = (
   logDir,
   plan: planOf(steps, plan),
   source: { cloneUrl: 'https://github.com/dbtlr/hugi.git', kind: 'remote' },
+  toolSource: 'workflow',
   tools: [],
   ...overrides,
 });
@@ -110,6 +111,7 @@ test('a passing plan clones, sizes, boots, checks out, runs every step, and dele
     `set ${vmName} 4 4096`,
     `run ${vmName}`,
     'checkout',
+    'tool environment',
     'step 1',
     'step 2',
     `stop ${vmName}`,
@@ -141,7 +143,7 @@ test('GITHUB_ENV and GITHUB_PATH from one step reach the next step', async () =>
   const second = h.tart.launcherFor(2);
   expect(second).toContain("export FROM_FILE='hi there'");
   expect(second).toContain("export BLOB='a\nb'");
-  expect(second).toContain('export PATH="/custom/bin:$HOME/.local/share/mise/shims:');
+  expect(second).toContain('export PATH="/custom/bin:/fake/tools:/usr/bin"');
   expect(second).toContain("export PLAN_VAR='step'");
   expect(h.tart.launcherFor(1)).toContain("export PLAN_VAR='plan'");
   expect(second).toContain("export GITHUB_SHA='abc123'");
@@ -160,7 +162,7 @@ test('each step gets fresh command files, and their values accumulate across ste
   const third = h.tart.launcherFor(3);
   expect(third).toContain("export A='1'");
   expect(third).toContain("export B='2'");
-  expect(third).toContain('export PATH="/two:/one:$HOME/');
+  expect(third).toContain('export PATH="/two:/one:/fake/tools:/usr/bin"');
 });
 
 test('an invalid GITHUB_ENV fails its step as on GitHub, and later steps see none of it', async () => {
@@ -274,6 +276,7 @@ test('the workspace stays empty until the first checkout step, which materialize
   expect(result.reason).toBe('passed');
   expect(h.tart.events.filter((event) => !event.includes(vmName))).toEqual([
     'checkout',
+    'tool environment',
     'step 1',
     'materialize',
     'step 3',
@@ -345,6 +348,16 @@ test('continueOnError keeps the run green and later success steps running', asyn
   const result = await run(h, requestOf([runStep(1, { continueOnError: true }), runStep(2)]));
   expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
   expect(result.steps.map((step) => step.outcome)).toEqual(['failure', 'success']);
+});
+
+test('a failure continue-on-error let pass is marked, so the step that set the verdict can be told apart', async () => {
+  const h = harness({ steps: { 1: { exitCode: 1 }, 2: { exitCode: 2 } } });
+  const result = await run(h, requestOf([runStep(1, { continueOnError: true }), runStep(2)]));
+  expect(result.reason).toBe('step-failed');
+  expect(result.steps.map((step) => [step.outcome, step.continuedOnError ?? false])).toEqual([
+    ['failure', true],
+    ['failure', false],
+  ]);
 });
 
 test('a step timeout kills that step, fails the run, and still runs always steps', async () => {
@@ -665,7 +678,8 @@ async function msFromInterruptToReturn(trigger: 'launch' | 'command-file') {
     }
     if (args.includes('bash')) {
       bashCalls += 1;
-      if (trigger === 'launch' && bashCalls === 2) {
+      // The checkout and the tool environment come first; the launcher is the third `bash -s`.
+      if (trigger === 'launch' && bashCalls === 3) {
         interruptNow();
         return hung;
       }
@@ -674,6 +688,9 @@ async function msFromInterruptToReturn(trigger: 'launch' | 'command-file') {
     const path = args.at(-1) ?? '';
     if (trigger === 'command-file' && path.endsWith('/github_env')) {
       interruptNow();
+    }
+    if (path.endsWith('/tool-environment.json')) {
+      return { output: '{"PATH":"/usr/bin"}' };
     }
     return path.endsWith('/status') ? { output: '0' } : slow;
   });
@@ -706,3 +723,304 @@ test('an interrupt during the step launch ends the launch, kills the step, and d
   expect(fake.calls.some((call) => call.args[0] === 'delete')).toBe(true);
   expect(ms).toBeLessThanOrEqual(SHUTDOWN_BUDGET_MS);
 }, 60_000);
+
+describe('the tool environment (ADR-0006)', () => {
+  const toolEnvironment = JSON.stringify({
+    CARGO_HOME: '/mock/cargo',
+    PATH: '/mock/rust/bin:/mock/node/bin:/opt/homebrew/bin:/usr/bin',
+    RUSTUP_TOOLCHAIN: '1.97.1',
+  });
+  const tools = ['node@22.23.2', 'rust@1.97.1'];
+
+  test('is computed after "Install tools", outside the workspace, from the base PATH and the pinned versions', async () => {
+    const h = harness({ mise: { toolEnvironment }, steps: {} });
+    await run(h, requestOf([runStep(1)], { tools }));
+    expect(h.tart.events.indexOf('step 0')).toBeLessThan(h.tart.events.indexOf('tool environment'));
+    expect(h.tart.events.indexOf('tool environment')).toBeLessThan(h.tart.events.indexOf('step 1'));
+    const script = h.tart.execs.find((call) => call.stdin?.startsWith('# hugi-tool-env'))!.stdin!;
+    expect(script).toContain("cd '/Users/admin/hugi/temp'");
+    expect(script).toContain('MISE_NO_ENV=1 mise env --json');
+    expect(script).toContain("export MISE_NODE_VERSION='22.23.2'");
+    expect(script).toContain("export MISE_RUST_VERSION='1.97.1'");
+    expect(script).toContain('export PATH="/opt/homebrew/bin:');
+    expect(script).not.toContain('shims');
+  });
+
+  test('is computed for a lane with no workflow tools too, and shows no step of its own', async () => {
+    const h = harness({ mise: { toolEnvironment }, steps: {} });
+    const result = await run(h, requestOf([runStep(1)]));
+    expect(h.tart.events).toContain('tool environment');
+    expect(result.steps.map((step) => step.name)).toEqual(['Step 1']);
+  });
+
+  test('every step runs with its PATH and variables, the version variables and the ignored config path, and no shims', async () => {
+    const h = harness({ mise: { toolEnvironment }, steps: { 1: { appendsPath: '/added\n' } } });
+    await run(h, requestOf([runStep(1), runStep(2)], { tools }));
+    for (const index of [1, 2]) {
+      const launcher = h.tart.launcherFor(index);
+      expect(launcher).toContain("export RUSTUP_TOOLCHAIN='1.97.1'");
+      expect(launcher).toContain("export CARGO_HOME='/mock/cargo'");
+      expect(launcher).toContain("export MISE_NODE_VERSION='22.23.2'");
+      expect(launcher).toContain("export MISE_IGNORED_CONFIG_PATHS='/Users/admin/hugi/workspace'");
+      expect(launcher).not.toContain('MISE_TRUSTED_CONFIG_PATHS');
+      expect(launcher).not.toContain('shims');
+    }
+    expect(h.tart.launcherFor(1)).toContain(
+      'export PATH="/mock/rust/bin:/mock/node/bin:/opt/homebrew/bin:/usr/bin"',
+    );
+    // GITHUB_PATH additions still go in front.
+    expect(h.tart.launcherFor(2)).toContain(
+      'export PATH="/added:/mock/rust/bin:/mock/node/bin:/opt/homebrew/bin:/usr/bin"',
+    );
+  });
+
+  test('a workflow can override the ignored config path, as the lowest layer of the environment', async () => {
+    const h = harness({ mise: { toolEnvironment }, steps: {} });
+    await run(h, requestOf([runStep(1, { env: { MISE_IGNORED_CONFIG_PATHS: '/elsewhere' } })]));
+    expect(h.tart.launcherFor(1)).toContain("export MISE_IGNORED_CONFIG_PATHS='/elsewhere'");
+  });
+
+  test('a failed "Install tools" computes none, and later steps keep the base PATH', async () => {
+    const h = harness({ mise: { toolEnvironment }, steps: { 0: { exitCode: 1 } } });
+    await run(h, requestOf([runStep(1, { when: 'always' })], { tools }));
+    expect(h.tart.events).not.toContain('tool environment');
+    expect(h.tart.launcherFor(1)).toContain('export PATH="/opt/homebrew/bin:');
+  });
+
+  test('a tool environment that cannot be computed fails the lane, and later success steps are skipped', async () => {
+    const h = harness({ mise: { toolEnvironmentExitCode: 1 }, steps: {} });
+    const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain('Tool environment');
+    expect(result.steps.map((step) => [step.name, step.outcome])).toEqual([
+      ['Tool environment', 'failure'],
+      ['Step 1', 'skipped'],
+      ['Step 2', 'success'],
+    ]);
+  });
+
+  test('output that is not an environment fails the lane', async () => {
+    const h = harness({ mise: { toolEnvironment: 'not json' }, steps: {} });
+    const result = await run(h, requestOf([runStep(1)]));
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+  });
+});
+
+const requests = (entries: Record<string, [string, string][]>) =>
+  JSON.stringify(
+    Object.fromEntries(
+      Object.entries(entries).map(([name, versions]) => [
+        name,
+        versions.map(([version, path]) => ({
+          requested_version: version,
+          source: { path, type: 'mise.toml' },
+        })),
+      ]),
+    ),
+  );
+const miseRequest = (
+  steps: PlanStep[],
+  overrides: Partial<RunRequest> = {},
+  plan: Partial<StepPlan> = {},
+) => requestOf(steps, { toolSource: 'mise', tools: ['node@22.23.2'], ...overrides }, plan);
+const checkout = () => actionStep(1, 'actions/checkout@v7');
+
+const listingOf = (...records: object[]) =>
+  `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+
+describe('tools from the mise config (ADR-0006)', () => {
+  const WORKSPACE = '/Users/admin/hugi/workspace';
+  const workspaceRecord = { kind: 'workspace', real: WORKSPACE };
+  const listing = listingOf(workspaceRecord, {
+    kind: 'file',
+    path: `${WORKSPACE}/mise.toml`,
+    real: `${WORKSPACE}/mise.toml`,
+  });
+  const mise = {
+    configEnvironment: JSON.stringify({ PATH: '/cfg/actionlint:/cfg/node:/usr/bin' }),
+    configListing: listing,
+    configRequests: requests({ actionlint: [['1.7.7', `${WORKSPACE}/mise.toml`]] }),
+    toolEnvironment: JSON.stringify({ PATH: '/wf/node:/img/bun:/usr/bin' }),
+    workflowBins: '/wf/node\n',
+  };
+
+  test('runs straight after the checkout, in order, and later steps run with the merged PATH', async () => {
+    const h = harness({ mise, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result.reason).toBe('passed');
+    expect(result.steps.map((step) => [step.name, step.outcome])).toEqual([
+      ['Install tools', 'success'],
+      ['actions/checkout@v7', 'success'],
+      ['Install tools from mise config', 'success'],
+      ['Step 2', 'success'],
+    ]);
+    expect(h.tart.events.slice(h.tart.events.indexOf('materialize'), -2)).toEqual([
+      'materialize',
+      'mise config listing',
+      'mise config requests',
+      'mise config install',
+      'step 2',
+    ]);
+    expect(h.tart.launcherFor(2)).toContain(
+      'export PATH="/wf/node:/cfg/actionlint:/cfg/node:/usr/bin:/img/bun"',
+    );
+  });
+
+  test("is numbered after the highest plan step, so a gap left by a read-time if: false never gives it a real step's number", async () => {
+    const h = harness({ mise, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(3)]));
+    expect(result.steps.map((step) => [step.index, step.name])).toEqual([
+      [0, 'Install tools'],
+      [1, 'actions/checkout@v7'],
+      [4, 'Install tools from mise config'],
+      [3, 'Step 3'],
+    ]);
+  });
+
+  test('reads the config in the workspace, trusted, without the version variables, then installs with the lockfile off', async () => {
+    const h = harness({ mise, steps: {} });
+    await run(h, miseRequest([checkout(), runStep(2)]));
+    const script = (phase: string) =>
+      h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!;
+    for (const phase of ['listing', 'requests']) {
+      expect(script(phase)).toContain(`cd '${WORKSPACE}'`);
+      expect(script(phase)).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+      expect(script(phase)).not.toContain('MISE_IGNORED_CONFIG_PATHS');
+      expect(script(phase)).not.toContain('MISE_NODE_VERSION');
+    }
+    expect(script('listing')).toContain('mise config ls --json');
+    expect(script('requests')).toContain('mise ls --current --json');
+    const install = script('install');
+    expect(install).toContain("export MISE_LOCKFILE='false'");
+    expect(install).toContain("export MISE_NODE_VERSION='22.23.2'");
+    expect(install).toContain('mise install');
+    expect(install).toContain('MISE_NO_ENV=1 mise env --json');
+    expect(install).toContain("mise bin-paths 'node@22.23.2'");
+    expect(install).not.toContain('MISE_IGNORED_CONFIG_PATHS');
+  });
+
+  test('is absent under the default', async () => {
+    const h = harness({ mise, steps: {} });
+    const result = await run(h, requestOf([checkout(), runStep(2)], { tools: ['node@22.23.2'] }));
+    expect(result.steps.map((step) => step.name)).not.toContain('Install tools from mise config');
+    expect(h.tart.events).not.toContain('mise config listing');
+  });
+
+  test('is skipped when an earlier step failed and the checkout was skipped with it', async () => {
+    const h = harness({ mise, steps: { 0: { exitCode: 1 } } });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result.steps.map((step) => [step.name, step.outcome])).toEqual([
+      ['Install tools', 'failure'],
+      ['actions/checkout@v7', 'skipped'],
+      ['Install tools from mise config', 'skipped'],
+      ['Step 2', 'skipped'],
+    ]);
+    expect(h.tart.events).not.toContain('mise config listing');
+  });
+
+  test('fails the lane when the workflow pin and the config request differ, naming both and the file', async () => {
+    const h = harness({
+      mise: { ...mise, configRequests: requests({ nodejs: [['22', `${WORKSPACE}/mise.toml`]] }) },
+      steps: {},
+    });
+    const result = await run(
+      h,
+      miseRequest([checkout(), runStep(2), runStep(3, { when: 'always' })]),
+    );
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain('Install tools from mise config');
+    const log = readFileSync(join(logDir, '04-install-tools-from-mise-config.log'), 'utf8');
+    expect(log).toContain('node');
+    expect(log).toContain('22.23.2');
+    expect(log).toContain('22');
+    expect(log).toContain(`${WORKSPACE}/mise.toml`);
+    expect(h.tart.events).not.toContain('mise config install');
+    expect(result.steps.map((step) => step.outcome)).toEqual([
+      'success',
+      'success',
+      'failure',
+      'skipped',
+      'success',
+    ]);
+    // The always step keeps the workflow tools' environment.
+    expect(h.tart.launcherFor(3)).toContain('export PATH="/wf/node:/img/bun:/usr/bin"');
+  });
+
+  test('fails the lane when no config file lies inside the workspace', async () => {
+    const outside = listingOf(workspaceRecord, {
+      kind: 'file',
+      path: '/mock/home/.config/mise/config.toml',
+      real: '/mock/home/.config/mise/config.toml',
+    });
+    const h = harness({ mise: { ...mise, configListing: outside }, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(h.tart.events).not.toContain('mise config requests');
+  });
+
+  test('fails the lane when mise install fails', async () => {
+    const h = harness({ mise: { ...mise, exitCodes: { install: 1 } }, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain('mise install exited with code 1');
+  });
+
+  test('every script of the step gets the plan\'s env, as "Install tools" does, and adjusts it', async () => {
+    const h = harness({ mise, steps: {} });
+    const env = {
+      MISE_IGNORED_CONFIG_PATHS: '/elsewhere',
+      MISE_NODE_VERSION: '18',
+      PLAN_VAR: 'plan',
+      QUOTED: "it's",
+    };
+    await run(h, miseRequest([checkout(), runStep(2)], {}, { env }));
+    const script = (phase: string) =>
+      h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!;
+    for (const phase of ['listing', 'requests', 'install']) {
+      expect(script(phase)).toContain("export PLAN_VAR='plan'");
+      expect(script(phase)).toContain(`export QUOTED='it'\\''s'`);
+      expect(script(phase)).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+      expect(script(phase)).not.toContain('MISE_IGNORED_CONFIG_PATHS');
+    }
+    // The plan's own version variable is not read as the config's request; the pin is the install's.
+    expect(script('listing')).not.toContain('MISE_NODE_VERSION');
+    expect(script('requests')).not.toContain('MISE_NODE_VERSION');
+    expect(script('install')).toContain("export MISE_NODE_VERSION='22.23.2'");
+  });
+
+  test('is skipped when the checkout was skipped and nothing earlier failed', async () => {
+    const h = harness({ mise, steps: {} });
+    const result = await run(
+      h,
+      miseRequest([actionStep(1, 'actions/checkout@v7', { when: 'failure' }), runStep(2)]),
+    );
+    expect(result.reason).toBe('passed');
+    expect(result.steps.map((step) => [step.name, step.outcome])).toEqual([
+      ['Install tools', 'success'],
+      ['actions/checkout@v7', 'skipped'],
+      ['Install tools from mise config', 'skipped'],
+      ['Step 2', 'success'],
+    ]);
+    expect(h.tart.events).not.toContain('mise config listing');
+  });
+
+  test.each([
+    ['toolEnvironment', 'Tool environment'],
+    ['configEnvironment', 'Install tools from mise config'],
+  ] as const)('a bad %s fails the lane, naming the key', async (field, stepName) => {
+    const bad = JSON.stringify({ 'BAD-KEY': 'x', PATH: '/usr/bin' });
+    const h = harness({ mise: { ...mise, [field]: bad }, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain(stepName);
+    expect(result.detail).toContain('"BAD-KEY"');
+    expect(result.detail).toContain('not a valid variable name');
+  });
+
+  test('a checkout that fails stops the run before the step', async () => {
+    const h = harness({ materializeExitCode: 1, mise, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result.reason).toBe('infrastructure');
+    expect(h.tart.events).not.toContain('mise config listing');
+  });
+});

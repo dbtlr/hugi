@@ -26,6 +26,11 @@ export type RunRequest = {
   readonly image: string;
   /** mise tool specs (`bun@1.4.4`) activated for every step; empty when the image's defaults suffice. */
   readonly tools: readonly string[];
+  /**
+   * Where the lane's tools come from (ADR-0006). `mise` adds a step after the checkout that installs
+   * the tools the repository's mise config requests, which must agree with `tools`.
+   */
+  readonly toolSource: 'workflow' | 'mise';
   /** Host directory that receives the per-step logs. */
   readonly logDir: string;
 };
@@ -44,6 +49,8 @@ export type StepResult = {
   readonly error?: string;
   /** What a step the runner performs itself did, such as `checked out <sha>` for the checkout step. */
   readonly note?: string;
+  /** The step failed or timed out, and its `continue-on-error` let the job carry on. */
+  readonly continuedOnError?: true;
 };
 
 /**

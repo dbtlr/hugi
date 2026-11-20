@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -22,7 +23,7 @@ import { sampleRecord } from '../runs/testing';
 import type { HostSource } from '../source/host-source';
 import type { RunRequest, RunResult } from '../vm';
 import type { RunLaneRequest } from './run-lane';
-import { storeRun } from './run-record';
+import { recordRunStart, storeRun } from './run-record';
 
 const SHA = 'b'.repeat(40);
 const WORKFLOW = `
@@ -232,6 +233,53 @@ test('with no configuration file the default limits apply', async () => {
   expect(await readdir(runsDir())).not.toContain(old);
 });
 
+test('a configuration file Hugi may not look at skips retention, rather than applying the defaults', async () => {
+  const old = '2020-01-01T000000Z-aaaaaaaaa-old123';
+  await mkdir(join(runsDir(), old), { recursive: true });
+  await writeRunRecord(
+    join(runsDir(), old),
+    sampleRecord({ endedAt: '2020-01-01T00:00:00.000Z', runId: old }),
+  );
+  const configDir = join(state, 'config', 'hugi');
+  await mkdir(configDir, { recursive: true });
+  await writeFile(join(configDir, 'config.yaml'), 'runs:\n  max_age_days: 3650\n');
+  await chmod(configDir, 0o000);
+  try {
+    const { stderr } = await hugiRun();
+    expect(stderr).toContain('Skipping run retention');
+  } finally {
+    await chmod(configDir, 0o700);
+  }
+  expect(await readdir(runsDir())).toContain(old);
+});
+
+test('a running record that cannot be written stops the run, so retention never takes it for an orphan', async () => {
+  const request: RunLaneRequest = {
+    commit: 'main',
+    event: 'push',
+    image: 'hugi-golden',
+    lane: { job: 'build', workflow: 'ci.yml' },
+    matrix: {},
+    needs: {},
+    repository: {
+      cloneUrl: 'https://github.com/example/project.git',
+      kind: 'github',
+      name: 'example/project',
+    },
+    toolSource: 'workflow',
+  };
+  const start = {
+    lane: { job: 'build', matrix: {}, workflow: 'ci.yml' },
+    logDir: join(state, 'missing', 'run'),
+    sha: 'a'.repeat(40),
+  };
+  const failure = await recordRunStart({ request, start, startedAt: new Date() }).catch(
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(Error);
+  expect(String(failure)).toContain('The run does not start');
+});
+
 test('storeRun tells retention to keep the run it just wrote', async () => {
   const configDir = join(state, 'config', 'hugi');
   await mkdir(configDir, { recursive: true });
@@ -252,6 +300,7 @@ test('storeRun tells retention to keep the run it just wrote', async () => {
       kind: 'github',
       name: 'example/project',
     },
+    toolSource: 'workflow',
   };
   const logDir = join(runsDir(), '2026-11-19T100000Z-bbbbbbbbb-abc123');
   await mkdir(logDir, { recursive: true });

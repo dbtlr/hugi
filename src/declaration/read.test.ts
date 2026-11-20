@@ -84,7 +84,7 @@ describe('the repositories Hugi shadows first', () => {
     });
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'platform', matrix: {}, workflow: CI }],
+      lanes: [{ job: 'platform', matrix: {}, tools: 'workflow', workflow: CI }],
     });
   });
 
@@ -99,6 +99,7 @@ describe('the repositories Hugi shadows first', () => {
         {
           job: 'build',
           matrix: { asset: 'mimir-darwin-arm64', os: 'macos-latest' },
+          tools: 'workflow',
           workflow: '.github/workflows/release.yml',
         },
       ],
@@ -120,8 +121,8 @@ describe('the repositories Hugi shadows first', () => {
     expect(result).toEqual({
       kind: 'lanes',
       lanes: [
-        { job: 'node_macos', matrix: {}, workflow: '.github/hugi/ci.yml' },
-        { job: 'bun_macos', matrix: {}, workflow: '.github/hugi/ci.yml' },
+        { job: 'node_macos', matrix: {}, tools: 'workflow', workflow: '.github/hugi/ci.yml' },
+        { job: 'bun_macos', matrix: {}, tools: 'workflow', workflow: '.github/hugi/ci.yml' },
       ],
     });
   });
@@ -133,8 +134,8 @@ describe('the repositories Hugi shadows first', () => {
     expect(result).toEqual({
       kind: 'lanes',
       lanes: [
-        { job: 'node_macos', matrix: {}, workflow: CI },
-        { job: 'bun_macos', matrix: {}, workflow: CI },
+        { job: 'node_macos', matrix: {}, tools: 'workflow', workflow: CI },
+        { job: 'bun_macos', matrix: {}, tools: 'workflow', workflow: CI },
       ],
     });
   });
@@ -146,7 +147,9 @@ describe('the repositories Hugi shadows first', () => {
     );
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'node_matrix', matrix: { os: 'macos-latest' }, workflow: CI }],
+      lanes: [
+        { job: 'node_matrix', matrix: { os: 'macos-latest' }, tools: 'workflow', workflow: CI },
+      ],
     });
   });
 
@@ -181,7 +184,9 @@ describe('matrix filters and lane rows', () => {
     );
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'test', matrix: { extra: 'x', os: 'macos-15' }, workflow: CI }],
+      lanes: [
+        { job: 'test', matrix: { extra: 'x', os: 'macos-15' }, tools: 'workflow', workflow: CI },
+      ],
     });
   });
 
@@ -207,8 +212,8 @@ describe('matrix filters and lane rows', () => {
     expect(result).toEqual({
       kind: 'lanes',
       lanes: [
-        { job: 'test', matrix: { os: 'macos-14', version: 1 }, workflow: CI },
-        { job: 'test', matrix: { os: 'macos-14', version: 2 }, workflow: CI },
+        { job: 'test', matrix: { os: 'macos-14', version: 1 }, tools: 'workflow', workflow: CI },
+        { job: 'test', matrix: { os: 'macos-14', version: 2 }, tools: 'workflow', workflow: CI },
       ],
     });
   });
@@ -220,7 +225,9 @@ describe('matrix filters and lane rows', () => {
     );
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'test', matrix: { os: 'macos-14', version: 2 }, workflow: CI }],
+      lanes: [
+        { job: 'test', matrix: { os: 'macos-14', version: 2 }, tools: 'workflow', workflow: CI },
+      ],
     });
   });
 
@@ -231,7 +238,7 @@ describe('matrix filters and lane rows', () => {
     );
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'flag', matrix: { fast: true }, workflow: CI }],
+      lanes: [{ job: 'flag', matrix: { fast: true }, tools: 'workflow', workflow: CI }],
     });
   });
 
@@ -467,8 +474,8 @@ describe('lane identity', () => {
     expect(result).toEqual({
       kind: 'lanes',
       lanes: [
-        { job: 'a', matrix: { os: 'macos-14' }, workflow: CI },
-        { job: 'a', matrix: { os: 'macos-14', xcode: 15 }, workflow: CI },
+        { job: 'a', matrix: { os: 'macos-14' }, tools: 'workflow', workflow: CI },
+        { job: 'a', matrix: { os: 'macos-14', xcode: 15 }, tools: 'workflow', workflow: CI },
       ],
     });
   });
@@ -566,7 +573,26 @@ describe('status names', () => {
       [CI]: workflow({ build: { strategy: { matrix: { v: ['ship 🚀'] } } } }),
     });
     expect(cause).toContain('job "build" with row {"v":"ship 🚀"}');
-    expect(cause).toContain('GitHub accepts no 4-byte characters in a status name');
+    expect(cause).toContain(
+      'GitHub accepts no 4-byte or unpaired surrogate characters in a status name',
+    );
+  });
+
+  test('a status name holding a lone surrogate is refused, the reason first', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({ build: { strategy: { matrix: { v: ['a\uD83Db'] } } } }),
+    });
+    expect(cause).toMatch(
+      /^GitHub accepts no 4-byte or unpaired surrogate characters in a status name/u,
+    );
+    expect(cause).toContain('job "build"');
+  });
+
+  test('the reason comes before a long row, so a cut message still says what to change', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({ build: { strategy: { matrix: { v: [`${'x'.repeat(310)} 🚀`] } } } }),
+    });
+    expect(cause).toMatch(/^GitHub accepts no 4-byte/u);
   });
 
   test('lanes whose status names differ are accepted', async () => {
@@ -702,7 +728,7 @@ describe('the schema', () => {
     );
     expect(result).toEqual({
       kind: 'lanes',
-      lanes: [{ job: 'a', matrix: { opt: 'yes' }, workflow: CI }],
+      lanes: [{ job: 'a', matrix: { opt: 'yes' }, tools: 'workflow', workflow: CI }],
     });
   });
 });
@@ -935,4 +961,35 @@ describe('a matrix key the declaration reads from a workflow', () => {
     expect(cause).toContain('matrix key "constructor" is a reserved name');
     expect(cause).not.toContain('--matrix');
   });
+});
+
+describe('where a lane takes its tools from (ADR-0006)', () => {
+  const files = { [CI]: workflow({ a: {}, b: {} }) };
+
+  test('is workflow when the entry says nothing', async () => {
+    const result = await read('lanes:\n  - workflow: ci.yml\n    jobs: [a]\n', files);
+    expect(result.kind === 'lanes' && result.lanes.map((lane) => lane.tools)).toEqual(['workflow']);
+  });
+
+  test('is carried per entry, and neither value changes a status name', async () => {
+    const result = await read(
+      'lanes:\n  - workflow: ci.yml\n    jobs: [a]\n    tools: workflow\n  - workflow: ci.yml\n    jobs: [b]\n    tools: mise\n',
+      files,
+    );
+    expect(result.kind === 'lanes' && result.lanes.map((lane) => [lane.job, lane.tools])).toEqual([
+      ['a', 'workflow'],
+      ['b', 'mise'],
+    ]);
+  });
+
+  test.each(['"npm"', '"Mise"', 'true', '1', '[mise]', 'null', '{ mise: true }'])(
+    'refuses the value %s as a schema error',
+    async (value) => {
+      const cause = await refusalOf(
+        `lanes:\n  - workflow: ci.yml\n    jobs: [a]\n    tools: ${value}\n`,
+        files,
+      );
+      expect(cause).toMatch(/lanes\[0\].*tools must be "workflow" or "mise"/);
+    },
+  );
 });

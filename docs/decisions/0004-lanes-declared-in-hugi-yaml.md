@@ -38,8 +38,9 @@ The file is a YAML mapping with one key, `lanes`, a nonempty list of entries. It
 - `workflow` (required, a string) names the file the jobs are in. A bare file name, without `/`, is read from `.github/workflows/`. A path containing `/` is relative to the repository root and must be canonical: no leading `/`, and no empty, `.`, or `..` segments. Either form must name a file directly in `.github/workflows/` or directly in `.github/hugi/`. Unlike `hugi run`, a declaration does not accept a leading `./`. Entries are compared by the path the name resolves to, so `ci.yml` and `.github/workflows/ci.yml` name the same file.
 - `jobs` (required) is a nonempty list of distinct job ids in that file.
 - `matrix` (optional) is a mapping from matrix key to a scalar value: a string, a number, or a boolean.
+- `tools` (optional), `workflow` or `mise`, says where the entry's lanes take their tools from. [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) amends this list to add it.
 
-Each entry points at jobs. It never restates them. The job in its workflow file stays the lane's only definition: Hugi reads its trigger, steps, environment, `if:`, and matrix from there, as `hugi run` does.
+Each entry points at jobs. It never restates them. The job in its workflow file stays the lane's only definition: Hugi reads its trigger, steps, environment, `if:`, and matrix from there, as `hugi run` does. [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) amends this for a lane whose entry sets `tools: mise`, which also takes tools from the repository's mise config.
 
 ### Lanes and their identity
 

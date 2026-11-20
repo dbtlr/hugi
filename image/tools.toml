@@ -4,8 +4,10 @@
 # on each line names the source. Add a toolchain here and rebuild the image.
 
 [settings]
-# Runs happen in throwaway VMs, so a repository's own mise.toml or
-# .tool-versions needs no per-checkout trust step.
+# Serves only a shell opened in the VM by hand, where a repository's own mise.toml or
+# .tool-versions then needs no trust step. Runs do not rely on it: a run sets
+# MISE_IGNORED_CONFIG_PATHS (the default mode) or trusts the workspace explicitly (the
+# "Install tools from mise config" step).
 trusted_config_paths = ["~"]
 
 [tools]

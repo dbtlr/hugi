@@ -3,8 +3,9 @@
  * repositories, and the queue derived from it. The queue holds candidates, each a commit with one
  * lane that still lacks a verdict (ADR-0005), plus what the caller must report.
  */
+import type { DeclaredLane } from '../declaration/read';
 import type { CommitStatusState } from '../github/client';
-import type { LaneRef, PullRequestRef } from '../lane/step-plan';
+import type { PullRequestRef } from '../lane/step-plan';
 
 /** The event a commit is considered for: a push to the default branch, or an open pull request. */
 export type CommitEvent =
@@ -13,9 +14,9 @@ export type CommitEvent =
 
 /** Whether a declared lane runs for the commit's event, decided by its trigger and its job's `if:`. */
 export type LaneDecision =
-  | { readonly kind: 'runs'; readonly lane: LaneRef }
+  | { readonly kind: 'runs'; readonly lane: DeclaredLane }
   /** The workflow's `on:` or the job's `if:` leaves the lane out: no run and no status. */
-  | { readonly kind: 'left-out'; readonly lane: LaneRef };
+  | { readonly kind: 'left-out'; readonly lane: DeclaredLane };
 
 /** The latest state of each status context on the commit the outcome belongs to. */
 export type CommitStatuses = ReadonlyMap<string, CommitStatusState>;
@@ -93,7 +94,8 @@ export type Candidate = {
   /** The commit the lane's status belongs to: the default branch head, or the pull request's head. */
   readonly commit: string;
   readonly event: CommitEvent;
-  readonly lane: LaneRef;
+  /** The declared lane, with where its tools come from (`tools`). */
+  readonly lane: DeclaredLane;
   /** The commit status the lane's verdict is posted as. */
   readonly statusName: string;
 };

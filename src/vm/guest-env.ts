@@ -30,10 +30,31 @@ export function githubEnvironment(event: EventContext): Environment {
     RUNNER_ARCH: 'ARM64',
     RUNNER_TEMP: GUEST_RUNNER_PATHS.temp,
     GITHUB_STEP_SUMMARY: GUEST_COMMAND_FILES.stepSummary,
-    // Lets mise read the checked-out repository's config, and keeps brew quick.
-    MISE_TRUSTED_CONFIG_PATHS: GUEST_RUNNER_PATHS.workspace,
+    // A step that runs `mise` itself does not read the repository's config (ADR-0006). A runner
+    // variable, so a workflow or step can override it.
+    MISE_IGNORED_CONFIG_PATHS: GUEST_RUNNER_PATHS.workspace,
     HOMEBREW_NO_AUTO_UPDATE: '1',
   };
+}
+
+/**
+ * The environment of Hugi's own steps that read the repository's mise config: what "Install
+ * tools" runs with (the runner's variables, then the plan's `env`), with the workspace trusted
+ * instead of ignored.
+ */
+export function miseConfigEnvironment(event: EventContext, planEnv: Environment): Environment {
+  const { MISE_IGNORED_CONFIG_PATHS: _ignored, ...rest } = {
+    ...githubEnvironment(event),
+    ...planEnv,
+  };
+  return { ...rest, MISE_TRUSTED_CONFIG_PATHS: GUEST_RUNNER_PATHS.workspace };
+}
+
+/** The environment without mise's per-tool version variables (`MISE_NODE_VERSION`). */
+export function withoutToolVersions(env: Environment): Environment {
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !/^MISE_.+_VERSION$/.test(name)),
+  );
 }
 
 /** A parsed `GITHUB_ENV` file, or the error GitHub's runner reports for it. */
@@ -138,8 +159,8 @@ export function prependPaths(
 
 /**
  * mise's per-tool version overrides (`MISE_NODE_VERSION=22.23.2`) for the
- * request's tool specs, so the shims on PATH resolve to the pinned versions
- * whatever a config file says. A spec with no `@version` sets nothing.
+ * request's tool specs, so mise resolves the workflow's tools to the pinned
+ * versions whatever a config file says. A spec with no `@version` sets nothing.
  */
 export function toolVersionEnvironment(tools: readonly string[]): Environment {
   const env: Record<string, string> = {};
