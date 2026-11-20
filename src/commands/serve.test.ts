@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { generateKeyPair } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +8,8 @@ import { promisify } from 'node:util';
 import { stringify } from 'yaml';
 
 import { DEFAULTS } from '../config/schema';
+import { GitHubReadError } from '../github/client';
+import type { InstallationTokens } from '../github/app-auth';
 import type { HugiConfig } from '../config/schema';
 import { rejectionOf } from '../runs/testing';
 import { acquireServeLock, ServeLockError } from '../service/lock';
@@ -17,7 +19,13 @@ import type { RunRequest, RunResult } from '../vm';
 import { advanceUntilSettled, FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
 import type { FakeCommand } from '../vm/fake-tart';
 import type { RunDeps } from '../vm/lifecycle';
-import { serveDeps, servePaths, serviceRunInVm, serviceSourceOptions } from './serve';
+import {
+  perRepositoryReader,
+  serveDeps,
+  servePaths,
+  serviceRunInVm,
+  serviceSourceOptions,
+} from './serve';
 import type { ServePaths, ServePorts } from './serve';
 
 const makeKeyPair = promisify(generateKeyPair);
@@ -354,7 +362,11 @@ function laneGitHub(pull: boolean): ServePorts['fetch'] {
  * Run the coordinator as `hugi serve` binds it until its first candidate reaches the VM runner,
  * then stop it. Returns what the candidate's run started after the poll, and the VM runner's deps.
  */
-async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
+async function runFirstCandidate(
+  pull: boolean,
+  withLanes: readonly string[],
+  github: ServePorts['fetch'] = laneGitHub(pull),
+) {
   const stop = new AbortController();
   const seen: { request: RunRequest; deps: RunDeps }[] = [];
   const runInVm = async (request: RunRequest, deps: RunDeps): Promise<RunResult> => {
@@ -365,7 +377,7 @@ async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
   const git = fakeGit(withLanes);
   const { argvs, clock, ports, started } = portsOf(
     (command, args) => (command.endsWith('git') ? git(args) : { output: '[]' }),
-    { fetch: laneGitHub(pull), runInVm, signal: stop.signal },
+    { fetch: github, runInVm, signal: stop.signal },
   );
   const deps = serveDeps(ports);
   const admitting = { ...config, allowlist: ['dbtlr'] };
@@ -386,6 +398,7 @@ async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
   await advanceUntilSettled(clock, ended);
   return {
     first,
+    paths: ports.paths,
     // What the run started, the poll's calls left out: each program, its PATH, and its arguments.
     runArgs: argvs.slice(polled).map((args) => gitCommandOf(args)),
     runStarted: started.slice(polled),
@@ -413,6 +426,80 @@ describe("a candidate's run, through the coordinator", () => {
       expect(run.started.slice(before)).toEqual([{ command: join(bin, 'tart'), path: bin }]);
     },
   );
+});
+
+describe('the coordinator after a run', () => {
+  test("a service run's record lands in the runs directory", async () => {
+    const run = await runFirstCandidate(false, [BRANCH_HEAD]);
+    const runs = await readdir(run.paths.runsDir);
+    expect(runs).toHaveLength(1);
+    expect(await readdir(join(run.paths.runsDir, runs[0]!))).toContain('run.json');
+  });
+
+  test('a 401 on a status post drops that repository\'s token, so the next post mints another', async () => {
+    let mints = 0;
+    const rejecting: ServePorts['fetch'] = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/access_tokens')) {
+        mints += 1;
+      }
+      return init?.method === 'POST' && path.includes('/statuses/')
+        ? new Response('', { status: 401 })
+        : laneGitHub(false)(url, init);
+    };
+    await runFirstCandidate(false, [BRANCH_HEAD], rejecting);
+    // One token for the poll and the pending post, and a fresh one for the final post after its 401.
+    expect(mints).toBe(2);
+  });
+});
+
+describe('the reader of each repository', () => {
+  /** Tokens named for their repository, and the repositories whose token was dropped. */
+  function tokensOf() {
+    const dropped: string[] = [];
+    const tokens: InstallationTokens = Object.assign(
+      (repository: string) => async () => `token-for-${repository}`,
+      { invalidate: (repository: string) => void dropped.push(repository) },
+    );
+    return { dropped, tokens };
+  }
+
+  /** A fetch answering every read with `status` (an empty pull request list when 200), recording each bearer by path. */
+  function answering(status: number) {
+    const bearers: Record<string, string | null> = {};
+    const fetch: ServePorts['fetch'] = async (url, init) => {
+      bearers[new URL(url).pathname] = new Headers(init?.headers).get('authorization');
+      return status === 200 ? Response.json([]) : new Response('{}', { status });
+    };
+    return { bearers, fetch };
+  }
+
+  test('reads each repository with its own repository’s token', async () => {
+    const { bearers, fetch } = answering(200);
+    const reader = perRepositoryReader(fetch, tokensOf().tokens);
+    await reader.openPullRequests('dbtlr/first');
+    await reader.openPullRequests('dbtlr/second');
+    expect(bearers).toEqual({
+      '/repos/dbtlr/first/pulls': 'Bearer token-for-dbtlr/first',
+      '/repos/dbtlr/second/pulls': 'Bearer token-for-dbtlr/second',
+    });
+  });
+
+  test('drops the repository’s token when GitHub answers a read 401', async () => {
+    const { dropped, tokens } = tokensOf();
+    const reader = perRepositoryReader(answering(401).fetch, tokens);
+    expect(await rejectionOf(reader.openPullRequests('dbtlr/first'))).toBeInstanceOf(
+      GitHubReadError,
+    );
+    expect(dropped).toEqual(['dbtlr/first']);
+  });
+
+  test('keeps the token when a read fails for another reason', async () => {
+    const { dropped, tokens } = tokensOf();
+    const reader = perRepositoryReader(answering(500).fetch, tokens);
+    await rejectionOf(reader.openPullRequests('dbtlr/first'));
+    expect(dropped).toEqual([]);
+  });
 });
 
 const REQUEST: RunRequest = {

@@ -12,7 +12,7 @@ import { loadConfig } from '../config/load';
 import type { HugiConfig } from '../config/schema';
 import { checkAppKey, createInstallationTokens, requireGitHubApp } from '../github/app-auth';
 import type { InstallationTokens } from '../github/app-auth';
-import { createGitHubReader } from '../github/client';
+import { createGitHubReader, GitHubReadError } from '../github/client';
 import type { GitHubReader } from '../github/client';
 import type { Fetch, PullRequestFacts } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
@@ -158,8 +158,12 @@ export function serviceRunInVm(
     });
 }
 
-/** A `GitHubReader` that reads each repository with that repository's installation token. */
-function perRepositoryReader(fetch: Fetch, tokens: InstallationTokens): GitHubReader {
+/**
+ * A `GitHubReader` that reads each repository with that repository's installation token. A read
+ * GitHub answers 401 drops that repository's cached token, so the next read mints a fresh one
+ * instead of failing until the cached token's refresh time (after an App reinstall, up to an hour).
+ */
+export function perRepositoryReader(fetch: Fetch, tokens: InstallationTokens): GitHubReader {
   const readers = new Map<string, GitHubReader>();
   const readerOf = (repository: string): GitHubReader => {
     let reader = readers.get(repository);
@@ -169,11 +173,25 @@ function perRepositoryReader(fetch: Fetch, tokens: InstallationTokens): GitHubRe
     }
     return reader;
   };
+  const read = async <Result>(
+    repository: string,
+    from: (reader: GitHubReader) => Promise<Result>,
+  ): Promise<Result> => {
+    try {
+      return await from(readerOf(repository));
+    } catch (error) {
+      if (error instanceof GitHubReadError && error.status === 401) {
+        tokens.invalidate(repository);
+      }
+      throw error;
+    }
+  };
   return {
-    commitStatuses: (repository, sha) => readerOf(repository).commitStatuses(repository, sha),
-    defaultBranchHead: (repository) => readerOf(repository).defaultBranchHead(repository),
-    openPullRequests: (repository) => readerOf(repository).openPullRequests(repository),
-    pullRequest: (repository, number) => readerOf(repository).pullRequest(repository, number),
+    commitStatuses: (repository, sha) => read(repository, (r) => r.commitStatuses(repository, sha)),
+    defaultBranchHead: (repository) => read(repository, (r) => r.defaultBranchHead(repository)),
+    openPullRequests: (repository) => read(repository, (r) => r.openPullRequests(repository)),
+    pullRequest: (repository, number) =>
+      read(repository, (r) => r.pullRequest(repository, number)),
   };
 }
 
