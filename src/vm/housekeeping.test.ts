@@ -19,6 +19,7 @@ const chunkedTart: Tart = {
     }
     return { exitCode: 0 };
   },
+  list: unused,
   run: unused,
   setResources: unused,
   stop: unused,

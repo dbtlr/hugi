@@ -10,7 +10,7 @@ import { advanceUntilSettled, FakeClock, FakeSpawn, FakeTart, settle } from './f
 import type { FakeGuest } from './fake-tart';
 import { stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER } from './housekeeping';
-import { runInVm, VM_NAME_PREFIX } from './lifecycle';
+import { runInVm, SERVICE_VM_PREFIX, VM_NAME_PREFIX } from './lifecycle';
 import type { RunDeps } from './lifecycle';
 import type { RunRequest } from './run-request';
 import { createTartCli } from './tart-cli';
@@ -90,6 +90,35 @@ function harness(guest: FakeGuest = { steps: {} }): Harness {
 }
 
 const vmName = `${VM_NAME_PREFIX}test1`;
+
+test('the VM name uses hugi-run- unless the deps give another prefix', async () => {
+  const h = harness();
+  await run(h, requestOf([runStep(1)]));
+  expect(h.tart.events).toContain('clone hugi-golden hugi-run-test1');
+});
+
+test('a service prefix names the VM and its delete', async () => {
+  const h = harness();
+  await advanceUntilSettled(
+    h.clock,
+    runInVm(requestOf([runStep(1)]), { ...h.deps, vmPrefix: SERVICE_VM_PREFIX }),
+  );
+  expect(h.tart.events).toContain('clone hugi-golden hugi-svc-test1');
+  expect(h.tart.events).toContain('delete hugi-svc-test1');
+});
+
+test.each(['ci-', 'hugi-', 'hugi-svc', 'hugi-a-b-'])(
+  'the prefix %p makes runInVm throw before any tart call',
+  async (vmPrefix) => {
+    const h = harness();
+    const error = await runInVm(requestOf([runStep(1)]), { ...h.deps, vmPrefix }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(String(error)).toContain('not allowed');
+    expect(h.tart.events).toEqual([]);
+  },
+);
 const run = (h: Harness, request: RunRequest) =>
   advanceUntilSettled(h.clock, runInVm(request, h.deps));
 const deleted = (h: Harness) => h.tart.events.includes(`delete ${vmName}`);
