@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { AtomicWriteFiles } from '../atomic-write';
 import {
   isIsoTimestamp,
   logNameOf,
@@ -11,7 +12,6 @@ import {
   RunRecordError,
   writeRunRecord,
 } from './record';
-import type { RecordFiles } from './record';
 import { rejectionOf, sampleRecord, sampleRunningRecord } from './testing';
 
 let dir: string;
@@ -81,7 +81,7 @@ describe('the run record', () => {
   test('never writes run.json itself: the text goes to a temporary file that is renamed over it', async () => {
     const calls: string[] = [];
     const final = join(dir, RECORD_FILE);
-    const files: RecordFiles = {
+    const files: AtomicWriteFiles = {
       rename: async (from, to) => {
         calls.push(
           `rename ${from === final ? 'run.json' : 'temporary'} -> ${to === final ? 'run.json' : to}`,
@@ -101,7 +101,7 @@ describe('the run record', () => {
   test('a reader never sees a partial record while a write is in progress', async () => {
     await writeRunRecord(dir, sampleRunningRecord());
     const seen: string[] = [];
-    const files: RecordFiles = {
+    const files: AtomicWriteFiles = {
       rename: async (from, to) => {
         const { rename } = await import('node:fs/promises');
         await rename(from, to);

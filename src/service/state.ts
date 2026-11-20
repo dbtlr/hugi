@@ -4,13 +4,14 @@
  * it, so a reader treats it as stale when no service process is running. A reader never trusts the
  * file: every field is validated.
  */
-import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { writeFileAtomically } from '../atomic-write';
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { isIsoTimestamp } from '../runs/record';
-import { errnoCode } from './errno';
+import { isMapping } from '../yaml/strict';
 
 /** The state file's name inside the state directory. */
 export const SERVICE_STATE_FILE = 'service.json';
@@ -49,23 +50,13 @@ export function isServiceStateError(
 }
 
 /**
- * Write the state atomically: a temporary file in the same directory, then a rename, so a reader
- * sees the old state or the whole new one. The directory is created private to the user.
+ * Write the state atomically (`writeFileAtomically`), so a reader sees the old state or the whole
+ * new one. The directory is created private to the user.
  */
 export async function writeServiceState(dir: string, state: ServiceState): Promise<void> {
   await mkdir(dir, { mode: 0o700, recursive: true });
-  const temporary = join(dir, `.${SERVICE_STATE_FILE}.${randomBytes(4).toString('hex')}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, join(dir, SERVICE_STATE_FILE));
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+  await writeFileAtomically(join(dir, SERVICE_STATE_FILE), `${JSON.stringify(state, null, 2)}\n`);
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -73,7 +64,7 @@ const isCount = (value: unknown): value is number =>
 const isText = (value: unknown): value is string => typeof value === 'string' && value !== '';
 
 function isStart(value: unknown): value is ServiceStart {
-  if (!isObject(value)) {
+  if (!isMapping(value)) {
     return false;
   }
   if (value.kind === 'running') {
@@ -84,7 +75,7 @@ function isStart(value: unknown): value is ServiceStart {
 
 function isRun(value: unknown): value is ServiceRun {
   return (
-    isObject(value) &&
+    isMapping(value) &&
     isText(value.statusName) &&
     isText(value.repository) &&
     isText(value.commit) &&
@@ -94,16 +85,16 @@ function isRun(value: unknown): value is ServiceRun {
 }
 
 function isLastPoll(value: unknown): boolean {
-  return isObject(value) && isIsoTimestamp(value.endedAt) && isCount(value.failures);
+  return isMapping(value) && isIsoTimestamp(value.endedAt) && isCount(value.failures);
 }
 
 function isQueue(value: unknown): boolean {
-  return isObject(value) && isCount(value.candidates) && isCount(value.waiting);
+  return isMapping(value) && isCount(value.candidates) && isCount(value.waiting);
 }
 
 function isState(value: unknown): value is ServiceState {
   return (
-    isObject(value) &&
+    isMapping(value) &&
     typeof value.pid === 'number' &&
     Number.isSafeInteger(value.pid) &&
     value.pid > 0 &&

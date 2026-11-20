@@ -13,6 +13,7 @@ import type { Host } from '@loomcli/core';
 
 import { ConfigError, isRepositoryName } from '../config/schema';
 import type { GitHubAppConfig, HugiConfig } from '../config/schema';
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { hasAccessControlList, judgePrivacy } from '../source/private-path';
 import { isMapping } from '../yaml/strict';
@@ -131,7 +132,7 @@ async function readPrivateKey(
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (error) {
-    if (isMapping(error) && error.code === 'ENOENT') {
+    if (errnoCode(error) === 'ENOENT') {
       throw new Error(
         `The GitHub App private key ${path} does not exist; set github_app.private_key_path to the key file.`,
         { cause: error },

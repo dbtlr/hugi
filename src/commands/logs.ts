@@ -10,12 +10,12 @@ import type { View } from '@loomcli/core';
 import { json } from '@loomcli/plugins/format';
 import { helpCommand } from '@loomcli/plugins/help/extension';
 
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { failingStep } from '../runs/describe';
 import { RunRecordError } from '../runs/record';
 import type { FinishedRecord, RecordedStep, RunRecord } from '../runs/record';
 import { findRun, RunLookupError } from '../runs/store';
-import { errnoCode } from '../service/errno';
 import { resolveRunsDir } from '../source/locations';
 import { isMapping } from '../yaml/strict';
 

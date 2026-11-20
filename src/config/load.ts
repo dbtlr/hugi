@@ -1,6 +1,7 @@
 /** Find, read, and validate Hugi's configuration file. */
 import { readFile } from 'node:fs/promises';
 
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { parseStrictYaml, YamlRefusalError } from '../yaml/strict';
 import { ConfigError, validateConfig } from './schema';
@@ -23,7 +24,7 @@ async function readConfigText(path: string, readText: ReadText, hint: string): P
   try {
     return await readText(path);
   } catch (error) {
-    const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT';
+    const missing = errnoCode(error) === 'ENOENT';
     throw new ConfigError(
       withHint(
         missing

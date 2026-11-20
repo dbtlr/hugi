@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { FatalError } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
 
+import { errnoCode } from '../errno';
 import { isMapping } from '../yaml/strict';
-import { errnoCode } from './errno';
 
 /** The lock's file name inside the state directory. */
 export const SERVE_LOCK_FILE = 'serve.lock';
