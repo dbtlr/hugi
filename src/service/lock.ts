@@ -4,7 +4,7 @@
  * since, its pid is not alive, or the live pid is not a `hugi serve`. Every process fact comes in
  * through `ServeLockDeps`, so tests need no real process.
  */
-import { link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
@@ -34,7 +34,7 @@ export type ServeLockDeps = {
   readonly commandOf: (pid: number) => Promise<string | undefined>;
 };
 
-/** The file operation the take-over uses; the seam a test replaces to stage a rival. */
+/** The file operations a starter's own steps use; the seam a test replaces to stage a rival between them. */
 export type LockFiles = {
   /** Writes this starter's lock to its temporary file, before the file is linked as the lock. */
   readonly writeFile: (
@@ -42,7 +42,10 @@ export type LockFiles = {
     text: string,
     options: { readonly mode: number },
   ) => Promise<void>;
-  readonly rename: (from: string, to: string) => Promise<void>;
+  /** Links the temporary file as the lock; fails with `EEXIST` when a lock exists. */
+  readonly link: (from: string, to: string) => Promise<void>;
+  /** Creates the take-over mutex; fails with `EEXIST` when it exists. */
+  readonly mkdir: (path: string, options: { readonly mode: number }) => Promise<unknown>;
 };
 
 type LockContents = { readonly pid: number; readonly bootTime: string };
@@ -118,12 +121,25 @@ function refusal(pid: number | undefined, dir: string): ServeLockError {
   );
 }
 
-const REAL_FILES: LockFiles = { rename, writeFile };
+/** The take-over mutex beside the lock: a directory, since `mkdir` creates one atomically. */
+const takeOverMutex = (path: string) => `${path}.takeover`;
 
-/** Link `from` as `to`, which must not exist: true when it did not, false when it did (`EEXIST`). */
-async function linkedAs(from: string, to: string): Promise<boolean> {
+/** How old a take-over mutex may be before it is judged left by a starter that died in a take-over. */
+export const TAKE_OVER_STALE_MS = 60_000;
+
+function takeOverRefusal(mutex: string): ServeLockError {
+  return new ServeLockError(
+    `Another hugi serve is taking over the lock now, so this one will not start. ` +
+      `If none is starting, remove ${mutex}.`,
+  );
+}
+
+const REAL_FILES: LockFiles = { link, mkdir, writeFile };
+
+/** Run `create`, which fails with `EEXIST` when its target exists: true when it did not exist. */
+async function created(create: () => Promise<unknown>): Promise<boolean> {
   try {
-    await link(from, to);
+    await create();
     return true;
   } catch (error) {
     if (errnoCode(error) === 'EEXIST') {
@@ -133,13 +149,79 @@ async function linkedAs(from: string, to: string): Promise<boolean> {
   }
 }
 
+/** Milliseconds since `path` was last modified, or `undefined` when it is gone. */
+async function ageOf(path: string): Promise<number | undefined> {
+  try {
+    return Date.now() - (await stat(path)).mtimeMs;
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Create the take-over mutex, or throw when another starter holds it. A mutex older than
+ * `TAKE_OVER_STALE_MS` was left by a starter that died while taking over; it is removed once, and
+ * a starter that still cannot create the mutex then is refused.
+ */
+async function enterTakeOver(mutex: string, files: LockFiles): Promise<void> {
+  const make = () => files.mkdir(mutex, { mode: 0o700 });
+  if (await created(make)) {
+    return;
+  }
+  const age = await ageOf(mutex);
+  if (age !== undefined && age <= TAKE_OVER_STALE_MS) {
+    throw takeOverRefusal(mutex);
+  }
+  await rm(mutex, { force: true, recursive: true });
+  if (!(await created(make))) {
+    throw takeOverRefusal(mutex);
+  }
+}
+
+/** Refuse when the lock at `path` is held by a live `hugi serve` of this boot. */
+async function refuseIfHeld(path: string, dir: string, boot: string, deps: ServeLockDeps) {
+  const held = await readLock(path);
+  if (held !== undefined && (await isHeld(held, boot, deps))) {
+    throw refusal(held.pid, dir);
+  }
+}
+
+/**
+ * Take over a lock judged stale. Take-overs are serialized by the mutex; under it the lock is read
+ * and judged again, since another starter may have taken it over since, then removed and replaced
+ * by linking this starter's file. A link that still finds a lock lost to a starter that created
+ * one meanwhile, and is refused, naming it.
+ */
+async function takeOver(
+  path: string,
+  dir: string,
+  temporary: string,
+  boot: string,
+  deps: ServeLockDeps,
+  files: LockFiles,
+): Promise<void> {
+  const mutex = takeOverMutex(path);
+  await enterTakeOver(mutex, files);
+  try {
+    await refuseIfHeld(path, dir, boot, deps);
+    await rm(path, { force: true });
+    if (!(await created(() => files.link(temporary, path)))) {
+      throw refusal((await readLock(path))?.pid, dir);
+    }
+  } finally {
+    await rm(mutex, { force: true, recursive: true });
+  }
+}
+
 /**
  * Take the lock, or throw a `ServeLockError` naming the holder. The lock's text is written to a
  * temporary file first and then linked as the lock, which is atomic and fails when the lock
- * exists, so no starter ever reads a lock that is half written. A stale one is replaced by
- * renaming the temporary file over it, then read back, so two starters taking over at once
- * cannot both keep it. Returns `release`, which deletes the lock only while it still holds this
- * pid.
+ * exists, so no starter ever reads a lock that is half written. A live holder is refused at once;
+ * a stale lock is taken over under the take-over mutex (`takeOver`), so two starters can never
+ * both hold it. Returns `release`, which deletes the lock only while it still holds this pid.
  */
 export async function acquireServeLock(
   dir: string,
@@ -149,32 +231,23 @@ export async function acquireServeLock(
   await mkdir(dir, { mode: 0o700, recursive: true });
   const path = join(dir, SERVE_LOCK_FILE);
   const boot = await deps.bootTime();
-  const text = `${JSON.stringify({ bootTime: boot, pid: deps.pid })}\n`;
-  const release = async (): Promise<void> => {
+  const temporary = temporaryPathFor(path);
+  try {
+    await files.writeFile(temporary, `${JSON.stringify({ bootTime: boot, pid: deps.pid })}\n`, {
+      mode: 0o600,
+    });
+    if (!(await created(() => files.link(temporary, path)))) {
+      await refuseIfHeld(path, dir, boot, deps);
+      await takeOver(path, dir, temporary, boot, deps, files);
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+  return async () => {
     if ((await readLock(path))?.pid === deps.pid) {
       await rm(path, { force: true });
     }
   };
-
-  const temporary = temporaryPathFor(path);
-  try {
-    await files.writeFile(temporary, text, { mode: 0o600 });
-    if (await linkedAs(temporary, path)) {
-      return release;
-    }
-    const held = await readLock(path);
-    if (held !== undefined && (await isHeld(held, boot, deps))) {
-      throw refusal(held.pid, dir);
-    }
-    await files.rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-  const winner = await readLock(path);
-  if (winner?.pid !== deps.pid) {
-    throw refusal(winner?.pid, dir);
-  }
-  return release;
 }
 
 type Spawn = Host['spawn'];
@@ -215,9 +288,10 @@ function processIsAlive(pid: number): boolean {
 /**
  * The real deps: `kill(pid, 0)` for liveness, `sysctl -n kern.boottime` on darwin for the boot
  * time (a fixed word elsewhere, where Hugi's VM host never runs), and `ps` for a command line.
- * Programs start through the run's `host.spawn`, by absolute path: a launchd agent's bare `PATH`
- * does not hold `/usr/sbin`, and a boot time one starter could read and another could not would
- * otherwise make a held lock look stale.
+ * Programs start through the run's `host.spawn`, by absolute path. launchd's default `PATH`,
+ * `/usr/bin:/bin:/usr/sbin:/sbin`, holds both, but a caller's `PATH`, or a configured `path`, may
+ * not; and a boot time one starter could read and another could not would make a held lock look
+ * stale.
  */
 export function createServeLockDeps(
   spawn: Spawn,
