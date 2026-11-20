@@ -45,6 +45,21 @@ test('the result is frozen', () => {
   expect(Object.isFrozen(config.vm)).toBe(true);
 });
 
+test('a github_app is read, its key path as written', () => {
+  const config = validateConfig({
+    ...MINIMAL,
+    github_app: { app_id: 12345, private_key_path: '~/.config/hugi/app.pem' },
+  });
+  expect(config.githubApp).toEqual({ appId: 12345, privateKeyPath: '~/.config/hugi/app.pem' });
+  expect(Object.isFrozen(config.githubApp)).toBe(true);
+});
+
+test('without a github_app the configuration has none', () => {
+  expect('githubApp' in validateConfig(MINIMAL)).toBe(false);
+});
+
+const GITHUB_APP = { app_id: 1, private_key_path: '/keys/app.pem' };
+
 const refusals: readonly [string, unknown, string][] = [
   ['a null document', null, 'configuration: must be a mapping'],
   ['a list document', [], 'configuration: must be a mapping'],
@@ -110,6 +125,42 @@ const refusals: readonly [string, unknown, string][] = [
     'a poll_interval over 3600',
     { ...MINIMAL, poll_interval: 3601 },
     'poll_interval: must be between 15 and 3600',
+  ],
+  ['a github_app that is a list', { ...MINIMAL, github_app: [] }, 'github_app: must be a mapping'],
+  [
+    'an unknown github_app key',
+    { ...MINIMAL, github_app: { ...GITHUB_APP, secret: 'x' } },
+    'github_app.secret: is not a known key',
+  ],
+  [
+    'a github_app without an app_id',
+    { ...MINIMAL, github_app: { private_key_path: '/k.pem' } },
+    'github_app.app_id: is required',
+  ],
+  [
+    'a string app_id',
+    { ...MINIMAL, github_app: { ...GITHUB_APP, app_id: '12' } },
+    'github_app.app_id: must be an integer',
+  ],
+  [
+    'a zero app_id',
+    { ...MINIMAL, github_app: { ...GITHUB_APP, app_id: 0 } },
+    'github_app.app_id: must be between',
+  ],
+  [
+    'a github_app without a key path',
+    { ...MINIMAL, github_app: { app_id: 1 } },
+    'github_app.private_key_path: is required',
+  ],
+  [
+    'a relative key path',
+    { ...MINIMAL, github_app: { ...GITHUB_APP, private_key_path: 'app.pem' } },
+    'github_app.private_key_path: must be a file path that is absolute or starts with ~/',
+  ],
+  [
+    'a key path that is a directory',
+    { ...MINIMAL, github_app: { ...GITHUB_APP, private_key_path: '/keys/' } },
+    'github_app.private_key_path',
   ],
   ['a vm that is not a mapping', { ...MINIMAL, vm: 4 }, 'vm: must be a mapping'],
   ['an unknown vm key', { ...MINIMAL, vm: { disk: 50 } }, 'vm.disk: is not a known key'],

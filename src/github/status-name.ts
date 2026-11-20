@@ -24,14 +24,39 @@ export function laneStatusName(lane: LaneRef): string {
 }
 
 /**
- * The key two status names are compared by. GitHub treats contexts that differ only in case as
- * one, so a verdict posted as `HUGI / BUILD` settles `hugi / build`, and two lanes may not have
- * names that differ only in case. The name is lower-cased, upper-cased, then lower-cased again so
- * that every case variant of a letter folds to one key: lower-casing alone keeps `σ` and `ς` (the
- * lower case of a word-final `Σ`) apart and keeps `ß` apart from `SS`, and upper-casing first
- * keeps the capital `ẞ` apart from `ß`. The fold errs toward merging: the dotless `ı` folds with
- * `i`, so two such lanes are refused rather than posted under one name.
+ * The key two status names are compared by. On 2026-11-19 GitHub was observed to merge contexts
+ * the way MySQL's `utf8mb4_general_ci` collation would: case is ignored (`İstanbul` and
+ * `istanbul`, `Ǆ` and `ǆ`), accents are ignored (`café` and `cafe`), `ß` equals `s` (`straße` and
+ * `strase`), and trailing spaces are ignored. GitHub kept `straße` and `STRASSE`, `ﬁx` and `fix`,
+ * `ı` and `i`, and fullwidth `Ａ` and `a` apart. It also refuses with 422 any character outside
+ * the Basic Multilingual Plane, an emoji for one, in a status name. The key should not be narrower
+ * than GitHub's comparison, because two names GitHub merges would then post as one context. It is
+ * used to refuse lanes whose names collide and by the poller to settle a lane from the statuses on
+ * a commit (`src/queue/derive.ts`), so a broader key refuses more lanes and can also let a status
+ * GitHub keeps apart (`ı` against `i`) settle a lane; that is accepted. So the name is decomposed
+ * (NFD) with its combining marks dropped, `ß` and `ẞ` become `s`, trailing spaces are trimmed, and
+ * the result is lower-cased, upper-cased, then
+ * lower-cased again so that every case variant of a letter folds to one key: lower-casing alone
+ * keeps `σ` and `ς` apart. The fold errs toward merging where GitHub does not: `ﬁ` folds with `fi`
+ * and the dotless `ı` with `i`.
  */
 export function statusNameKey(name: string): string {
-  return name.toLowerCase().toUpperCase().toLowerCase();
+  const plain = name
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[ßẞ]/gu, 's')
+    .replace(/ +$/u, '');
+  return plain.toLowerCase().toUpperCase().toLowerCase();
+}
+
+const NON_BMP = /[\u{10000}-\u{10FFFF}]/u;
+
+/** Whether `text` has a character outside the Basic Multilingual Plane, which GitHub refuses in a status. */
+export function hasNonBmp(text: string): boolean {
+  return NON_BMP.test(text);
+}
+
+/** `text` with each character outside the BMP replaced by U+FFFD. */
+export function withoutNonBmp(text: string): string {
+  return text.replace(/[\u{10000}-\u{10FFFF}]/gu, '\uFFFD');
 }

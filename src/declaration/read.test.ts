@@ -526,7 +526,7 @@ describe('status names', () => {
       },
     );
     expect(cause).toMatch(
-      /two lanes have the status names "hugi \/ build" and "hugi \/ BUILD", which GitHub treats as one: job "build" with row \{\} in \.github\/workflows\/ci\.yml and job "BUILD"/,
+      /two lanes have the status names "hugi \/ build" and "hugi \/ BUILD", which Hugi compares as one status name: job "build" with row \{\} in \.github\/workflows\/ci\.yml and job "BUILD"/,
     );
   });
 
@@ -539,7 +539,7 @@ describe('status names', () => {
       },
     );
     expect(cause).toMatch(
-      /two lanes have the status names "hugi \/ BUILD" and "hugi \/ build", which GitHub treats as one/,
+      /two lanes have the status names "hugi \/ BUILD" and "hugi \/ build", which Hugi compares as one status name/,
     );
   });
 
@@ -548,8 +548,25 @@ describe('status names', () => {
       [CI]: workflow({ build: { strategy: { matrix: { v: ['aσ', 'aΣ'] } } } }),
     });
     expect(cause).toMatch(
-      /two lanes have the status names "hugi \/ build \(aσ\)" and "hugi \/ build \(aΣ\)", which GitHub treats as one/,
+      /two lanes have the status names "hugi \/ build \(aσ\)" and "hugi \/ build \(aΣ\)", which Hugi compares as one status name/,
     );
+  });
+
+  test('rows whose values differ only by an accent refuse the declaration', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({ build: { strategy: { matrix: { v: ['café', 'cafe'] } } } }),
+    });
+    expect(cause).toMatch(
+      /two lanes have the status names "hugi \/ build \(café\)" and "hugi \/ build \(cafe\)", which Hugi compares as one status name/,
+    );
+  });
+
+  test('a status name with a character outside the BMP refuses the declaration, naming the lane', async () => {
+    const cause = await refusalOf('lanes:\n  - workflow: ci.yml\n    jobs: [build]\n', {
+      [CI]: workflow({ build: { strategy: { matrix: { v: ['ship 🚀'] } } } }),
+    });
+    expect(cause).toContain('job "build" with row {"v":"ship 🚀"}');
+    expect(cause).toContain('GitHub accepts no 4-byte characters in a status name');
   });
 
   test('lanes whose status names differ are accepted', async () => {

@@ -22,6 +22,15 @@ export type HugiConfig = {
   readonly allowlist: readonly string[];
   readonly pollIntervalSeconds: number;
   readonly vm: { readonly cpus: number; readonly memoryGb: number };
+  /** The GitHub App that posts statuses; absent when none is configured (`hugi run` needs none). */
+  readonly githubApp?: GitHubAppConfig;
+};
+
+/** Which GitHub App Hugi authenticates as, and where its private key lives on the host. */
+export type GitHubAppConfig = {
+  readonly appId: number;
+  /** Absolute, or starting with `~/`, which the host's home directory replaces. */
+  readonly privateKeyPath: string;
 };
 
 /** The VM size defaults are the runner's own (`VM_RESOURCES`, ADR-0003), so they are written once. */
@@ -148,6 +157,33 @@ function readVm(value: unknown): HugiConfig['vm'] {
   };
 }
 
+/** A key path the host can resolve without a working directory: absolute, or home-relative. */
+function isHostPath(text: string): boolean {
+  return text.startsWith('/') || text.startsWith('~/');
+}
+
+function readGitHubApp(value: unknown): GitHubAppConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const app = mappingOf(value, 'github_app', ['app_id', 'private_key_path']);
+  if (app.app_id === undefined) {
+    refuse('github_app.app_id', "is required: the number on the GitHub App's settings page");
+  }
+  const appId = integerOf(app.app_id, 'github_app.app_id', [1, Number.MAX_SAFE_INTEGER], 0);
+  const path = app.private_key_path;
+  if (path === undefined) {
+    refuse('github_app.private_key_path', 'is required: the file holding the App private key');
+  }
+  if (typeof path !== 'string' || !isHostPath(path) || path.endsWith('/')) {
+    refuse(
+      'github_app.private_key_path',
+      `must be a file path that is absolute or starts with ~/, not ${describe(path)}`,
+    );
+  }
+  return { appId, privateKeyPath: path };
+}
+
 /** Validate the parsed configuration text; throws a `ConfigError` for the first problem found. */
 export function validateConfig(parsed: unknown): HugiConfig {
   const top = mappingOf(parsed, 'configuration', [
@@ -155,6 +191,7 @@ export function validateConfig(parsed: unknown): HugiConfig {
     'allowlist',
     'poll_interval',
     'vm',
+    'github_app',
   ]);
   if (top.repositories === undefined) {
     refuse('repositories', 'is required: list the repositories to enrol as owner/name');
@@ -172,7 +209,9 @@ export function validateConfig(parsed: unknown): HugiConfig {
     refuse('allowlist', 'is required: list GitHub logins, or write [] to allow no pull requests');
   }
   const allowlist = distinctStrings(top.allowlist, 'allowlist', 'a GitHub login', isLogin);
+  const githubApp = readGitHubApp(top.github_app);
   return Object.freeze({
+    ...(githubApp === undefined ? {} : { githubApp: Object.freeze(githubApp) }),
     allowlist: Object.freeze(allowlist),
     pollIntervalSeconds: integerOf(
       top.poll_interval,

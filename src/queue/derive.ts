@@ -21,9 +21,9 @@ import type {
 const VERDICTS: ReadonlySet<CommitStatusState> = new Set(['success', 'failure', 'error']);
 
 /**
- * The status names on a commit that carry a verdict, by `statusNameKey`, so a verdict posted in
- * any case settles the name GitHub treats as the same context. A name is settled when any of its
- * entries carries a verdict, whatever order GitHub lists its case variants in.
+ * The status names on a commit that carry a verdict, by `statusNameKey`, so a verdict posted under
+ * a name that differs only in case or accents settles the lane. A name is settled when any of its
+ * entries carries a verdict, whatever order GitHub lists those variants in.
  */
 function verdictsOf(statuses: CommitStatuses): ReadonlySet<string> {
   const settled = new Set<string>();

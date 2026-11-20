@@ -38,7 +38,13 @@ export function pullRequestEvent(
 /** The one network call this module makes; production passes the runtime's `fetch`. */
 export type Fetch = (
   url: string,
-  init: { readonly headers: Readonly<Record<string, string>>; readonly signal: AbortSignal },
+  init: {
+    readonly headers: Readonly<Record<string, string>>;
+    readonly signal: AbortSignal;
+    /** GET when absent. */
+    readonly method?: string;
+    readonly body?: string;
+  },
 ) => Promise<Response>;
 
 /** How long a read waits for GitHub before it gives up, so a hung API cannot hold a run. */
