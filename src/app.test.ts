@@ -8,6 +8,10 @@ import { mockProcess } from '@loomcli/testing';
 
 import pkg from '../package.json' with { type: 'json' };
 import { createApp, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
+import { acquireServeLock } from './service/lock';
+import { createProbe } from './service/probe';
+import { writeServiceState } from './service/state';
+import { resolveServeLockPath, resolveServiceStateDir } from './source/locations';
 import { FakeClock, FakeSpawn } from './vm/fake-tart';
 import { DEFAULT_TUNING } from './vm/lifecycle';
 import {
@@ -96,3 +100,67 @@ describe('the leftover VMs row of hugi service status', () => {
     expect(started.map((each) => each.command)).toEqual([join(home, 'inherited', 'tart')]);
   });
 });
+
+const noSpawn: Host['spawn'] = () => {
+  throw new Error('status starts no program for the state rows');
+};
+
+describe.skipIf(process.platform !== 'darwin')(
+  'whether hugi service status reads the state as live',
+  () => {
+    let home: string;
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
+      await writeServiceState(resolveServiceStateDir({}, home), {
+        pid: 42,
+        start: { kind: 'running' },
+        startedAt: '2026-11-19T10:00:00.000Z',
+      });
+    });
+    afterEach(async () => {
+      await rm(home, { force: true, recursive: true });
+    });
+
+    /** The `start` row, read as `hugi service status` reads it on this darwin host. */
+    async function startRow(): Promise<string | undefined> {
+      const deps = statusProbeDeps({ env: {}, home, platform: 'darwin', spawn: noSpawn });
+      const rows = await createProbe({ ...deps, listVms: async () => [] })({
+        state: { installed: false, label: 'x', notes: [], running: false, state: '', unit: '' },
+      });
+      return rows.find((row) => row.name === 'start')?.value;
+    }
+
+    test('live while the hugi serve that wrote it holds the lock', async () => {
+      const release = await acquireServeLock(resolveServeLockPath(home), {
+        pid: 42,
+        platform: 'darwin',
+      });
+      try {
+        expect(await startRow()).not.toContain('stale');
+      } finally {
+        await release();
+      }
+    });
+
+    test('stale once the lock is free, though the lock file still names its pid', async () => {
+      const release = await acquireServeLock(resolveServeLockPath(home), {
+        pid: 42,
+        platform: 'darwin',
+      });
+      await release();
+      expect(await startRow()).toContain('stale');
+    });
+
+    test('stale while another hugi serve holds the lock', async () => {
+      const release = await acquireServeLock(resolveServeLockPath(home), {
+        pid: 43,
+        platform: 'darwin',
+      });
+      try {
+        expect(await startRow()).toContain('stale');
+      } finally {
+        await release();
+      }
+    });
+  },
+);

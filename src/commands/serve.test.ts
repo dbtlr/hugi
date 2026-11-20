@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { DEFAULTS } from '../config/schema';
 import type { HugiConfig } from '../config/schema';
 import { rejectionOf } from '../runs/testing';
-import { ServeLockError } from '../service/lock';
+import { acquireServeLock, ServeLockError } from '../service/lock';
 import { openHostSource } from '../source/host-source';
 import { githubRepositorySpec } from '../source/repository-spec';
 import type { RunRequest, RunResult } from '../vm';
@@ -16,7 +16,7 @@ import { FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
 import type { FakeCommand } from '../vm/fake-tart';
 import type { RunDeps } from '../vm/lifecycle';
 import { serveDeps, servePaths, serviceRunInVm, serviceSourceOptions } from './serve';
-import type { ServePorts } from './serve';
+import type { ServePaths, ServePorts } from './serve';
 
 const makeKeyPair = promisify(generateKeyPair);
 const { privateKey } = await makeKeyPair('rsa', { modulusLength: 2048 });
@@ -59,6 +59,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
   let next: { command: string; args: readonly string[] } | undefined;
   const fake = new FakeSpawn(clock, (args) => script(next?.command ?? '', args));
   const ports: ServePorts = {
+    acquireServeLock: () => Promise.reject(new Error('no lock in this test')),
     clock,
     fetch: () => Promise.reject(new Error('no GitHub in this test')),
     host: {
@@ -199,23 +200,52 @@ describe("a candidate's VM", () => {
   });
 });
 
-/** `ps` says every pid is a `hugi serve`. */
-const servePs: Script = (command) => (command === '/bin/ps' ? { output: 'hugi serve\n' } : {});
+/** The lock is darwin's `O_EXLOCK`, so a test of the real lock runs only there. */
+const onDarwin = test.skipIf(process.platform !== 'darwin');
 
-test('a second service on the same host is refused the lock', async () => {
-  const first = serveDeps(portsOf(servePs).ports);
-  const release = await first.acquireLock();
-  const second = serveDeps(portsOf(servePs, { pid: process.pid + 1 }).ports);
-  expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
-  await release();
-});
+/** Ports on a darwin host that take the real lock, as `pid`, with these paths. */
+function realLockPorts(pid: number, paths?: ServePaths): ServePorts {
+  const { ports } = portsOf(undefined, { acquireServeLock, pid, ...(paths ? { paths } : {}) });
+  return { ...ports, host: { ...ports.host, platform: 'darwin' } };
+}
 
-test('a service started with another XDG_STATE_HOME contends for the same lock', async () => {
-  const home = join(scratch, 'home');
-  const elsewhere = servePaths(undefined, { XDG_STATE_HOME: join(scratch, 'elsewhere') }, home);
-  expect(elsewhere.lockPath).toBe(join(home, '.local', 'state', 'hugi', 'serve.lock'));
-  const release = await serveDeps(portsOf(servePs).ports).acquireLock();
-  const second = serveDeps(portsOf(servePs, { paths: elsewhere, pid: process.pid + 1 }).ports);
-  expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
-  await release();
+describe('the lock', () => {
+  test('is taken at the lock path, as this pid, on this platform, and released', async () => {
+    const taken: unknown[] = [];
+    let released = 0;
+    const acquire: ServePorts['acquireServeLock'] = async (path, holder) => {
+      taken.push({ path, ...holder });
+      return async () => {
+        released += 1;
+      };
+    };
+    const { ports } = portsOf(undefined, { acquireServeLock: acquire, pid: 4242 });
+    const release = await serveDeps(ports).acquireLock();
+    expect(taken).toEqual([
+      {
+        path: join(scratch, 'home', '.local', 'state', 'hugi', 'serve.lock'),
+        pid: 4242,
+        platform: 'linux',
+      },
+    ]);
+    await release();
+    expect(released).toBe(1);
+  });
+
+  onDarwin('a second service on the same host is refused the lock', async () => {
+    const release = await serveDeps(realLockPorts(process.pid)).acquireLock();
+    const second = serveDeps(realLockPorts(process.pid + 1));
+    expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
+    await release();
+  });
+
+  onDarwin('a service started with another XDG_STATE_HOME contends for the same lock', async () => {
+    const home = join(scratch, 'home');
+    const elsewhere = servePaths(undefined, { XDG_STATE_HOME: join(scratch, 'elsewhere') }, home);
+    expect(elsewhere.lockPath).toBe(join(home, '.local', 'state', 'hugi', 'serve.lock'));
+    const release = await serveDeps(realLockPorts(process.pid)).acquireLock();
+    const second = serveDeps(realLockPorts(process.pid + 1, elsewhere));
+    expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
+    await release();
+  });
 });

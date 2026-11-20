@@ -18,7 +18,7 @@ import type { Fetch } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
 import { hostEnv, requireHostTools, spawnWithTools } from '../service/host-tools';
-import { acquireServeLock, createProcessFacts } from '../service/lock';
+import { acquireServeLock } from '../service/lock';
 import { runCoordinator } from '../service/loop';
 import type { CoordinatorLog } from '../service/loop';
 import { createRunCandidate } from '../service/run-candidate';
@@ -93,6 +93,8 @@ export type ServePorts = {
   readonly fetch: Fetch;
   /** The VM runner (`runInVm`). */
   readonly runInVm: typeof runInVm;
+  /** The single-instance lock (`acquireServeLock`), which only darwin has. */
+  readonly acquireServeLock: typeof acquireServeLock;
   /** The clock the loop, the VM runner and git's deadlines measure time on. */
   readonly clock: Clock;
   /** The wall clock, for the times written to the state and the run records. */
@@ -229,8 +231,7 @@ async function coordinate(
 export function serveDeps(ports: ServePorts): StartDeps<ServeSetup> {
   const { host, log, paths, pid } = ports;
   return {
-    acquireLock: () =>
-      acquireServeLock(paths.lockPath, { ...createProcessFacts(host.spawn, host.platform), pid }),
+    acquireLock: () => ports.acquireServeLock(paths.lockPath, { pid, platform: host.platform }),
     checkSetup: (config) => checkSetup(ports, config),
     coordinate: (config, setup, report) => coordinate(ports, config, setup, report),
     loadConfig: () => loadConfig(paths.configPath),
@@ -260,6 +261,7 @@ export function serveCommand() {
       const { pid } = process;
       await startService(
         serveDeps({
+          acquireServeLock,
           clock: systemClock,
           fetch: (url, init) => fetch(url, init),
           host,

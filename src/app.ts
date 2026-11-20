@@ -15,7 +15,7 @@ import type { RunCommandOverrides } from './commands/run';
 import { serveCommand } from './commands/serve';
 import { loadConfig } from './config/load';
 import { configuredHostEnv, requireHostTools, spawnWithTools } from './service/host-tools';
-import { createProcessFacts, serveLockHolder } from './service/lock';
+import { serveLockHolder } from './service/lock';
 import { createProbe } from './service/probe';
 import type { ProbeDeps } from './service/probe';
 import { readServiceState } from './service/state';
@@ -63,11 +63,7 @@ export function statusProbeDeps(host: StatusHost): ProbeDeps {
       const tools = await requireHostTools(env, ['tart']);
       return createTartCli(spawnWithTools(host.spawn, tools, env)).list();
     },
-    lockHolder: () =>
-      serveLockHolder(
-        resolveServeLockPath(host.home),
-        createProcessFacts(host.spawn, host.platform),
-      ),
+    lockHolder: () => serveLockHolder(resolveServeLockPath(host.home), host.platform),
     logPath: serviceLogPath(host.env, host.home, host.platform),
     now: () => new Date(),
     readState: () => readServiceState(resolveServiceStateDir(host.env, host.home)),

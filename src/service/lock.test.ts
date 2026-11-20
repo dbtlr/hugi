@@ -1,29 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import {
-  link,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  stat,
-  utimes,
-  writeFile,
-} from 'node:fs/promises';
+import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { Host } from '@loomcli/core';
-
 import { rejectionOf } from '../runs/testing';
-import {
-  acquireServeLock,
-  createProcessFacts,
-  ServeLockError,
-  serveLockHolder,
-  TAKE_OVER_STALE_MS,
-} from './lock';
-import type { LockFiles, ServeLockDeps } from './lock';
+import { acquireServeLock, ServeLockError, serveLockHolder } from './lock';
+
+/** The lock is darwin's `O_EXLOCK`, so a test of the real lock runs only there. */
+const onDarwin = test.skipIf(process.platform !== 'darwin');
 
 let scratch: string;
 let dir: string;
@@ -35,316 +19,93 @@ afterEach(async () => {
   await rm(scratch, { force: true, recursive: true });
 });
 
-const BOOT = '{ sec = 1788622746, usec = 311837 } Sat Sep  5 11:39:06 2026';
+const lockPath = () => join(dir, 'serve.lock');
+const holder = (pid: number) => ({ pid, platform: 'darwin' });
 
-function deps(overrides: Partial<ServeLockDeps> = {}): ServeLockDeps {
-  return {
-    bootTime: async () => BOOT,
-    commandOf: async () => '/usr/local/bin/hugi serve',
-    isAlive: () => true,
-    pid: 100,
-    ...overrides,
-  };
-}
-
-const LOCK_FILE = 'serve.lock';
-const lockPath = () => join(dir, LOCK_FILE);
-
-/** `ps` says pid 50 runs another program and every other pid is a `hugi serve`. */
-const notServe = async (pid: number) => (pid === 50 ? 'vim notes' : 'hugi serve');
-
-const exists = async (path: string) => {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
-const writeLock = async (pid: number, boot = BOOT) => {
-  await mkdir(dir, { recursive: true });
-  await writeFile(lockPath(), JSON.stringify({ bootTime: boot, pid }));
-};
-
-test('with no lock it takes one recording its pid and the boot time, in a private directory', async () => {
-  await acquireServeLock(lockPath(), deps());
-  expect(JSON.parse(await readFile(lockPath(), 'utf8'))).toEqual({ bootTime: BOOT, pid: 100 });
+onDarwin('takes the lock, recording its pid, in a private directory', async () => {
+  const release = await acquireServeLock(lockPath(), holder(100));
+  expect(await readFile(lockPath(), 'utf8')).toBe('100\n');
   expect((await stat(dir)).mode & 0o777).toBe(0o700);
+  await release();
 });
 
-test('a lock held by a live hugi serve is refused, naming its pid, with exit 1', async () => {
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  const refusal = await acquireServeLock(lockPath(), deps()).catch((error: unknown) => error);
-  expect(refusal).toBeInstanceOf(ServeLockError);
-  expect(refusal instanceof Error && refusal.message).toContain('50');
-  expect(ServeLockError.exitCode).toBe(1);
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
-});
-
-test('a live hugi serve keeps the lock when the boot time drifts by microseconds', async () => {
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  const drifted = '{ sec = 1788622746, usec = 195373 } Sat Sep  5 11:39:06 2026';
-  const refusal = await acquireServeLock(lockPath(), deps({ bootTime: async () => drifted })).catch(
-    (error: unknown) => error,
-  );
-  expect(refusal).toBeInstanceOf(ServeLockError);
-});
-
-test.each([
-  ['its holder could not read the boot time', 'unknown'],
-  ['this starter cannot read the boot time', BOOT],
-])('a live hugi serve keeps the lock when %s', async (_name, holderBoot) => {
-  await acquireServeLock(lockPath(), deps({ bootTime: async () => holderBoot, pid: 50 }));
-  const starterBoot = holderBoot === 'unknown' ? BOOT : 'unknown';
-  const refusal = await acquireServeLock(
-    lockPath(),
-    deps({ bootTime: async () => starterBoot }),
-  ).catch((error: unknown) => error);
-  expect(refusal).toBeInstanceOf(ServeLockError);
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
-});
-
-test.each([
-  [
-    'it is from another boot',
-    { bootTime: async () => '{ sec = 1788700000, usec = 1 } Sun Sep  6 09:06:40 2026' },
-  ],
-  ['its pid is not alive', { isAlive: () => false }],
-  ['the live pid is another program', { commandOf: async () => '/usr/bin/vim hugi-notes' }],
-  [
-    'the live pid runs hugi with another command',
-    { commandOf: async () => 'hugi run ci.yml:test' },
-  ],
-])('a lock is taken over when %s', async (_name, override) => {
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  await acquireServeLock(lockPath(), deps({ pid: 100, ...override }));
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-  expect(await readdir(dir)).toEqual([LOCK_FILE]);
-});
-
-test('a live pid whose command cannot be read is not taken from', async () => {
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  const refusal = await acquireServeLock(
-    lockPath(),
-    deps({ commandOf: async () => undefined }),
-  ).catch((error: unknown) => error);
-  expect(refusal).toBeInstanceOf(ServeLockError);
-});
-
-test.each([
-  ['not JSON', '{nope'],
-  ['no pid', '{"bootTime":"boot-1"}'],
-  ['empty', ''],
-])('a lock file that is %s is taken over', async (_name, text) => {
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  await writeFile(lockPath(), text);
-  await acquireServeLock(lockPath(), deps());
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-});
-
-const REAL_FILES: LockFiles = { link, mkdir, writeFile };
-
-/** A starter whose take-over link finds that a rival has just linked its own lock. */
-function rivalLinksFirst(rivalPid: number): LockFiles {
-  let links = 0;
-  return {
-    ...REAL_FILES,
-    link: async (from, to) => {
-      links += 1;
-      if (links === 2) {
-        await writeLock(rivalPid);
-      }
-      await link(from, to);
-    },
-  };
-}
-
-test('a take-over whose link loses to another starter is refused, naming the winner', async () => {
-  await writeLock(50);
-  const refusal = await rejectionOf(
-    acquireServeLock(lockPath(), deps({ isAlive: (pid) => pid !== 50 }), rivalLinksFirst(77)),
-  );
-  expect(refusal).toBeInstanceOf(ServeLockError);
-  expect(refusal.message).toContain('77');
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(77);
-  expect(await readdir(dir)).toEqual([LOCK_FILE]);
-});
-
-const mutexPath = () => `${lockPath()}.takeover`;
-
-/** A starter for whom pid 50 is not alive. */
-const dead = () => deps({ isAlive: (pid) => pid !== 50 });
-
-describe('the take-over mutex', () => {
-  test('is never made when the lock has a live holder', async () => {
-    await writeLock(50);
-    const made: string[] = [];
-    const watched: LockFiles = {
-      ...REAL_FILES,
-      mkdir: async (path, options) => {
-        made.push(path);
-        return mkdir(path, options);
-      },
-    };
-    expect(await rejectionOf(acquireServeLock(lockPath(), deps(), watched))).toBeInstanceOf(
-      ServeLockError,
-    );
-    expect(made).toEqual([]);
-  });
-
-  test('held by another starter refuses the take-over and is left alone', async () => {
-    await writeLock(50);
-    await mkdir(mutexPath());
-    const refusal = await rejectionOf(acquireServeLock(lockPath(), dead()));
+onDarwin(
+  'a second take in the same process is refused, naming the holder, with exit 1',
+  async () => {
+    const release = await acquireServeLock(lockPath(), holder(100));
+    const refusal = await rejectionOf(acquireServeLock(lockPath(), holder(200)));
     expect(refusal).toBeInstanceOf(ServeLockError);
-    expect(refusal.message).toContain('taking over');
-    expect((await stat(mutexPath())).isDirectory()).toBe(true);
-    expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
-  });
+    expect(refusal.message).toContain('pid 100');
+    expect(ServeLockError.exitCode).toBe(1);
+    await release();
+  },
+);
 
-  test('older than a minute is removed, and the take-over goes ahead', async () => {
-    await writeLock(50);
-    await mkdir(mutexPath());
-    const old = new Date(Date.now() - TAKE_OVER_STALE_MS - 5000);
-    await utimes(mutexPath(), old, old);
-    await acquireServeLock(lockPath(), dead());
-    expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-    expect(await readdir(dir)).toEqual([LOCK_FILE]);
-  });
-
-  test('is removed when the take-over fails', async () => {
-    await writeLock(50);
-    const failing: LockFiles = {
-      ...REAL_FILES,
-      link: async (from, to) => {
-        if (await exists(mutexPath())) {
-          throw Object.assign(new Error('disk on fire'), { code: 'EIO' });
-        }
-        await link(from, to);
-      },
-    };
-    expect((await rejectionOf(acquireServeLock(lockPath(), dead(), failing))).message).toBe(
-      'disk on fire',
-    );
-    // Neither the mutex nor this starter's temporary file is left; the stale lock was removed.
-    expect(await readdir(dir)).toEqual([]);
-  });
+onDarwin('release frees the lock for the next start, which records its own pid', async () => {
+  const release = await acquireServeLock(lockPath(), holder(100));
+  await release();
+  const releaseNext = await acquireServeLock(lockPath(), holder(200));
+  expect(await readFile(lockPath(), 'utf8')).toBe('200\n');
+  await releaseNext();
 });
 
-/** How an acquire ended: `held`, or the error it was refused with. */
-const outcomeOf = async (acquire: Promise<unknown>): Promise<unknown> => {
-  try {
-    await acquire;
-    return 'held';
-  } catch (error) {
-    return error;
-  }
-};
+/** The source of a child that takes the lock at `path`, says so, and waits to be killed. */
+const childHolding = (path: string) => `
+  const { acquireServeLock } = await import(${JSON.stringify(join(import.meta.dir, 'lock.ts'))});
+  await acquireServeLock(${JSON.stringify(path)}, { pid: process.pid, platform: 'darwin' });
+  console.log('held');
+  setInterval(() => {}, 60_000);
+`;
 
-test('a starter never takes over a lock that is still being written', async () => {
-  // This starter's write lands in two parts, and a rival starts between them.
-  let rival: Promise<unknown> | undefined;
-  const halting: LockFiles = {
-    ...REAL_FILES,
-    writeFile: async (path, text, options) => {
-      await writeFile(path, '', options);
-      rival ??= outcomeOf(acquireServeLock(lockPath(), deps({ pid: 60 })));
-      await rival;
-      await writeFile(path, text, { ...options, flag: 'w' });
-    },
-  };
-  const first = await outcomeOf(acquireServeLock(lockPath(), deps(), halting));
-  const outcomes = [first, await rival];
-  expect(outcomes.filter((outcome) => outcome === 'held')).toHaveLength(1);
-  const holder = first === 'held' ? 100 : 60;
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(holder);
-});
-
-test('a starter whose stale judgement another take-over overtakes does not also hold the lock', async () => {
-  // pid 50 is alive but runs another program, so its lock is stale. While this starter asks ps
-  // about pid 50, a rival takes the lock over completely.
-  await writeLock(50);
-  let rival: Promise<unknown> | undefined;
-  const overtaken = async (pid: number) => {
-    if (pid === 50) {
-      rival ??= outcomeOf(acquireServeLock(lockPath(), deps({ commandOf: notServe, pid: 60 })));
-      await rival;
+onDarwin(
+  'another process holding the lock refuses this one, and its kill -9 frees the lock',
+  async () => {
+    const child = Bun.spawn([process.execPath, '-e', childHolding(lockPath())], {
+      stderr: 'inherit',
+      stdout: 'pipe',
+    });
+    try {
+      const reader = child.stdout.getReader();
+      const { value } = await reader.read();
+      expect(new TextDecoder().decode(value)).toContain('held');
+      const refusal = await rejectionOf(acquireServeLock(lockPath(), holder(process.pid)));
+      expect(refusal).toBeInstanceOf(ServeLockError);
+      expect(refusal.message).toContain(`pid ${child.pid}`);
+      expect(await serveLockHolder(lockPath(), 'darwin')).toBe(child.pid);
+    } finally {
+      // oxlint-disable-next-line @loomcli/host-bypass -- the test kills its own child
+      process.kill(child.pid, 'SIGKILL');
+      await child.exited;
     }
-    return notServe(pid);
-  };
-  const first = await outcomeOf(acquireServeLock(lockPath(), deps({ commandOf: overtaken })));
-  const outcomes = [first, await rival];
-  expect(outcomes.filter((outcome) => outcome === 'held')).toHaveLength(1);
-  const holder = first === 'held' ? 100 : 60;
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(holder);
+    expect(await serveLockHolder(lockPath(), 'darwin')).toBeUndefined();
+    const release = await acquireServeLock(lockPath(), holder(process.pid));
+    await release();
+  },
+);
+
+test('off darwin the service refuses to start, since it runs only on macOS', async () => {
+  const refusal = await rejectionOf(acquireServeLock(lockPath(), { pid: 1, platform: 'linux' }));
+  expect(refusal).toBeInstanceOf(ServeLockError);
+  expect(refusal.message).toContain('only on macOS');
 });
 
-test('release deletes the lock only while it still holds this pid', async () => {
-  const release = await acquireServeLock(lockPath(), deps());
-  await release();
-  expect(await readdir(dir)).toEqual([]);
-
-  const again = await acquireServeLock(lockPath(), deps());
-  await writeLock(9);
-  await again();
-  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(9);
-});
-
-test('release is harmless when the lock is already gone', async () => {
-  const release = await acquireServeLock(lockPath(), deps());
-  await rm(lockPath());
+onDarwin('the lock holder is the pid written by the process that holds the lock', async () => {
+  const release = await acquireServeLock(lockPath(), holder(42));
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBe(42);
   await release();
 });
 
-test('the lock holder is the live hugi serve that holds it, judged as a starter judges it', async () => {
-  expect(await serveLockHolder(lockPath(), deps())).toBeUndefined();
-  await acquireServeLock(lockPath(), deps({ pid: 50 }));
-  expect(await serveLockHolder(lockPath(), deps())).toBe(50);
-  expect(await serveLockHolder(lockPath(), dead())).toBeUndefined();
-  expect(await serveLockHolder(lockPath(), deps({ commandOf: notServe }))).toBeUndefined();
+onDarwin('a lock file nobody holds has no holder, whatever pid it records', async () => {
+  const release = await acquireServeLock(lockPath(), holder(42));
+  await release();
+  expect(await readFile(lockPath(), 'utf8')).toBe('42\n');
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBeUndefined();
+  // The look took the lock for a moment only: a start still finds it free.
+  const releaseNext = await acquireServeLock(lockPath(), holder(43));
+  await releaseNext();
 });
 
-type Reply = { code: number; text: string };
-
-function fakeSpawn(replies: Record<string, Reply>) {
-  const calls: string[] = [];
-  const spawn = ((command: string, args: readonly string[]) => {
-    const key = [command, ...args].join(' ');
-    calls.push(key);
-    const reply = replies[key] ?? { code: 1, text: '' };
-    const output = { bytes: new TextEncoder().encode(reply.text), text: reply.text };
-    return {
-      exited: Promise.resolve({ code: reply.code, kind: 'exited', stderr: output, stdout: output }),
-      kill: () => undefined,
-    };
-  }) as Host['spawn'];
-  return { calls, spawn };
-}
-
-test('production deps read the darwin boot time from sysctl and the command from ps', async () => {
-  const { calls, spawn } = fakeSpawn({
-    '/bin/ps -p 321 -o command=': { code: 0, text: '/opt/hugi serve\n' },
-    '/usr/sbin/sysctl -n kern.boottime': { code: 0, text: '{ sec = 1700000000, usec = 5 } Tue\n' },
-  });
-  const real = createProcessFacts(spawn, 'darwin');
-  expect(await real.bootTime()).toBe('{ sec = 1700000000, usec = 5 } Tue');
-  expect(await real.commandOf(321)).toBe('/opt/hugi serve');
-  // By absolute path: a caller's PATH, or a configured `path`, may not reach /bin or /usr/sbin.
-  expect(calls).toEqual(['/usr/sbin/sysctl -n kern.boottime', '/bin/ps -p 321 -o command=']);
-});
-
-test('production commandOf is undefined when ps fails or prints nothing', async () => {
-  const real = createProcessFacts(fakeSpawn({}).spawn, 'darwin');
-  expect(await real.commandOf(321)).toBeUndefined();
-});
-
-test('production isAlive is true for this process, false for a pid that cannot exist', () => {
-  const real = createProcessFacts(fakeSpawn({}).spawn, 'darwin');
-  expect(real.isAlive(process.pid)).toBe(true);
-  expect(real.isAlive(2 ** 22 + 12345)).toBe(false);
-});
-
-test('off darwin the boot time is a fixed word, so only the other checks decide', async () => {
-  const real = createProcessFacts(fakeSpawn({}).spawn, 'linux');
-  expect(await real.bootTime()).toBe('unknown');
+test('no lock file, or no darwin, means no holder', async () => {
+  expect(await serveLockHolder(lockPath(), process.platform)).toBeUndefined();
+  expect(await serveLockHolder(lockPath(), 'linux')).toBeUndefined();
 });
