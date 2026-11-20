@@ -1,9 +1,14 @@
-import { expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import type { Host } from '@loomcli/core';
 import { mockProcess } from '@loomcli/testing';
 
 import pkg from '../package.json' with { type: 'json' };
-import { createApp, SHUTDOWN_BUDGET_MS } from './app';
+import { createApp, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
+import { FakeClock, FakeSpawn } from './vm/fake-tart';
 import { DEFAULT_TUNING } from './vm/lifecycle';
 import {
   TART_DELETE_DEADLINE_MS,
@@ -43,4 +48,51 @@ test('the teardown budget holds a full stop and two full delete attempts, escala
   const twoDeletes =
     2 * (TART_DELETE_DEADLINE_MS + TART_ESCALATION_MS) + DEFAULT_TUNING.deleteRetryMs;
   expect(twoDeletes).toBeLessThanOrEqual(DELETE_RESERVE_MS);
+});
+
+describe('the leftover VMs row of hugi service status', () => {
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
+    for (const dir of ['configured', 'inherited']) {
+      // oxlint-disable-next-line no-await-in-loop -- two directories
+      await mkdir(join(home, dir));
+      // oxlint-disable-next-line no-await-in-loop -- two files
+      await writeFile(join(home, dir, 'tart'), '#!/bin/sh\n', { mode: 0o755 });
+    }
+  });
+  afterEach(async () => {
+    await rm(home, { force: true, recursive: true });
+  });
+
+  /** List the VMs as status does, recording how tart was started. */
+  async function listed(config: string | undefined) {
+    if (config !== undefined) {
+      await mkdir(join(home, '.config', 'hugi'), { recursive: true });
+      await writeFile(join(home, '.config', 'hugi', 'config.yaml'), config);
+    }
+    const started: { command: string; path: string | undefined }[] = [];
+    const fake = new FakeSpawn(new FakeClock(), () => ({ output: '[{"Name":"hugi-svc-left"}]' }));
+    const spawn: Host['spawn'] = (command, args, options) => {
+      started.push({ command, path: options?.env?.PATH });
+      return fake.spawn(command, args, options);
+    };
+    const host = { env: { PATH: join(home, 'inherited') }, home, platform: 'darwin', spawn };
+    const names = await statusProbeDeps(host).listVms();
+    return { names, started };
+  }
+
+  test("runs tart from the configuration's path", async () => {
+    const config = `repositories: [dbtlr/hugi]\nallowlist: []\npath: [${join(home, 'configured')}]\n`;
+    const { names, started } = await listed(config);
+    expect(names).toEqual(['hugi-svc-left']);
+    expect(started).toEqual([
+      { command: join(home, 'configured', 'tart'), path: join(home, 'configured') },
+    ]);
+  });
+
+  test('falls back to the inherited PATH when the configuration does not load', async () => {
+    const { started } = await listed(undefined);
+    expect(started.map((each) => each.command)).toEqual([join(home, 'inherited', 'tart')]);
+  });
 });

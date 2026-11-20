@@ -20,6 +20,22 @@ export function hostEnv(
   return config.path === undefined ? { ...env } : { ...env, PATH: config.path.join(':') };
 }
 
+/**
+ * The environment a command other than `hugi serve` runs the service's host tools with, so it
+ * finds what the service finds: the configuration's `path` when the configuration loads, and the
+ * inherited `PATH` when it does not.
+ */
+export async function configuredHostEnv(
+  env: Host['env'],
+  load: () => Promise<Pick<HugiConfig, 'path'>>,
+): Promise<Record<string, string | undefined>> {
+  try {
+    return hostEnv(await load(), env);
+  } catch {
+    return { ...env };
+  }
+}
+
 type IsExecutable = (path: string) => boolean | Promise<boolean>;
 
 async function isExecutableFile(path: string): Promise<boolean> {
