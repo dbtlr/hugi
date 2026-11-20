@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Host } from '@loomcli/core';
 
 import { acquireServeLock, createServeLockDeps, SERVE_LOCK_FILE, ServeLockError } from './lock';
-import type { ServeLockDeps } from './lock';
+import type { LockFiles, ServeLockDeps } from './lock';
 
 let scratch: string;
 let dir: string;
@@ -111,11 +111,12 @@ test.each([
 test('a take-over that another starter overwrites is refused, naming the winner', async () => {
   await acquireServeLock(dir, deps({ pid: 50 }));
   // The starter renames its lock over the stale one; a rival renames its own over that at once.
-  const rivalWins = {
+  const rivalWins: LockFiles = {
     rename: async (from: string, to: string) => {
       await rename(from, to);
       await writeLock(77);
     },
+    writeFile,
   };
   const refusal = await acquireServeLock(
     dir,
@@ -125,6 +126,35 @@ test('a take-over that another starter overwrites is refused, naming the winner'
   expect(refusal).toBeInstanceOf(ServeLockError);
   expect(refusal instanceof Error && refusal.message).toContain('77');
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(77);
+});
+
+/** How an acquire ended: `held`, or the error it was refused with. */
+const outcomeOf = async (acquire: Promise<unknown>): Promise<unknown> => {
+  try {
+    await acquire;
+    return 'held';
+  } catch (error) {
+    return error;
+  }
+};
+
+test('a starter never takes over a lock that is still being written', async () => {
+  // This starter's write lands in two parts, and a rival starts between them.
+  let rival: Promise<unknown> | undefined;
+  const halting: LockFiles = {
+    rename,
+    writeFile: async (path, text, options) => {
+      await writeFile(path, '', options);
+      rival ??= outcomeOf(acquireServeLock(dir, deps({ pid: 60 })));
+      await rival;
+      await writeFile(path, text, { ...options, flag: 'w' });
+    },
+  };
+  const first = await outcomeOf(acquireServeLock(dir, deps(), halting));
+  const outcomes = [first, await rival];
+  expect(outcomes.filter((outcome) => outcome === 'held')).toHaveLength(1);
+  const holder = first === 'held' ? 100 : 60;
+  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(holder);
 });
 
 test('release deletes the lock only while it still holds this pid', async () => {

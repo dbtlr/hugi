@@ -4,13 +4,13 @@
  * since, its pid is not alive, or the live pid is not a `hugi serve`. Every process fact comes in
  * through `ServeLockDeps`, so tests need no real process.
  */
-import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
 
+import { temporaryPathFor } from '../atomic-write';
 import { errnoCode } from '../errno';
 import { isMapping } from '../yaml/strict';
 
@@ -35,7 +35,15 @@ export type ServeLockDeps = {
 };
 
 /** The file operation the take-over uses; the seam a test replaces to stage a rival. */
-export type LockFiles = { readonly rename: (from: string, to: string) => Promise<void> };
+export type LockFiles = {
+  /** Writes this starter's lock to its temporary file, before the file is linked as the lock. */
+  readonly writeFile: (
+    path: string,
+    text: string,
+    options: { readonly mode: number },
+  ) => Promise<void>;
+  readonly rename: (from: string, to: string) => Promise<void>;
+};
 
 type LockContents = { readonly pid: number; readonly bootTime: string };
 
@@ -110,13 +118,28 @@ function refusal(pid: number | undefined, dir: string): ServeLockError {
   );
 }
 
-const REAL_FILES: LockFiles = { rename };
+const REAL_FILES: LockFiles = { rename, writeFile };
+
+/** Link `from` as `to`, which must not exist: true when it did not, false when it did (`EEXIST`). */
+async function linkedAs(from: string, to: string): Promise<boolean> {
+  try {
+    await link(from, to);
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
+}
 
 /**
- * Take the lock, or throw a `ServeLockError` naming the holder. The lock is created exclusively;
- * a stale one is replaced by renaming a temporary file over it, then read back, so two starters
- * taking over at once cannot both keep it. Returns `release`, which deletes the lock only while
- * it still holds this pid.
+ * Take the lock, or throw a `ServeLockError` naming the holder. The lock's text is written to a
+ * temporary file first and then linked as the lock, which is atomic and fails when the lock
+ * exists, so no starter ever reads a lock that is half written. A stale one is replaced by
+ * renaming the temporary file over it, then read back, so two starters taking over at once
+ * cannot both keep it. Returns `release`, which deletes the lock only while it still holds this
+ * pid.
  */
 export async function acquireServeLock(
   dir: string,
@@ -133,26 +156,19 @@ export async function acquireServeLock(
     }
   };
 
+  const temporary = temporaryPathFor(path);
   try {
-    await writeFile(path, text, { flag: 'wx', mode: 0o600 });
-    return release;
-  } catch (error) {
-    if (errnoCode(error) !== 'EEXIST') {
-      throw error;
+    await files.writeFile(temporary, text, { mode: 0o600 });
+    if (await linkedAs(temporary, path)) {
+      return release;
     }
-  }
-
-  const held = await readLock(path);
-  if (held !== undefined && (await isHeld(held, boot, deps))) {
-    throw refusal(held.pid, dir);
-  }
-  const temporary = join(dir, `.${SERVE_LOCK_FILE}.${randomBytes(4).toString('hex')}.tmp`);
-  try {
-    await writeFile(temporary, text, { mode: 0o600 });
+    const held = await readLock(path);
+    if (held !== undefined && (await isHeld(held, boot, deps))) {
+      throw refusal(held.pid, dir);
+    }
     await files.rename(temporary, path);
-  } catch (error) {
+  } finally {
     await rm(temporary, { force: true });
-    throw error;
   }
   const winner = await readLock(path);
   if (winner?.pid !== deps.pid) {
