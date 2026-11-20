@@ -803,4 +803,17 @@ describe('decisions', () => {
     expect(noLongerQueued(failedPoll(), [], lane)).toBe(false);
     expect(noLongerQueued([repository(pushAt(lanesRead([])))], [], lane)).toBe(false);
   });
+
+  test("a fork's clean read of a commit it shares with its upstream does not read it for the upstream", () => {
+    const lane = { commit: HEAD, repository: REPOSITORY, statusName: nameOf('build') };
+    const fork = 'example/fork';
+    const forkRead: RepositorySnapshot = {
+      ...repository({ ...pushAt(lanesRead([])), repository: fork }),
+      repository: fork,
+    };
+    const upstreamFailed = repository(pushAt({ cause: 'git fetch timed out', kind: 'failed' }));
+    expect(noLongerQueued([upstreamFailed, forkRead], [], lane)).toBe(false);
+    expect(noLongerQueued([forkRead, upstreamFailed], [], lane)).toBe(false);
+    expect(noLongerQueued([forkRead], [], { ...lane, repository: fork })).toBe(true);
+  });
 });
