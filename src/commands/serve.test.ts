@@ -8,9 +8,9 @@ import { promisify } from 'node:util';
 import { stringify } from 'yaml';
 
 import { DEFAULTS } from '../config/schema';
-import { GitHubReadError } from '../github/client';
-import type { InstallationTokens } from '../github/app-auth';
 import type { HugiConfig } from '../config/schema';
+import type { InstallationTokens } from '../github/app-auth';
+import { GitHubReadError } from '../github/client';
 import { rejectionOf } from '../runs/testing';
 import { acquireServeLock, ServeLockError } from '../service/lock';
 import { openHostSource } from '../source/host-source';
@@ -117,7 +117,7 @@ describe('the setup check', () => {
     const { ports, spawned } = portsOf(tartScript);
     const deps = serveDeps(ports);
     const setup = await deps.checkSetup(config);
-    await deps.sweep(config, setup);
+    await deps.sweep(setup);
     expect(spawned[0]).toBe(`${join(bin, 'tart')} list --source local --format json`);
   });
 
@@ -133,7 +133,7 @@ describe('the setup check', () => {
 test('the sweep deletes only hugi-svc-* VMs', async () => {
   const { ports, spawned } = portsOf(tartScript);
   const deps = serveDeps(ports);
-  const result = await deps.sweep(config, await deps.checkSetup(config));
+  const result = await deps.sweep(await deps.checkSetup(config));
   expect(result).toEqual({ deleted: ['hugi-svc-left'], failed: [] });
   expect(spawned.filter((each) => each.includes(' delete '))).toEqual([
     `${join(bin, 'tart')} delete hugi-svc-left`,
@@ -436,7 +436,7 @@ describe('the coordinator after a run', () => {
     expect(await readdir(join(run.paths.runsDir, runs[0]!))).toContain('run.json');
   });
 
-  test('a 401 on a status post drops that repository\'s token, so the next post mints another', async () => {
+  test("a 401 on a status post drops that repository's token, so the next post mints another", async () => {
     let mints = 0;
     const rejecting: ServePorts['fetch'] = async (url, init) => {
       const path = new URL(url).pathname;
@@ -453,27 +453,27 @@ describe('the coordinator after a run', () => {
   });
 });
 
+/** A fetch answering every read with `status` (an empty pull request list when 200), recording each bearer by path. */
+function answering(status: number) {
+  const bearers: Record<string, string | null> = {};
+  const fetch: ServePorts['fetch'] = async (url, init) => {
+    bearers[new URL(url).pathname] = new Headers(init?.headers).get('authorization');
+    return status === 200 ? Response.json([]) : new Response('{}', { status });
+  };
+  return { bearers, fetch };
+}
+
+/** Tokens named for their repository, and the repositories whose token was dropped. */
+function tokensOf() {
+  const dropped: string[] = [];
+  const tokens: InstallationTokens = Object.assign(
+    (repository: string) => async () => `token-for-${repository}`,
+    { invalidate: (repository: string) => void dropped.push(repository) },
+  );
+  return { dropped, tokens };
+}
+
 describe('the reader of each repository', () => {
-  /** Tokens named for their repository, and the repositories whose token was dropped. */
-  function tokensOf() {
-    const dropped: string[] = [];
-    const tokens: InstallationTokens = Object.assign(
-      (repository: string) => async () => `token-for-${repository}`,
-      { invalidate: (repository: string) => void dropped.push(repository) },
-    );
-    return { dropped, tokens };
-  }
-
-  /** A fetch answering every read with `status` (an empty pull request list when 200), recording each bearer by path. */
-  function answering(status: number) {
-    const bearers: Record<string, string | null> = {};
-    const fetch: ServePorts['fetch'] = async (url, init) => {
-      bearers[new URL(url).pathname] = new Headers(init?.headers).get('authorization');
-      return status === 200 ? Response.json([]) : new Response('{}', { status });
-    };
-    return { bearers, fetch };
-  }
-
   test('reads each repository with its own repository’s token', async () => {
     const { bearers, fetch } = answering(200);
     const reader = perRepositoryReader(fetch, tokensOf().tokens);

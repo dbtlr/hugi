@@ -25,15 +25,6 @@ export const LONGEST_WAIT_MS = 60 * 60_000;
 /** A lane the loop keeps state for: one commit status. */
 export type LaneIdentity = Pick<Candidate, 'commit' | 'repository' | 'statusName'>;
 
-/** How a run ended, as the service state records it. */
-export type RunEnding =
-  | 'passed'
-  | 'failed'
-  | 'no-verdict'
-  | 'dropped'
-  | 'declaration-refused'
-  | 'error';
-
 /** What the loop tells the service state. */
 export type CoordinatorEvent =
   | {
@@ -45,13 +36,9 @@ export type CoordinatorEvent =
       /** Those of them that wait: after a run with no verdict, or to post their verdict. */
       readonly waiting: number;
     }
-  /** Sent when a candidate is taken, and again with its run and VM ids once its VM is about to boot. */
-  | (LaneIdentity & {
-      readonly kind: 'run-started';
-      readonly runId?: string;
-      readonly vmId?: string;
-    })
-  | (LaneIdentity & { readonly kind: 'run-ended'; readonly ending: RunEnding });
+  /** Sent when a candidate is taken, and again with its VM id once its VM is about to boot. */
+  | (LaneIdentity & { readonly kind: 'run-started'; readonly vmId?: string })
+  | (LaneIdentity & { readonly kind: 'run-ended' });
 
 export type CoordinatorLog = {
   readonly info: (message: string) => void;
@@ -225,16 +212,6 @@ const NOTHING_IN_FLIGHT: readonly RunInFlight[] = [];
 
 function describeLane(lane: LaneIdentity): string {
   return `${lane.statusName} on ${lane.repository}@${lane.commit.slice(0, 12)}`;
-}
-
-function endingOf(outcome: CandidateOutcome): RunEnding {
-  if (outcome.kind !== 'finished') {
-    return outcome.kind;
-  }
-  if (outcome.status === undefined) {
-    return 'no-verdict';
-  }
-  return outcome.status.state === 'success' ? 'passed' : 'failed';
 }
 
 /**
@@ -479,7 +456,7 @@ export async function runCoordinator(
     try {
       outcome = await deps.runCandidate(candidate, {
         started: async (start) => {
-          await emit({ kind: 'run-started', ...identity, runId: start.runId, vmId: start.vmId });
+          await emit({ kind: 'run-started', ...identity, vmId: start.vmId });
           try {
             await reporter.reportLane(start.target, start.lane, {
               runId: start.runId,
@@ -496,11 +473,11 @@ export async function runCoordinator(
     } catch (error) {
       log.error(`the run of ${describeLane(candidate)} failed unexpectedly: ${messageOf(error)}`);
       waitAfterNoVerdict(candidate, 'the run failed unexpectedly');
-      await emit({ ending: 'error', kind: 'run-ended', ...identity });
+      await emit({ kind: 'run-ended', ...identity });
       return undefined;
     }
     await settle(candidate, outcome);
-    await emit({ ending: endingOf(outcome), kind: 'run-ended', ...identity });
+    await emit({ kind: 'run-ended', ...identity });
     return outcome;
   };
 

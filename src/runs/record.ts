@@ -1,7 +1,7 @@
 /**
  * A run's record: `run.json` in the run's directory, beside its step logs. `hugi run` writes it as
- * `running` when the directory is created and rewrites it as `finished` when the run ends; the later
- * service will use the same writer. The run id is the run directory's name, so a record never has
+ * `running` when the directory is created and rewrites it as `finished` when the run ends; the service's
+ * runs use the same writer. The run id is the run directory's name, so a record never has
  * to be looked up by anything else.
  */
 import { readFile } from 'node:fs/promises';

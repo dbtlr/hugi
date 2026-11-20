@@ -12,6 +12,7 @@ import type {
   RepositorySnapshot,
   Snapshot,
 } from '../queue/types';
+import { systemClock } from '../vm/clock';
 import {
   commitGone,
   failureChanges,
@@ -656,13 +657,13 @@ describe('read failures', () => {
   });
 });
 
-test('a run is reported as started, with its run and VM ids once known, and as ended', async () => {
+test('a run is reported as started, with its VM id once known, and as ended', async () => {
   const { events } = await coordinate({ polls: [pushPoll(['build'])] });
   const lane = { commit: HEAD, repository: REPOSITORY, statusName: nameOf('build') };
   expect(events.filter((event) => event.kind !== 'poll-ended')).toEqual([
     { kind: 'run-started', ...lane },
-    { kind: 'run-started', ...lane, runId: RUN_ID, vmId: 'vm1' },
-    { ending: 'passed', kind: 'run-ended', ...lane },
+    { kind: 'run-started', ...lane, vmId: 'vm1' },
+    { kind: 'run-ended', ...lane },
   ]);
 });
 
@@ -833,20 +834,11 @@ describe('decisions', () => {
 describe('stopping while idle', () => {
   test('ends promptly when the signal aborts during the wait for the next poll', async () => {
     const controller = new AbortController();
-    // A sleep that, as the real one does, ends early with `false` when its signal aborts.
-    const sleep = (milliseconds: number, signal?: AbortSignal) =>
-      new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(true), milliseconds);
-        signal?.addEventListener('abort', () => {
-          clearTimeout(timer);
-          resolve(false);
-        });
-      });
     const reporter: StatusReporter = { reportLane: async () => {}, reportRefusal: async () => {} };
     const ended = runCoordinator(
       { pollIntervalSeconds: 60 },
       {
-        clock: { now: () => Date.now(), sleep },
+        clock: systemClock,
         log: { error: () => {}, info: () => {}, warn: () => {} },
         now: () => new Date(),
         poll: async () => [],
@@ -858,10 +850,23 @@ describe('stopping while idle', () => {
     );
     await Bun.sleep(20);
     controller.abort();
-    const result = await Promise.race([ended.then(() => 'ended'), Bun.sleep(1000, 'hung')]);
+    const result = await Promise.race([
+      ended.then(() => 'ended'),
+      Bun.sleep(1000).then(() => 'hung'),
+    ]);
     expect(result).toBe('ended');
   });
 });
+
+/** The upstream's declaration is refused; the fork's lane passes. */
+const refusing: Run = async (candidate, hooks) =>
+  candidate.repository === REPOSITORY
+    ? {
+        cause: 'bad declaration',
+        kind: 'declaration-refused',
+        target: { repository: candidate.repository, sha: candidate.commit },
+      }
+    : passing('build')(candidate, hooks);
 
 describe('a refusal settles the lanes of its own commit only', () => {
   test("a fork's lane at the same commit still runs after the upstream's declaration is refused", async () => {
@@ -870,21 +875,11 @@ describe('a refusal settles the lanes of its own commit only', () => {
       ...repository({ ...pushAt(lanesRead(['build'])), repository: fork }),
       repository: fork,
     };
-    const refusing: Run = async (candidate, hooks) =>
-      candidate.repository === REPOSITORY
-        ? {
-            cause: 'bad declaration',
-            kind: 'declaration-refused',
-            target: { repository: candidate.repository, sha: candidate.commit },
-          }
-        : passing('build')(candidate, hooks);
     const { posts } = await coordinate({
       polls: [[...pushPoll(['build']), forkRepository]],
       runs: { build: refusing },
     });
     expect(posts.some((post) => post.kind === 'refusal')).toBe(true);
-    expect(
-      finalPostsOf(posts).filter((post) => post.target.repository === fork),
-    ).toHaveLength(1);
+    expect(finalPostsOf(posts).filter((post) => post.target.repository === fork)).toHaveLength(1);
   });
 });

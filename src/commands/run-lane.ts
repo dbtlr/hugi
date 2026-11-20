@@ -1,5 +1,5 @@
 /**
- * One run of a lane by hand: read the lane at a commit, resolve its tools, run it in a VM, and
+ * One run of a lane, by hand or for the service: read the lane at a commit, resolve its tools, run it in a VM, and
  * return the verdict. A pull request runs at GitHub's merge commit (ADR-0005). The host only reads
  * data from the repository; the VM executes the steps. Every collaborator is injected so the order
  * of operations is testable without a VM or GitHub.
