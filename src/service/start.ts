@@ -36,7 +36,10 @@ export type StartDeps<Setup> = {
   readonly pid: number;
 };
 
-/** The state after one coordinator event. The run in flight is named once its VM is known. */
+/**
+ * The state after one coordinator event. A run is in flight from when its candidate is taken; its
+ * VM is added once known, and its start time stays the time it was taken.
+ */
 export function applyEvent(state: ServiceState, event: CoordinatorEvent, now: Date): ServiceState {
   const at = now.toISOString();
   switch (event.kind) {
@@ -48,17 +51,15 @@ export function applyEvent(state: ServiceState, event: CoordinatorEvent, now: Da
       };
     }
     case 'run-started': {
-      if (event.vmId === undefined) {
-        return state;
-      }
+      const { commit, repository, statusName, vmId } = event;
       return {
         ...state,
         run: {
-          commit: event.commit,
-          repository: event.repository,
-          startedAt: at,
-          statusName: event.statusName,
-          vm: `${SERVICE_VM_PREFIX}${event.vmId}`,
+          commit,
+          repository,
+          startedAt: state.run?.startedAt ?? at,
+          statusName,
+          ...(vmId === undefined ? {} : { vm: `${SERVICE_VM_PREFIX}${vmId}` }),
         },
       };
     }

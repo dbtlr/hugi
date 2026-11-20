@@ -63,7 +63,8 @@ function runRow(state: ServiceState, now: Date): string {
     return 'idle';
   }
   const elapsed = formatElapsed(now.getTime() - Date.parse(run.startedAt));
-  return `${run.statusName}, ${run.repository} @ ${run.commit.slice(0, 12)}, started ${run.startedAt}, ${elapsed} elapsed`;
+  const preparing = run.vm === undefined ? ' (preparing)' : '';
+  return `${run.statusName}, ${run.repository} @ ${run.commit.slice(0, 12)}, started ${run.startedAt}, ${elapsed} elapsed${preparing}`;
 }
 
 function queueRow(state: ServiceState): string {

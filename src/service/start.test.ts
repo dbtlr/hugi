@@ -254,3 +254,17 @@ test('the sweep and the loop get what the setup check found', async () => {
   await startService(deps);
   expect(got).toEqual(['sweep: tools found once', 'coordinate: tools found once']);
 });
+
+test('applyEvent shows a run being prepared before its VM is known, from when it was taken', () => {
+  const base: ServiceState = { pid: 1, start: { kind: 'running' }, startedAt: NOW.toISOString() };
+  const lane = { commit: 'abc', repository: 'dbtlr/hugi', statusName: 'hugi / test' };
+  const preparing = applyEvent(base, { kind: 'run-started', ...lane }, NOW);
+  expect(preparing.run).toEqual({ ...lane, startedAt: NOW.toISOString() });
+  const later = new Date(NOW.getTime() + 90_000);
+  const booting = applyEvent(
+    preparing,
+    { kind: 'run-started', ...lane, runId: 'r1', vmId: 'x1' },
+    later,
+  );
+  expect(booting.run).toEqual({ ...lane, startedAt: NOW.toISOString(), vm: 'hugi-svc-x1' });
+});

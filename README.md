@@ -243,7 +243,7 @@ A launchd user agent starts only when its user's session starts. For the service
 
 | Row | Shows |
 | --- | --- |
-| `run` | The lane in flight, as its status name, with its repository, commit and elapsed time; or `idle`. |
+| `run` | The lane in flight, as its status name, with its repository, commit and elapsed time since it was taken from the queue, marked `(preparing)` until its VM is about to boot (while a pull request is read again and its merge fetched, say); or `idle`. |
 | `queue` | How many candidates the last poll found, and how many of them are waiting. |
 | `last poll` | When the last poll ended, and `ok` or how many reads failed. |
 | `start` | When the service started, or why its last start was refused. |

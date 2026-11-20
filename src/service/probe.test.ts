@@ -182,3 +182,17 @@ describe('whether the state is live', () => {
     }
   });
 });
+
+test('a run being prepared shows its lane as preparing, and leaves no VM out of the leftovers', async () => {
+  const preparing = {
+    commit: 'abcdef0123456789abcdef0123456789abcdef01',
+    repository: 'dbtlr/hugi',
+    startedAt: '2026-11-19T10:05:48.000Z',
+    statusName: 'hugi / test (macos-15)',
+  };
+  const rows = await byName({ listVms, state: { ...state, run: preparing } });
+  expect(rows.run).toBe(
+    'hugi / test (macos-15), dbtlr/hugi @ abcdef012345, started 2026-11-19T10:05:48.000Z, 4m12s elapsed (preparing)',
+  );
+  expect(rows['leftover VMs']).toBe('hugi-svc-run1, hugi-svc-old');
+});

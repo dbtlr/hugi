@@ -61,6 +61,20 @@ test('writing leaves no temporary file behind and replaces the old state whole',
   expect(read).toEqual({ ...full, pid: 1 });
 });
 
+test('a run still being prepared has no vm yet, and round-trips', async () => {
+  const state: ServiceState = {
+    ...full,
+    run: {
+      commit: 'a'.repeat(40),
+      repository: 'dbtlr/hugi',
+      startedAt: '2026-11-19T10:00:40.000Z',
+      statusName: 'hugi / test (macos-15)',
+    },
+  };
+  await writeServiceState(dir, state);
+  expect(await readServiceState(dir)).toEqual(state);
+});
+
 test('an absent state reads as absent', async () => {
   expect(await readServiceState(dir)).toBeUndefined();
 });
@@ -84,7 +98,8 @@ test.each([
     'a queue with a string count',
     JSON.stringify({ ...full, queue: { candidates: '3', waiting: 0 } }),
   ],
-  ['a run missing its vm', JSON.stringify({ ...full, run: { ...full.run, vm: undefined } })],
+  ['a run with an empty vm', JSON.stringify({ ...full, run: { ...full.run, vm: '' } })],
+  ['a run whose vm is not text', JSON.stringify({ ...full, run: { ...full.run, vm: 7 } })],
 ])('%s is reported as unreadable, with a message', async (_name, text) => {
   await writeServiceState(dir, full);
   await writeFile(join(dir, SERVICE_STATE_FILE), text);

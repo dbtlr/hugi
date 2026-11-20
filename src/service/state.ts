@@ -16,12 +16,15 @@ import { isMapping } from '../yaml/strict';
 /** The state file's name inside the state directory. */
 export const SERVICE_STATE_FILE = 'service.json';
 
-/** The run in flight; `vm` is its `hugi-svc-*` VM, which `status` leaves out of the leftovers. */
+/**
+ * The run in flight. `vm` is its `hugi-svc-*` VM, which `status` leaves out of the leftovers; it is
+ * absent while the run is being prepared, before its VM is about to boot.
+ */
 export type ServiceRun = {
   readonly statusName: string;
   readonly repository: string;
   readonly commit: string;
-  readonly vm: string;
+  readonly vm?: string;
   /** ISO 8601 UTC. */
   readonly startedAt: string;
 };
@@ -79,7 +82,7 @@ function isRun(value: unknown): value is ServiceRun {
     isText(value.statusName) &&
     isText(value.repository) &&
     isText(value.commit) &&
-    isText(value.vm) &&
+    (value.vm === undefined || isText(value.vm)) &&
     isIsoTimestamp(value.startedAt)
   );
 }
