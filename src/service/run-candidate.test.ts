@@ -398,3 +398,19 @@ test("the merge's declaration is read with the facts read at run start, not the 
   expect(outcome).toMatchObject({ kind: 'finished', status: { state: 'success' } });
   expect(vmCalls).toHaveLength(1);
 });
+
+test("the run itself gets the pull request facts read at run start, not the poll's", async () => {
+  const { deps, hooks, vmCalls } = harness();
+  // The poll saw the pull request aimed at develop; at run start GitHub reports main.
+  const polled = pullCandidate();
+  const candidate: Candidate = {
+    ...polled,
+    event: {
+      kind: 'pull_request',
+      pullRequest: { baseRef: 'develop', headRef: 'feature', headSha: HEAD, number: 7 },
+    },
+  };
+  await createRunCandidate(deps)(candidate, hooks);
+  const [call] = vmCalls;
+  expect(call?.request.event).toMatchObject({ pullRequest: { baseRef: 'main' } });
+});

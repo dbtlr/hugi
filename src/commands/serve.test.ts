@@ -14,6 +14,7 @@ import { GitHubReadError } from '../github/client';
 import { rejectionOf } from '../runs/testing';
 import { acquireServeLock, ServeLockError } from '../service/lock';
 import { openHostSource } from '../source/host-source';
+import { resolveRunsDir } from '../source/locations';
 import { githubRepositorySpec } from '../source/repository-spec';
 import type { RunRequest, RunResult } from '../vm';
 import { advanceUntilSettled, FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
@@ -604,6 +605,13 @@ describe('the lock', () => {
     const second = serveDeps(realLockPorts(process.pid + 1));
     expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
     await release();
+  });
+
+  test('service runs go to the runs directory hugi run and hugi logs use', () => {
+    const env = { XDG_STATE_HOME: join(scratch, 'state') };
+    const home = join(scratch, 'home');
+    expect(servePaths(undefined, env, home).runsDir).toBe(resolveRunsDir(env, home));
+    expect(servePaths(undefined, {}, home).runsDir).toBe(resolveRunsDir({}, home));
   });
 
   onDarwin('a service started with another XDG_STATE_HOME contends for the same lock', async () => {
