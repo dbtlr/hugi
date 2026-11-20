@@ -172,13 +172,11 @@ test('coordinator events update the state the service writes', async () => {
       commit: 'abc',
       kind: 'run-started',
       repository: 'dbtlr/hugi',
-      runId: 'r1',
       statusName: 'hugi / test',
       vmId: 'x1',
     },
     {
       commit: 'abc',
-      ending: 'passed',
       kind: 'run-ended',
       repository: 'dbtlr/hugi',
       statusName: 'hugi / test',
@@ -230,7 +228,6 @@ test('applyEvent names the run in flight once its VM is known', () => {
     started,
     {
       commit: 'abc',
-      ending: 'failed',
       kind: 'run-ended',
       repository: 'dbtlr/hugi',
       statusName: 'hugi / test',
@@ -246,7 +243,7 @@ test('the sweep and the loop get what the setup check found', async () => {
     ...harness().deps,
     checkSetup: async () => 'tools found once',
     coordinate: async (_config, setup) => void got.push(`coordinate: ${setup}`),
-    sweep: async (_config, setup) => {
+    sweep: async (setup) => {
       got.push(`sweep: ${setup}`);
       return { deleted: [], failed: [] };
     },
@@ -261,10 +258,6 @@ test('applyEvent shows a run being prepared before its VM is known, from when it
   const preparing = applyEvent(base, { kind: 'run-started', ...lane }, NOW);
   expect(preparing.run).toEqual({ ...lane, startedAt: NOW.toISOString() });
   const later = new Date(NOW.getTime() + 90_000);
-  const booting = applyEvent(
-    preparing,
-    { kind: 'run-started', ...lane, runId: 'r1', vmId: 'x1' },
-    later,
-  );
+  const booting = applyEvent(preparing, { kind: 'run-started', ...lane, vmId: 'x1' }, later);
   expect(booting.run).toEqual({ ...lane, startedAt: NOW.toISOString(), vm: 'hugi-svc-x1' });
 });

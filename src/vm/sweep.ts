@@ -7,11 +7,6 @@ import { messageOf } from '../errors';
 import type { Tart } from './tart';
 import { assertVmPrefix } from './vm-prefix';
 
-export type SweepOptions = {
-  /** Called with each VM just before its delete, for a log line. */
-  readonly onDelete?: (vm: string) => void;
-};
-
 export type SweepResult = {
   readonly deleted: string[];
   readonly failed: { readonly vm: string; readonly message: string }[];
@@ -22,18 +17,13 @@ export type SweepResult = {
  * sweep goes on; a failed `list` throws, since nothing is known about what exists. An invalid
  * prefix throws before any tart call.
  */
-export async function sweepVms(
-  tart: Tart,
-  prefix: string,
-  options: SweepOptions = {},
-): Promise<SweepResult> {
+export async function sweepVms(tart: Tart, prefix: string): Promise<SweepResult> {
   assertVmPrefix(prefix);
   const result: SweepResult = { deleted: [], failed: [] };
   for (const vm of await tart.list()) {
     if (!vm.startsWith(prefix)) {
       continue;
     }
-    options.onDelete?.(vm);
     try {
       // oxlint-disable-next-line no-await-in-loop -- one delete at a time, by design
       await tart.delete(vm);

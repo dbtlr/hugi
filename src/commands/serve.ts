@@ -190,8 +190,7 @@ export function perRepositoryReader(fetch: Fetch, tokens: InstallationTokens): G
     commitStatuses: (repository, sha) => read(repository, (r) => r.commitStatuses(repository, sha)),
     defaultBranchHead: (repository) => read(repository, (r) => r.defaultBranchHead(repository)),
     openPullRequests: (repository) => read(repository, (r) => r.openPullRequests(repository)),
-    pullRequest: (repository, number) =>
-      read(repository, (r) => r.pullRequest(repository, number)),
+    pullRequest: (repository, number) => read(repository, (r) => r.pullRequest(repository, number)),
   };
 }
 
@@ -261,7 +260,7 @@ export function serveDeps(ports: ServePorts): StartDeps<ServeSetup> {
     log,
     now: ports.now,
     pid,
-    sweep: (_config, setup) => sweepVms(createTartCli(setup.spawn, ports.clock), SERVICE_VM_PREFIX),
+    sweep: (setup) => sweepVms(createTartCli(setup.spawn, ports.clock), SERVICE_VM_PREFIX),
     writeState: (state) => writeServiceState(paths.stateDir, state),
   };
 }

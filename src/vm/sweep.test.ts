@@ -49,13 +49,6 @@ test('a failed list propagates', async () => {
   expect(String(await failureOf(sweepVms(tart, SERVICE_VM_PREFIX)))).toContain('tart is wedged');
 });
 
-test('the onDelete hook sees each VM before its delete', async () => {
-  const tart = setup(['hugi-svc-a']);
-  const seen: string[] = [];
-  await sweepVms(tart, SERVICE_VM_PREFIX, { onDelete: (vm) => seen.push(vm) });
-  expect(seen).toEqual(['hugi-svc-a']);
-});
-
 test.each(['', 'hugi-', 'hugi-svc', 'hugi-svc-x-', 'hugi-Run-', 'ci-', 'hugi-1-', 'hugi--'])(
   'the prefix %p is refused before any tart call',
   async (prefix) => {
