@@ -58,6 +58,8 @@ type Script = (command: string, args: readonly string[]) => FakeCommand;
 function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {}) {
   const clock = new FakeClock();
   const spawned: string[] = [];
+  // Each call's argument list as given, so a path with a space stays one argument.
+  const argvs: string[][] = [];
   /** Each program started, by the command it was started as, and the PATH it was given. */
   const started: { command: string; path: string | undefined }[] = [];
   let next: { command: string; args: readonly string[] } | undefined;
@@ -73,6 +75,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
       platform: 'linux',
       spawn: (command, args, options) => {
         spawned.push([command, ...args].join(' '));
+        argvs.push([...args]);
         started.push({ command, path: options?.env?.PATH });
         next = { args, command };
         return fake.spawn(command, args, options);
@@ -89,7 +92,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
     signal: new AbortController().signal,
     ...overrides,
   };
-  return { clock, ports, spawned, started };
+  return { argvs, clock, ports, spawned, started };
 }
 
 const VM_LIST = JSON.stringify([
@@ -358,7 +361,7 @@ async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
     return PASSED;
   };
   const git = fakeGit(withLanes);
-  const { clock, ports, spawned, started } = portsOf(
+  const { argvs, clock, ports, started } = portsOf(
     (command, args) => (command.endsWith('git') ? git(args) : { output: '[]' }),
     { fetch: laneGitHub(pull), runInVm, signal: stop.signal },
   );
@@ -380,7 +383,7 @@ async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
   return {
     first,
     // What the run started, the poll's calls left out: each program, its PATH, and its arguments.
-    runArgs: spawned.slice(polled).map((line) => gitCommandOf(line.split(' ').slice(1))),
+    runArgs: argvs.slice(polled).map((args) => gitCommandOf(args)),
     runStarted: started.slice(polled),
     signal: stop.signal,
     started,
