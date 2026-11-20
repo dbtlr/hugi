@@ -34,10 +34,13 @@ type Recorded = {
   logs: { level: string; message: string }[];
 };
 
-function harness(overrides: Partial<StartDeps> = {}): { deps: StartDeps; seen: Recorded } {
+function harness(overrides: Partial<StartDeps<void>> = {}): {
+  deps: StartDeps<void>;
+  seen: Recorded;
+} {
   const seen: Recorded = { logs: [], states: [], steps: [] };
   const log = (level: string) => (message: string) => void seen.logs.push({ level, message });
-  const deps: StartDeps = {
+  const deps: StartDeps<void> = {
     acquireLock: async () => {
       seen.steps.push('lock');
       return async () => void seen.steps.push('release');
@@ -182,7 +185,7 @@ test('coordinator events update the state the service writes', async () => {
     },
   ];
   const { deps, seen } = harness({
-    coordinate: async (_config, report) => {
+    coordinate: async (_config, _setup, report) => {
       for (const event of events) {
         // oxlint-disable-next-line no-await-in-loop -- events arrive one at a time
         await report(event);
@@ -235,4 +238,19 @@ test('applyEvent names the run in flight once its VM is known', () => {
     NOW,
   );
   expect(ended.run).toBeUndefined();
+});
+
+test('the sweep and the loop get what the setup check found', async () => {
+  const got: string[] = [];
+  const deps: StartDeps<string> = {
+    ...harness().deps,
+    checkSetup: async () => 'tools found once',
+    coordinate: async (_config, setup) => void got.push(`coordinate: ${setup}`),
+    sweep: async (_config, setup) => {
+      got.push(`sweep: ${setup}`);
+      return { deleted: [], failed: [] };
+    },
+  };
+  await startService(deps);
+  expect(got).toEqual(['sweep: tools found once', 'coordinate: tools found once']);
 });

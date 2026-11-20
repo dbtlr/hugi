@@ -13,6 +13,7 @@ import type { Host } from '@loomcli/core';
 import { messageOf } from '../errors';
 import type { PullRequestFacts } from '../github/pull-request';
 import type { SourceLocation } from '../vm';
+import type { Clock } from '../vm/tart';
 import { createGit } from './git';
 import type { Git, GitTransport } from './git';
 import { inspectPrivacy } from './private-path';
@@ -112,6 +113,8 @@ export type HostSourceOptions = {
   readonly cacheDir: string;
   /** An optional deadline for each host git call. */
   readonly deadlineMs?: number;
+  /** The clock that deadline is measured on; the system clock unless a test replaces it. */
+  readonly clock?: Clock;
   /** The run's `host.spawn`, the only way this module starts a program. */
   readonly spawn: Host['spawn'];
   /** The run's `host.env`, from which git's environment is built. */
@@ -309,14 +312,17 @@ const NOTHING_TO_RELEASE = async (): Promise<void> => {};
 /** The guest's source: the clone URL, or a fresh snapshot of `sha` for a local repository. */
 function guestSourceOf(spec: RepositorySpec, sha: string, options: HostSourceOptions) {
   const gitFor = (transport: GitTransport) =>
-    createGit({
-      cwd: options.cwd,
-      deadlineMs: options.deadlineMs,
-      env: options.env,
-      lazyFetch: false,
-      spawn: options.spawn,
-      transport,
-    });
+    createGit(
+      {
+        cwd: options.cwd,
+        deadlineMs: options.deadlineMs,
+        env: options.env,
+        lazyFetch: false,
+        spawn: options.spawn,
+        transport,
+      },
+      options.clock,
+    );
   return async (): Promise<GuestSource> => {
     if (spec.kind === 'github') {
       return { location: { cloneUrl: spec.cloneUrl, kind: 'remote' }, release: NOTHING_TO_RELEASE };
@@ -341,14 +347,17 @@ function guestSourceOf(spec: RepositorySpec, sha: string, options: HostSourceOpt
 
 /** The hardened git for `spec`: lazy fetching only for a GitHub source, over its transport. */
 function sourceGit(spec: RepositorySpec, options: HostSourceOptions): Git {
-  return createGit({
-    cwd: options.cwd,
-    deadlineMs: options.deadlineMs,
-    env: options.env,
-    lazyFetch: spec.kind === 'github',
-    spawn: options.spawn,
-    transport: options.remoteTransport ?? 'https',
-  });
+  return createGit(
+    {
+      cwd: options.cwd,
+      deadlineMs: options.deadlineMs,
+      env: options.env,
+      lazyFetch: spec.kind === 'github',
+      spawn: options.spawn,
+      transport: options.remoteTransport ?? 'https',
+    },
+    options.clock,
+  );
 }
 
 /**

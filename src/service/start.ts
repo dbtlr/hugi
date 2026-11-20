@@ -15,18 +15,20 @@ import type { SweepResult } from '../vm/sweep';
 import type { CoordinatorEvent, CoordinatorLog } from './loop';
 import type { ServiceState } from './state';
 
-export type StartDeps = {
+/** The start's collaborators. `Setup` is what the setup check found, which the sweep and the loop use. */
+export type StartDeps<Setup> = {
   /** Take the lock, or throw `ServeLockError`; returns the release. */
   readonly acquireLock: () => Promise<() => Promise<void>>;
   readonly loadConfig: () => Promise<HugiConfig>;
-  /** Throw, saying what to fix, unless the App key and the host tools are usable. */
-  readonly checkSetup: (config: HugiConfig) => Promise<void>;
+  /** Throw, saying what to fix, unless the App key and the host tools are usable; else return what it found. */
+  readonly checkSetup: (config: HugiConfig) => Promise<Setup>;
   /** Delete the `hugi-svc-*` VMs; a failed listing throws. */
-  readonly sweep: (config: HugiConfig) => Promise<SweepResult>;
+  readonly sweep: (config: HugiConfig, setup: Setup) => Promise<SweepResult>;
   readonly writeState: (state: ServiceState) => Promise<void>;
   /** Run the coordinator until it is stopped, reporting its events. */
   readonly coordinate: (
     config: HugiConfig,
+    setup: Setup,
     report: (event: CoordinatorEvent) => Promise<void>,
   ) => Promise<void>;
   readonly log: CoordinatorLog;
@@ -71,10 +73,14 @@ export function applyEvent(state: ServiceState, event: CoordinatorEvent, now: Da
 }
 
 /** Log what the startup sweep did; a failed sweep is an error, and the service still starts. */
-async function sweepLeftovers(deps: StartDeps, config: HugiConfig): Promise<void> {
+async function sweepLeftovers<Setup>(
+  deps: StartDeps<Setup>,
+  config: HugiConfig,
+  setup: Setup,
+): Promise<void> {
   let result: SweepResult;
   try {
-    result = await deps.sweep(config);
+    result = await deps.sweep(config, setup);
   } catch (error) {
     deps.log.error(`Could not sweep leftover VMs: ${messageOf(error)}`);
     return;
@@ -87,7 +93,7 @@ async function sweepLeftovers(deps: StartDeps, config: HugiConfig): Promise<void
   }
 }
 
-export async function startService(deps: StartDeps): Promise<void> {
+export async function startService<Setup>(deps: StartDeps<Setup>): Promise<void> {
   const release = await deps.acquireLock();
   const write = async (state: ServiceState): Promise<void> => {
     try {
@@ -99,9 +105,10 @@ export async function startService(deps: StartDeps): Promise<void> {
   try {
     const startedAt = deps.now().toISOString();
     let config: HugiConfig;
+    let setup: Setup;
     try {
       config = await deps.loadConfig();
-      await deps.checkSetup(config);
+      setup = await deps.checkSetup(config);
     } catch (error) {
       const reason = messageOf(error);
       await write({
@@ -114,8 +121,8 @@ export async function startService(deps: StartDeps): Promise<void> {
     let state: ServiceState = { pid: deps.pid, start: { kind: 'running' }, startedAt };
     await write(state);
     deps.log.info(`hugi serve started (pid ${deps.pid}).`);
-    await sweepLeftovers(deps, config);
-    await deps.coordinate(config, async (event) => {
+    await sweepLeftovers(deps, config, setup);
+    await deps.coordinate(config, setup, async (event) => {
       state = applyEvent(state, event, deps.now());
       await write(state);
     });
