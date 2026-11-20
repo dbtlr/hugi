@@ -68,12 +68,34 @@ async function readLock(path: string): Promise<LockContents | undefined> {
 const isServeCommand = (command: string): boolean =>
   command.includes('serve') && command.includes('hugi');
 
+/** The boot time when it cannot be read; it proves nothing, so it never makes a lock stale. */
+const UNKNOWN_BOOT = 'unknown';
+
+/** How far two readings of one boot's time may differ: macOS adjusts it as the clock is corrected. */
+const BOOT_DRIFT_SECONDS = 60;
+
+/** The boot's seconds from `sysctl -n kern.boottime` (`{ sec = N, usec = M } …`), if it reads as one. */
+function bootSeconds(boot: string): number | undefined {
+  const match = /\bsec = (\d+)/u.exec(boot);
+  return match?.[1] === undefined ? undefined : Number(match[1]);
+}
+
 /**
- * Whether `held` is a live `hugi serve` of this boot. A live pid whose command cannot be read is
+ * Whether two boot times are from different boots. Only the seconds count, within a drift, since
+ * the microseconds change between readings; a time either side could not read decides nothing.
+ */
+function isOtherBoot(held: string, current: string): boolean {
+  const [a, b] = [bootSeconds(held), bootSeconds(current)];
+  return a !== undefined && b !== undefined && Math.abs(a - b) > BOOT_DRIFT_SECONDS;
+}
+
+/**
+ * Whether `held` is a live `hugi serve` of this boot. A boot time either side could not read
+ * leaves the decision to the pid and its command. A live pid whose command cannot be read is
  * treated as live, so an unreadable `ps` never lets a second service start.
  */
 async function isHeld(held: LockContents, boot: string, deps: ServeLockDeps): Promise<boolean> {
-  if (held.bootTime !== boot || !deps.isAlive(held.pid)) {
+  if (isOtherBoot(held.bootTime, boot) || !deps.isAlive(held.pid)) {
     return false;
   }
   const command = await deps.commandOf(held.pid);
@@ -177,7 +199,9 @@ function processIsAlive(pid: number): boolean {
 /**
  * The real deps: `kill(pid, 0)` for liveness, `sysctl -n kern.boottime` on darwin for the boot
  * time (a fixed word elsewhere, where Hugi's VM host never runs), and `ps` for a command line.
- * Programs start through the run's `host.spawn`.
+ * Programs start through the run's `host.spawn`, by absolute path: a launchd agent's bare `PATH`
+ * does not hold `/usr/sbin`, and a boot time one starter could read and another could not would
+ * otherwise make a held lock look stale.
  */
 export function createServeLockDeps(
   spawn: Spawn,
@@ -186,9 +210,9 @@ export function createServeLockDeps(
   return {
     bootTime: async () =>
       from.platform === 'darwin'
-        ? ((await output(spawn, 'sysctl', ['-n', 'kern.boottime'])) ?? 'unknown')
-        : 'unknown',
-    commandOf: (pid) => output(spawn, 'ps', ['-p', String(pid), '-o', 'command=']),
+        ? ((await output(spawn, '/usr/sbin/sysctl', ['-n', 'kern.boottime'])) ?? UNKNOWN_BOOT)
+        : UNKNOWN_BOOT,
+    commandOf: (pid) => output(spawn, '/bin/ps', ['-p', String(pid), '-o', 'command=']),
     isAlive: processIsAlive,
     pid: from.pid,
   };

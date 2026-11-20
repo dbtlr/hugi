@@ -18,7 +18,7 @@ afterEach(async () => {
   await rm(scratch, { force: true, recursive: true });
 });
 
-const BOOT = 'boot-1';
+const BOOT = '{ sec = 1788622746, usec = 311837 } Sat Sep  5 11:39:06 2026';
 
 function deps(overrides: Partial<ServeLockDeps> = {}): ServeLockDeps {
   return {
@@ -49,8 +49,33 @@ test('a lock held by a live hugi serve is refused, naming its pid, with exit 1',
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
 });
 
+test('a live hugi serve keeps the lock when the boot time drifts by microseconds', async () => {
+  await acquireServeLock(dir, deps({ pid: 50 }));
+  const drifted = '{ sec = 1788622746, usec = 195373 } Sat Sep  5 11:39:06 2026';
+  const refusal = await acquireServeLock(dir, deps({ bootTime: async () => drifted })).catch(
+    (error: unknown) => error,
+  );
+  expect(refusal).toBeInstanceOf(ServeLockError);
+});
+
 test.each([
-  ['its boot time differs', { bootTime: async () => 'boot-2' }],
+  ['its holder could not read the boot time', 'unknown'],
+  ['this starter cannot read the boot time', BOOT],
+])('a live hugi serve keeps the lock when %s', async (_name, holderBoot) => {
+  await acquireServeLock(dir, deps({ bootTime: async () => holderBoot, pid: 50 }));
+  const starterBoot = holderBoot === 'unknown' ? BOOT : 'unknown';
+  const refusal = await acquireServeLock(dir, deps({ bootTime: async () => starterBoot })).catch(
+    (error: unknown) => error,
+  );
+  expect(refusal).toBeInstanceOf(ServeLockError);
+  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
+});
+
+test.each([
+  [
+    'it is from another boot',
+    { bootTime: async () => '{ sec = 1788700000, usec = 1 } Sun Sep  6 09:06:40 2026' },
+  ],
   ['its pid is not alive', { isAlive: () => false }],
   ['the live pid is another program', { commandOf: async () => '/usr/bin/vim hugi-notes' }],
   [
@@ -138,13 +163,14 @@ function fakeSpawn(replies: Record<string, Reply>) {
 
 test('production deps read the darwin boot time from sysctl and the command from ps', async () => {
   const { calls, spawn } = fakeSpawn({
-    'ps -p 321 -o command=': { code: 0, text: '/opt/hugi serve\n' },
-    'sysctl -n kern.boottime': { code: 0, text: '{ sec = 1700000000, usec = 5 } Tue\n' },
+    '/bin/ps -p 321 -o command=': { code: 0, text: '/opt/hugi serve\n' },
+    '/usr/sbin/sysctl -n kern.boottime': { code: 0, text: '{ sec = 1700000000, usec = 5 } Tue\n' },
   });
   const real = createServeLockDeps(spawn, { pid: 1, platform: 'darwin' });
   expect(await real.bootTime()).toBe('{ sec = 1700000000, usec = 5 } Tue');
   expect(await real.commandOf(321)).toBe('/opt/hugi serve');
-  expect(calls).toEqual(['sysctl -n kern.boottime', 'ps -p 321 -o command=']);
+  // By absolute path: a launchd agent's bare PATH, or a configured `path`, may not reach /usr/sbin.
+  expect(calls).toEqual(['/usr/sbin/sysctl -n kern.boottime', '/bin/ps -p 321 -o command=']);
 });
 
 test('production commandOf is undefined when ps fails or prints nothing', async () => {
