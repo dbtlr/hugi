@@ -220,7 +220,7 @@ export type TailFile = {
     offset: number,
     length: number,
     position: number,
-  ) => Promise<unknown>;
+  ) => Promise<{ readonly bytesRead: number }>;
   readonly close: () => Promise<void>;
 };
 
@@ -249,9 +249,14 @@ export async function readTailLines(
       const chunk = Buffer.alloc(length);
       // Each read depends on how many lines the last ones gave.
       // eslint-disable-next-line no-await-in-loop
-      await handle.read(chunk, 0, length, position);
-      newlines += chunk.filter((byte) => byte === NEWLINE_BYTE).length;
-      chunks.push(chunk);
+      const { bytesRead } = await handle.read(chunk, 0, length, position);
+      // A file that shrank after `stat` reads short; the rest of the buffer is zero fill.
+      const kept = chunk.subarray(0, bytesRead);
+      newlines += kept.filter((byte) => byte === NEWLINE_BYTE).length;
+      chunks.push(kept);
+      if (bytesRead < length) {
+        break;
+      }
     }
     const lines = Buffer.concat(chunks.toReversed()).toString('utf8').split('\n');
     if (position > 0) {

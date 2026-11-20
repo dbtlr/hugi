@@ -370,6 +370,21 @@ test('the reader reads no more than its bound, whatever the file holds', async (
   expect(counted.bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
 });
 
+test('a read shorter than asked keeps only the bytes read, never zero-filled bytes', async () => {
+  // The file shrank after stat: it reports 64 bytes but holds 8.
+  const content = Buffer.from('one\ntwo\n');
+  const openFile = async () => ({
+    close: async () => {},
+    read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+      const piece = content.subarray(position, position + length);
+      piece.copy(buffer, offset);
+      return { bytesRead: piece.length };
+    },
+    stat: async () => ({ size: 64 }),
+  });
+  expect(await readTailLines('ignored', 5, openFile)).toEqual(['one', 'two']);
+});
+
 test('the reader stops at the chunk that holds the lines asked for', async () => {
   // 2 MiB of short records: the last chunk alone holds the five asked for.
   const records = Array.from({ length: 30_000 }, (_, index) => `${'r'.repeat(64)} ${index}`);
