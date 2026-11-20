@@ -11,6 +11,9 @@ import { join } from 'node:path';
 import { FatalError } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
 
+import { isMapping } from '../yaml/strict';
+import { errnoCode } from './errno';
+
 /** The lock's file name inside the state directory. */
 export const SERVE_LOCK_FILE = 'serve.lock';
 
@@ -39,10 +42,10 @@ type LockContents = { readonly pid: number; readonly bootTime: string };
 function parseLock(text: string): LockContents | undefined {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed !== 'object' || parsed === null) {
+    if (!isMapping(parsed)) {
       return undefined;
     }
-    const { bootTime, pid } = parsed as Record<string, unknown>;
+    const { bootTime, pid } = parsed;
     return typeof pid === 'number' && Number.isSafeInteger(pid) && typeof bootTime === 'string'
       ? { bootTime, pid }
       : undefined;
@@ -55,7 +58,7 @@ async function readLock(path: string): Promise<LockContents | undefined> {
   try {
     return parseLock(await readFile(path, 'utf8'));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (errnoCode(error) === 'ENOENT') {
       return undefined;
     }
     throw error;
@@ -112,7 +115,7 @@ export async function acquireServeLock(
     await writeFile(path, text, { flag: 'wx', mode: 0o600 });
     return release;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+    if (errnoCode(error) !== 'EEXIST') {
       throw error;
     }
   }
@@ -139,7 +142,11 @@ export async function acquireServeLock(
 type Spawn = Host['spawn'];
 
 /** Run a command and return its trimmed stdout, or `undefined` when it fails or prints nothing. */
-async function output(spawn: Spawn, command: string, args: readonly string[]): Promise<string | undefined> {
+async function output(
+  spawn: Spawn,
+  command: string,
+  args: readonly string[],
+): Promise<string | undefined> {
   const exit = await spawn(command, args).exited;
   if (exit.kind !== 'exited' || exit.code !== 0) {
     return undefined;
@@ -151,10 +158,12 @@ async function output(spawn: Spawn, command: string, args: readonly string[]): P
 /** `process.kill(pid, 0)`: `EPERM` means the process exists but belongs to someone else. */
 function processIsAlive(pid: number): boolean {
   try {
+    // Host has no way to signal a process, and the lock needs only this existence probe.
+    // oxlint-disable-next-line @loomcli/host-bypass
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    const { code } = error as NodeJS.ErrnoException;
+    const code = errnoCode(error);
     if (code === 'EPERM') {
       return true;
     }

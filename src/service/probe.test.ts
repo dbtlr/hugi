@@ -32,6 +32,8 @@ function input(overrides: Partial<ProbeInput> = {}): ProbeInput {
   };
 }
 
+const listVms = async () => ['hugi-svc-run1', 'hugi-svc-old', 'hugi-run-x', 'golden'];
+
 const byName = async (overrides: Partial<ProbeInput> = {}) =>
   Object.fromEntries((await serviceRows(input(overrides))).map((row) => [row.name, row.value]));
 
@@ -98,14 +100,15 @@ test('a missing state says there is no state yet', async () => {
 });
 
 test('an unreadable state says so in each state row', async () => {
-  const rows = await byName({ state: { kind: 'error', message: 'service.json is not valid JSON' } });
+  const rows = await byName({
+    state: { kind: 'error', message: 'service.json is not valid JSON' },
+  });
   for (const name of ['run', 'queue', 'last poll', 'start']) {
     expect(rows[name]).toBe('state unreadable: service.json is not valid JSON');
   }
 });
 
 test('leftover VMs lists hugi-svc-* names only, and leaves out the run in flight while running', async () => {
-  const listVms = async () => ['hugi-svc-run1', 'hugi-svc-old', 'hugi-run-x', 'golden'];
   expect((await byName({ listVms }))['leftover VMs']).toBe('hugi-svc-old');
   expect((await byName({ listVms, running: false }))['leftover VMs']).toBe(
     'hugi-svc-run1, hugi-svc-old',
@@ -142,7 +145,15 @@ test('createProbe reads the state file and uses the manager’s running flag', a
     now: () => NOW,
     readState: async () => state,
   });
-  const context = { state: { running: false } } as Parameters<typeof probe>[0];
-  const rows = await probe(context);
+  const rows = await probe({
+    state: {
+      installed: true,
+      label: 'dev.hugi',
+      notes: [],
+      running: false,
+      state: 'not loaded',
+      unit: '/unit.plist',
+    },
+  });
   expect(rows.find((row) => row.name === 'start')?.value).toContain('stale');
 });

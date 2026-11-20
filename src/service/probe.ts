@@ -41,20 +41,22 @@ export function formatRelative(ms: number): string {
   return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
+const two = (value: number) => String(value).padStart(2, '0');
+
 /** A duration as `12s`, `4m12s`, or `1h02m05s`. */
 export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  const two = (value: number) => String(value).padStart(2, '0');
   if (hours > 0) {
     return `${hours}h${two(minutes)}m${two(seconds)}s`;
   }
   return minutes > 0 ? `${minutes}m${two(seconds)}s` : `${seconds}s`;
 }
 
-const ago = (iso: string, now: Date) => `${iso} (${formatRelative(now.getTime() - Date.parse(iso))})`;
+const ago = (iso: string, now: Date) =>
+  `${iso} (${formatRelative(now.getTime() - Date.parse(iso))})`;
 
 function runRow(state: ServiceState, now: Date): string {
   const { run } = state;
@@ -135,7 +137,7 @@ export type ProbeDeps = {
 /** The `probe` for Loom's `ServiceSettings`. */
 export function createProbe(
   deps: ProbeDeps,
-): (context: ProbeContext) => Promise<readonly ServiceDetail[]> {
+): (context: Pick<ProbeContext, 'state'>) => Promise<readonly ServiceDetail[]> {
   return async (context) =>
     serviceRows({
       listVms: deps.listVms,

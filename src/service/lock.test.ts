@@ -5,12 +5,7 @@ import { join } from 'node:path';
 
 import type { Host } from '@loomcli/core';
 
-import {
-  acquireServeLock,
-  createServeLockDeps,
-  SERVE_LOCK_FILE,
-  ServeLockError,
-} from './lock';
+import { acquireServeLock, createServeLockDeps, SERVE_LOCK_FILE, ServeLockError } from './lock';
 import type { ServeLockDeps } from './lock';
 
 let scratch: string;
@@ -49,7 +44,7 @@ test('a lock held by a live hugi serve is refused, naming its pid, with exit 1',
   await acquireServeLock(dir, deps({ pid: 50 }));
   const refusal = await acquireServeLock(dir, deps()).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(ServeLockError);
-  expect((refusal as ServeLockError).message).toContain('50');
+  expect(refusal instanceof Error && refusal.message).toContain('50');
   expect(ServeLockError.exitCode).toBe(1);
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
 });
@@ -58,7 +53,10 @@ test.each([
   ['its boot time differs', { bootTime: async () => 'boot-2' }],
   ['its pid is not alive', { isAlive: () => false }],
   ['the live pid is another program', { commandOf: async () => '/usr/bin/vim hugi-notes' }],
-  ['the live pid runs hugi with another command', { commandOf: async () => 'hugi run ci.yml:test' }],
+  [
+    'the live pid runs hugi with another command',
+    { commandOf: async () => 'hugi run ci.yml:test' },
+  ],
 ])('a lock is taken over when %s', async (_name, override) => {
   await acquireServeLock(dir, deps({ pid: 50 }));
   await acquireServeLock(dir, deps({ pid: 100, ...override }));
@@ -68,20 +66,22 @@ test.each([
 
 test('a live pid whose command cannot be read is not taken from', async () => {
   await acquireServeLock(dir, deps({ pid: 50 }));
-  await expect(acquireServeLock(dir, deps({ commandOf: async () => undefined }))).rejects.toThrow(
-    ServeLockError,
+  const refusal = await acquireServeLock(dir, deps({ commandOf: async () => undefined })).catch(
+    (error: unknown) => error,
   );
+  expect(refusal).toBeInstanceOf(ServeLockError);
 });
 
-test.each([['not JSON', '{nope'], ['no pid', '{"bootTime":"boot-1"}'], ['empty', '']])(
-  'a lock file that is %s is taken over',
-  async (_name, text) => {
-    await acquireServeLock(dir, deps({ pid: 50 }));
-    await writeFile(lockPath(), text);
-    await acquireServeLock(dir, deps());
-    expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-  },
-);
+test.each([
+  ['not JSON', '{nope'],
+  ['no pid', '{"bootTime":"boot-1"}'],
+  ['empty', ''],
+])('a lock file that is %s is taken over', async (_name, text) => {
+  await acquireServeLock(dir, deps({ pid: 50 }));
+  await writeFile(lockPath(), text);
+  await acquireServeLock(dir, deps());
+  expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
+});
 
 test('a take-over that another starter overwrites is refused, naming the winner', async () => {
   await acquireServeLock(dir, deps({ pid: 50 }));
@@ -92,11 +92,13 @@ test('a take-over that another starter overwrites is refused, naming the winner'
       await writeLock(77);
     },
   };
-  const refusal = await acquireServeLock(dir, deps({ isAlive: (pid) => pid !== 50 }), rivalWins).catch(
-    (error: unknown) => error,
-  );
+  const refusal = await acquireServeLock(
+    dir,
+    deps({ isAlive: (pid) => pid !== 50 }),
+    rivalWins,
+  ).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(ServeLockError);
-  expect((refusal as ServeLockError).message).toContain('77');
+  expect(refusal instanceof Error && refusal.message).toContain('77');
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(77);
 });
 

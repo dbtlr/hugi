@@ -26,7 +26,9 @@ test('runs live under the XDG state directory, else ~/.local/state', () => {
 
 test('the service state directory is hugi under the XDG state home, else ~/.local/state', () => {
   expect(resolveServiceStateDir({ XDG_STATE_HOME: '/state' }, '/home/u')).toBe('/state/hugi');
-  expect(resolveServiceStateDir({ XDG_STATE_HOME: '' }, '/home/u')).toBe('/home/u/.local/state/hugi');
+  expect(resolveServiceStateDir({ XDG_STATE_HOME: '' }, '/home/u')).toBe(
+    '/home/u/.local/state/hugi',
+  );
 });
 
 test('a run directory name sorts by time and carries the short commit', () => {

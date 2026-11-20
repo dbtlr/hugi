@@ -3,7 +3,12 @@ import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { isServiceStateError, readServiceState, SERVICE_STATE_FILE, writeServiceState } from './state';
+import {
+  isServiceStateError,
+  readServiceState,
+  SERVICE_STATE_FILE,
+  writeServiceState,
+} from './state';
 import type { ServiceState } from './state';
 
 let scratch: string;
@@ -71,8 +76,14 @@ test.each([
     'a refused start with no reason',
     JSON.stringify({ ...full, start: { at: full.startedAt, kind: 'refused' } }),
   ],
-  ['a negative failure count', JSON.stringify({ ...full, lastPoll: { endedAt: full.startedAt, failures: -1 } })],
-  ['a queue with a string count', JSON.stringify({ ...full, queue: { candidates: '3', waiting: 0 } })],
+  [
+    'a negative failure count',
+    JSON.stringify({ ...full, lastPoll: { endedAt: full.startedAt, failures: -1 } }),
+  ],
+  [
+    'a queue with a string count',
+    JSON.stringify({ ...full, queue: { candidates: '3', waiting: 0 } }),
+  ],
   ['a run missing its vm', JSON.stringify({ ...full, run: { ...full.run, vm: undefined } })],
 ])('%s is reported as unreadable, with a message', async (_name, text) => {
   await writeServiceState(dir, full);

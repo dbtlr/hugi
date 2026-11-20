@@ -10,6 +10,7 @@ import { join } from 'node:path';
 
 import { messageOf } from '../errors';
 import { isIsoTimestamp } from '../runs/record';
+import { errnoCode } from './errno';
 
 /** The state file's name inside the state directory. */
 export const SERVICE_STATE_FILE = 'service.json';
@@ -123,16 +124,22 @@ export async function readServiceState(
   try {
     text = await readFile(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (errnoCode(error) === 'ENOENT') {
       return undefined;
     }
-    return { kind: 'error', message: `The service state ${path} cannot be read: ${messageOf(error)}` };
+    return {
+      kind: 'error',
+      message: `The service state ${path} cannot be read: ${messageOf(error)}`,
+    };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    return { kind: 'error', message: `The service state ${path} is not valid JSON: ${messageOf(error)}` };
+    return {
+      kind: 'error',
+      message: `The service state ${path} is not valid JSON: ${messageOf(error)}`,
+    };
   }
   if (!isState(parsed)) {
     return { kind: 'error', message: `${path} is not a Hugi service state.` };
