@@ -544,9 +544,11 @@ async function vmDepsOf(ports: ServePorts, withConfig: HugiConfig): Promise<RunD
 
 describe("a candidate's VM", () => {
   test('is named hugi-svc-<the candidate’s VM id> and sized by the configuration', async () => {
-    const deps = await vmDepsOf(portsOf().ports, config);
+    // Values that match no default, so only the configuration can produce them.
+    const sized = { ...config, vm: { cpus: 3, memoryGb: 6 } };
+    const deps = await vmDepsOf(portsOf().ports, sized);
     expect(`${deps.vmPrefix}${deps.newId()}`).toBe('hugi-svc-c0ffee12');
-    expect(deps.resources).toEqual({ cpus: 6, memoryMb: 8192 });
+    expect(deps.resources).toEqual({ cpus: 3, memoryMb: 6144 });
   });
 
   test('is driven by the tart the setup check found, with `path` as its PATH', async () => {
