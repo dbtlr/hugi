@@ -253,15 +253,20 @@ export async function runCoordinator(
     }
   };
 
-  /** Read GitHub, log what changed among the failed reads, and derive the queue. */
-  const readQueue = async (): Promise<{ snapshot: Snapshot; queue: Queue }> => {
+  /**
+   * Read GitHub, log what changed among the failed reads, and derive the queue. `failures` counts
+   * the reads that failed; a poll that threw read nothing, and counts as one.
+   */
+  const readQueue = async (): Promise<{ snapshot: Snapshot; queue: Queue; failures: number }> => {
     const current = new Map<string, LoggedFailure>();
     let snapshot: Snapshot = [];
     let queue = EMPTY_QUEUE;
+    let threw = false;
     try {
       snapshot = await deps.poll();
       queue = deriveQueue(snapshot, NOTHING_IN_FLIGHT);
     } catch (error) {
+      threw = true;
       current.set('poll', { message: `the poll failed: ${messageOf(error)}`, unexpected: true });
     }
     for (const failure of queue.failures) {
@@ -271,7 +276,7 @@ export async function runCoordinator(
       });
     }
     logReadFailures(current);
-    return { queue, snapshot };
+    return { failures: queue.failures.length + (threw ? 1 : 0), queue, snapshot };
   };
 
   /** Post each kept verdict again, or drop it once the poll shows the lane no longer needs it. */
@@ -318,7 +323,7 @@ export async function runCoordinator(
 
   /** Steps 1 and 2: poll, post what is owed, and return the queue to run from. */
   const pollOnce = async (): Promise<Candidate[]> => {
-    const { queue, snapshot } = await readQueue();
+    const { failures, queue, snapshot } = await readQueue();
     if (signal.aborted) {
       return [];
     }
@@ -330,7 +335,7 @@ export async function runCoordinator(
     }
     const candidates = queue.candidates.filter((candidate) => !posted.has(laneKey(candidate)));
     await emit({
-      failures: queue.failures.length,
+      failures,
       kind: 'poll-ended',
       queued: candidates.length,
       waiting: candidates.filter(isWaiting).length,

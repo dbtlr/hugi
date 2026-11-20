@@ -487,6 +487,17 @@ describe('read failures', () => {
     expect(runs).toHaveLength(1);
   });
 
+  test('a poll that rejects counts as a failed read in the poll-ended event', async () => {
+    const { events } = await coordinate({
+      polls: [
+        () => {
+          throw new Error('a bug');
+        },
+      ],
+    });
+    expect(events[0]).toEqual({ failures: 1, kind: 'poll-ended', queued: 0, waiting: 0 });
+  });
+
   test('are counted in the poll-ended event', async () => {
     const { events } = await coordinate({ polls: [failedPoll()] });
     expect(events[0]).toEqual({ failures: 1, kind: 'poll-ended', queued: 0, waiting: 0 });
