@@ -25,10 +25,8 @@ import type { OpenedSource } from '../source/host-source';
 import { createRunDirectory } from '../source/locations';
 import { githubRepositorySpec } from '../source/repository-spec';
 import type { GitHubRepositorySpec } from '../source/repository-spec';
+import { GOLDEN_IMAGE } from '../vm';
 import type { RunRequest, RunResult } from '../vm';
-
-/** The golden image every coordinator run clones. */
-export const SERVICE_IMAGE = 'hugi-golden';
 
 /** What a candidate's run came to, and so what the coordinator posts. */
 export type CandidateOutcome =
@@ -98,7 +96,7 @@ const laneRefOf = ({ job, matrix, workflow }: LaneRef): LaneRef => ({ job, matri
 /** The run's request for a lane: no upstream outputs, since lanes have no needs (ADR-0004). */
 function selection(lane: DeclaredLane) {
   return {
-    image: SERVICE_IMAGE,
+    image: GOLDEN_IMAGE,
     lane: { job: lane.job, workflow: lane.workflow },
     matrix: lane.matrix,
     needs: {},
