@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 
 import type { CommitStatusState } from '../github/client';
 import { StatusPostError } from '../github/statuses';
@@ -12,6 +12,7 @@ import type {
   RepositorySnapshot,
   Snapshot,
 } from '../queue/types';
+import { systemClock } from '../vm/clock';
 import {
   failureChanges,
   FIRST_WAIT_MS,
@@ -35,6 +36,8 @@ const HEAD = sha('a');
 const PR_HEAD = sha('b');
 const MERGE = sha('d');
 const RUN_ID = '2026-11-20T100000Z-aaaaaaaaa-Abc123';
+/** The wall time when the fake clock reads 0. */
+const WALL_ORIGIN = Date.parse('2026-11-20T10:00:00.000Z');
 
 const laneOf = (job: string): LaneRef => ({ job, matrix: {}, workflow: CI });
 const nameOf = (job: string) => `hugi / ${job}`;
@@ -175,6 +178,7 @@ async function coordinate(setup: Setup) {
         info: (message) => logs.push({ level: 'info', message }),
         warn: (message) => logs.push({ level: 'warn', message }),
       },
+      now: () => new Date(WALL_ORIGIN + now),
       poll: async () => {
         pollStarts.push(now);
         timeline.push('poll');
@@ -321,6 +325,8 @@ test('a lane that stays waiting is logged at each run', async () => {
     (message) => message.startsWith('hugi / build on') && message.includes('waits until'),
   );
   expect(waiting).toHaveLength(2);
+  // The wait ends 5 minutes after the run, as the wall clock shows it.
+  expect(waiting[0]).toContain('waits until 2026-11-20T10:05:00.000Z after 1 runs');
 });
 
 test('a dropped candidate posts nothing and runs again at the next poll', async () => {
@@ -526,6 +532,7 @@ test('stopping takes no more work and ends once the run in flight has ended', as
       {
         clock: { now: () => 0, sleep: async () => true },
         log: { error: () => {}, info: () => {}, warn: () => {} },
+        now: () => new Date(),
         poll: async () => pushPoll(['build', 'test']),
         report: () => {},
         reporter,
@@ -546,6 +553,46 @@ test('stopping takes no more work and ends once the run in flight has ended', as
   await coordinator;
   expect(order).toEqual(['run ended', 'stopped']);
   expect(started).toEqual(['build']);
+});
+
+test('a backward step of the wall clock does not change the poll cadence', async () => {
+  const controller = new AbortController();
+  // The longest the test waits: three polls 50 ms apart take well under this.
+  const giveUp = setTimeout(() => controller.abort(), 2000);
+  const wall = Date.now;
+  const stepped = spyOn(Date, 'now');
+  const starts: number[] = [];
+  const reporter: StatusReporter = { reportLane: async () => {}, reportRefusal: async () => {} };
+  try {
+    await runCoordinator(
+      { pollIntervalSeconds: 0.05 },
+      {
+        clock: systemClock,
+        log: { error: () => {}, info: () => {}, warn: () => {} },
+        now: () => new Date(Date.now()),
+        poll: async () => {
+          starts.push(performance.now());
+          if (starts.length === 1) {
+            const back = wall() - 2 * 60 * MINUTE;
+            stepped.mockReturnValue(back);
+          }
+          if (starts.length === 3) {
+            controller.abort();
+          }
+          return [];
+        },
+        report: () => {},
+        reporter,
+        runCandidate: async (candidate) => noVerdict(candidate, { started: async () => {} }),
+        signal: controller.signal,
+      },
+    );
+  } finally {
+    clearTimeout(giveUp);
+    stepped.mockRestore();
+  }
+  expect(starts).toHaveLength(3);
+  expect((starts[2] ?? 0) - (starts[0] ?? 0)).toBeLessThan(1000);
 });
 
 describe('decisions', () => {

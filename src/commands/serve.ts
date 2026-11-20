@@ -195,6 +195,7 @@ async function coordinate(
   await runCoordinator(config, {
     clock: ports.clock,
     log,
+    now: ports.now,
     poll: () =>
       pollRepositories(config, {
         github,

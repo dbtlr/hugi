@@ -64,7 +64,13 @@ export type CoordinatorDeps = {
   readonly poll: () => Promise<Snapshot>;
   readonly runCandidate: RunCandidate;
   readonly reporter: StatusReporter;
+  /**
+   * The clock the interval and the waits are measured on: monotonic in production, so a step of
+   * the wall clock neither stalls polling nor cuts a wait short.
+   */
   readonly clock: Clock;
+  /** The wall clock, only to show in the log when a wait ends. */
+  readonly now: () => Date;
   /** Aborts when the service is asked to stop; the run in flight is interrupted through its own wiring. */
   readonly signal: AbortSignal;
   readonly log: CoordinatorLog;
@@ -202,6 +208,10 @@ export async function runCoordinator(
 ): Promise<void> {
   const intervalMs = config.pollIntervalSeconds * 1000;
   const { clock, log, reporter, signal } = deps;
+
+  /** A time on `clock` as the wall clock would show it, for the log. */
+  const wallTimeOf = (at: number) =>
+    new Date(deps.now().getTime() + (at - clock.now())).toISOString();
   const waits = new Map<string, Waiting>();
   const unposted = new Map<string, UnpostedVerdict>();
   const postFailures = new Map<string, string>();
@@ -350,7 +360,7 @@ export async function runCoordinator(
       log.info(
         unposted.has(key) || waiting === undefined
           ? `${describeLane(candidate)} waits to post its verdict`
-          : `${describeLane(candidate)} waits until ${new Date(waiting.wait.until).toISOString()} after ${waiting.wait.runs} runs with no verdict`,
+          : `${describeLane(candidate)} waits until ${wallTimeOf(waiting.wait.until)} after ${waiting.wait.runs} runs with no verdict`,
       );
     }
   };
@@ -361,7 +371,7 @@ export async function runCoordinator(
     const { commit, repository, statusName } = candidate;
     waits.set(key, { commit, repository, statusName, wait });
     log.info(
-      `${describeLane(candidate)} has no verdict (${cause}); it runs again after ${new Date(wait.until).toISOString()}`,
+      `${describeLane(candidate)} has no verdict (${cause}); it runs again after ${wallTimeOf(wait.until)}`,
     );
   };
 
