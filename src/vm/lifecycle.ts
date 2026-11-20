@@ -71,6 +71,8 @@ export type RunDeps = {
   /** Where cleanup problems and other non-fatal trouble are reported. */
   readonly warn: (message: string) => void;
   readonly tuning?: Partial<RunTuning>;
+  /** The VM's size; `VM_RESOURCES` unless the coordinator's configuration sets one (ADR-0003). */
+  readonly resources?: { readonly cpus: number; readonly memoryMb: number };
 };
 
 /** What the run did before it ended, for assembling the result and for teardown. */
@@ -222,7 +224,7 @@ async function perform(
   state.cloneStarted = true;
   await tart.clone(request.image, vm, { signal: deps.interrupt });
   state.vmCloned = true;
-  await tart.setResources(vm, VM_RESOURCES, { signal: deps.interrupt });
+  await tart.setResources(vm, deps.resources ?? VM_RESOURCES, { signal: deps.interrupt });
   state.cloneSeconds = seconds(clock, cloneStart);
   if (deps.interrupt.aborted) {
     return { detail: 'interrupted after cloning', reason: 'interrupted' };

@@ -107,6 +107,18 @@ test('a service prefix names the VM and its delete', async () => {
   expect(h.tart.events).toContain('delete hugi-svc-test1');
 });
 
+test('the VM gets the default size, or the one the caller gives', async () => {
+  const h = harness();
+  await run(h, requestOf([runStep(1)]));
+  expect(h.tart.events).toContain('set hugi-run-test1 4 4096');
+  const sized = harness();
+  await advanceUntilSettled(
+    sized.clock,
+    runInVm(requestOf([runStep(1)]), { ...sized.deps, resources: { cpus: 6, memoryMb: 8192 } }),
+  );
+  expect(sized.tart.events).toContain('set hugi-run-test1 6 8192');
+});
+
 test.each(['ci-', 'hugi-', 'hugi-svc', 'hugi-a-b-'])(
   'the prefix %p makes runInVm throw before any tart call',
   async (vmPrefix) => {
