@@ -195,8 +195,11 @@ const MAX_LINES = 10_000;
 /** How much the tail reader reads at a time, backward from the end. */
 export const TAIL_CHUNK_BYTES = 64 * 1024;
 
-/** The most the tail reader reads, backward from the end: 10,000 records of ordinary length fit. */
-export const TAIL_MAX_BYTES = 1024 * 1024;
+/**
+ * The most the tail reader reads, backward from the end: 4 MiB holds over 14,000 records of
+ * ordinary length (Loom's run 190 to 290 bytes).
+ */
+export const TAIL_MAX_BYTES = 4 * 1024 * 1024;
 const NEWLINE_BYTE = 10;
 
 function parseLineCount(text: string | undefined): number {

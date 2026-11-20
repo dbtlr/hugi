@@ -336,9 +336,9 @@ test('only the tail of a large log is read, and a partial first line is dropped'
   expect(lines[0]).toStartWith('2026-11-19T10:00:01.000Z info event 1 pad=');
 });
 
-test('the reader stops 1 MiB from the end, leaving out a record that begins before it', async () => {
+test('the reader stops at its bound from the end, leaving out a record that begins before it', async () => {
   // A few long records: the 50 lines asked for lie far beyond the bound.
-  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(2 * 1024 * 1024) } });
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(TAIL_MAX_BYTES + 1024 * 1024) } });
   await writeServiceLog([long, long, serviceRecord(7)]);
   expect(await readTailLines(serviceLog, 50)).toEqual([serviceRecord(7)]);
 });
@@ -362,7 +362,7 @@ function countingOpener() {
 }
 
 test('the reader reads no more than its bound, whatever the file holds', async () => {
-  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(3 * 1024 * 1024) } });
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(TAIL_MAX_BYTES + 1024 * 1024) } });
   await writeServiceLog([long, serviceRecord(7)]);
   const { counted, openFile } = countingOpener();
   await readTailLines(serviceLog, 50, openFile);

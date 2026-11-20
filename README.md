@@ -252,7 +252,7 @@ A launchd user agent starts only when its user's session starts. For the service
 
 Every row but `leftover VMs` comes from the state the service writes at `$XDG_STATE_HOME/hugi/service.json`. It describes the last time a service wrote it, so it is live only while the `hugi serve` that wrote it still runs and holds the lock, whether launchd started it or you did: the lock is held, the lock file names the state's pid, and that process is alive. Otherwise `status` says those rows are stale.
 
-Hugi's log goes to `~/Library/Logs/hugi/hugi.jsonl`, one JSON record per line, rotated at 10 MB with five old files kept. `hugi serve` writes nearly all of it; other commands add only their own log records. `hugi logs --service` prints its last 50 records as text; `--lines <n>` changes the count, and `--format json` prints the records as JSON. It reads no more than the log's last 1 MiB, which holds 10,000 records of ordinary length; a record that begins before that point is left out, so very long records can make it print fewer than asked.
+Hugi's log goes to `~/Library/Logs/hugi/hugi.jsonl`, one JSON record per line, rotated at 10 MB with five old files kept. `hugi serve` writes nearly all of it; other commands add only their own log records. `hugi logs --service` prints its last 50 records as text; `--lines <n>` changes the count, and `--format json` prints the records as JSON. It reads no more than the log's last 4 MiB, which holds over 14,000 records of ordinary length; a record that begins before that point is left out, so very long records can make it print fewer than asked.
 
 ## Documentation
 
