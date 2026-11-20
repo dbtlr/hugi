@@ -343,25 +343,40 @@ test('the reader stops 1 MiB from the end, leaving out a record that begins befo
   expect(await readTailLines(serviceLog, 50)).toEqual([serviceRecord(7)]);
 });
 
-test('the reader reads no more than its bound, whatever the file holds', async () => {
-  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(3 * 1024 * 1024) } });
-  await writeServiceLog([long, serviceRecord(7)]);
-  let bytesRead = 0;
-  const counted = async (path: string) => {
+/** An opener that counts the bytes the tail reader reads through it. */
+function countingOpener() {
+  const counted = { bytesRead: 0 };
+  const openFile = async (path: string) => {
     const handle = await open(path, 'r');
     return {
       close: () => handle.close(),
       read: async (buffer: Buffer, offset: number, length: number, position: number) => {
         const read = await handle.read(buffer, offset, length, position);
-        bytesRead += read.bytesRead;
+        counted.bytesRead += read.bytesRead;
         return read;
       },
       stat: () => handle.stat(),
     };
   };
-  await readTailLines(serviceLog, 50, counted);
-  expect(bytesRead).toBeGreaterThan(0);
-  expect(bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
+  return { counted, openFile };
+}
+
+test('the reader reads no more than its bound, whatever the file holds', async () => {
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(3 * 1024 * 1024) } });
+  await writeServiceLog([long, serviceRecord(7)]);
+  const { counted, openFile } = countingOpener();
+  await readTailLines(serviceLog, 50, openFile);
+  expect(counted.bytesRead).toBeGreaterThan(0);
+  expect(counted.bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
+});
+
+test('the reader stops at the chunk that holds the lines asked for', async () => {
+  // 2 MiB of short records: the last chunk alone holds the five asked for.
+  const records = Array.from({ length: 30_000 }, (_, index) => `${'r'.repeat(64)} ${index}`);
+  await writeFile(serviceLog, `${records.join('\n')}\n`);
+  const { counted, openFile } = countingOpener();
+  expect(await readTailLines(serviceLog, 5, openFile)).toEqual(records.slice(-5));
+  expect(counted.bytesRead).toBe(TAIL_CHUNK_BYTES);
 });
 
 test('a chunk that ends with exactly the newlines asked for is followed by one more', async () => {
