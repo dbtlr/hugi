@@ -2,8 +2,15 @@ import { expect, test } from 'bun:test';
 import { resolve } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
+import type { Host } from '@loomcli/core';
 
-import { findExecutable, hostEnv, HostToolsError, requireHostTools } from './host-tools';
+import {
+  findExecutable,
+  hostEnv,
+  HostToolsError,
+  requireHostTools,
+  spawnWithTools,
+} from './host-tools';
 
 test('hostEnv replaces PATH with the configured directories in order', () => {
   const inherited = { HOME: '/home/hugi', PATH: '/old/bin' };
@@ -66,4 +73,23 @@ test('requireHostTools names every missing tool, the searched PATH and the fix',
   expect(failure).toMatchObject({
     message: expect.stringMatching(/tart.*git.*PATH.*\/first:\/second.*set `path`.*directories/iu),
   });
+});
+
+test('spawnWithTools runs a resolved tool by its path, with the service environment', () => {
+  const calls: { command: string; env: unknown }[] = [];
+  const spawn: Host['spawn'] = (command, _args, options) => {
+    calls.push({ command, env: options?.env });
+    return {
+      exited: Promise.resolve({ error: new Error('unused'), kind: 'unstarted' }),
+      kill: () => undefined,
+    };
+  };
+  const env = { PATH: '/opt/homebrew/bin' };
+  const wrapped = spawnWithTools(spawn, { tart: '/opt/homebrew/bin/tart' }, env);
+  wrapped('tart', ['list']);
+  wrapped('ps', ['-p', '1'], { env: { PATH: '/x' } });
+  expect(calls).toEqual([
+    { command: '/opt/homebrew/bin/tart', env },
+    { command: 'ps', env: { PATH: '/x' } },
+  ]);
 });

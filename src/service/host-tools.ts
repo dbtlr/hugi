@@ -81,3 +81,17 @@ export async function requireHostTools(
   }
   return Object.fromEntries(tools);
 }
+
+/**
+ * The host's spawn as the service uses it: a tool `requireHostTools` resolved runs by its absolute
+ * path, and a call that names no environment gets the service's, whose `PATH` is `path` when the
+ * configuration sets it. A launchd agent inherits a bare `PATH`, so neither may rely on it.
+ */
+export function spawnWithTools(
+  spawn: Host['spawn'],
+  tools: Readonly<Record<string, string>>,
+  env: Host['env'],
+): Host['spawn'] {
+  return (command, args, options) =>
+    spawn(tools[command] ?? command, args, { ...options, env: options?.env ?? env });
+}

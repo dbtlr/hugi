@@ -59,6 +59,28 @@ export function requireGitHubApp(config: HugiConfig): GitHubAppConfig {
   return config.githubApp;
 }
 
+/**
+ * Throw a `ConfigError` saying what to fix unless the configuration names a GitHub App whose
+ * private key is a usable key file, as `createInstallationTokens` will read it. `hugi serve` checks
+ * this when it starts, so a bad key refuses the start instead of failing every post.
+ */
+export async function checkAppKey(
+  config: HugiConfig,
+  host: Pick<InstallationTokenOptions, 'home' | 'platform' | 'spawn' | 'uid'>,
+): Promise<void> {
+  const app = requireGitHubApp(config);
+  try {
+    await readPrivateKey(
+      expandHome(app.privateKeyPath, host.home),
+      host.uid,
+      host.spawn,
+      host.platform,
+    );
+  } catch (error) {
+    throw new ConfigError(`github_app.private_key_path: ${messageOf(error)}`);
+  }
+}
+
 /** `~/x` becomes `x` under `home`; any other path is returned as written. */
 export function expandHome(path: string, home: string): string {
   return path.startsWith('~/') ? `${home.replace(/\/+$/u, '')}/${path.slice(2)}` : path;
