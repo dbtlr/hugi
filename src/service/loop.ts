@@ -167,6 +167,36 @@ export function noLongerQueued(
   );
 }
 
+/**
+ * Whether the poll read the repository completely (its default branch head and every admitted
+ * pull request's head) and the commit is none of those heads: the head moved on, or the pull
+ * request closed. A repository or pull request that could not be read decides nothing.
+ */
+export function commitGone(snapshot: Snapshot, repository: string, commit: string): boolean {
+  return snapshot.some(
+    (each) =>
+      each.kind === 'read' &&
+      each.repository === repository &&
+      each.pullRequestFailures.length === 0 &&
+      ![each.defaultBranch, ...each.pullRequests].some((read) => read.commit === commit),
+  );
+}
+
+/** Why the loop no longer keeps state for a lane, or `undefined` while it still does. */
+export function whyForgotten(
+  snapshot: Snapshot,
+  candidates: readonly Candidate[],
+  lane: LaneIdentity,
+): string | undefined {
+  if (noLongerQueued(snapshot, candidates, lane)) {
+    return 'the lane is no longer a candidate';
+  }
+  if (commitGone(snapshot, lane.repository, lane.commit)) {
+    return 'the commit is no longer a branch or pull request head';
+  }
+  return undefined;
+}
+
 /** A final status the loop could not post, kept to post again at each poll. */
 type UnpostedVerdict = LaneIdentity & {
   readonly target: StatusTarget;
@@ -293,12 +323,11 @@ export async function runCoordinator(
   const retryUnposted = async (snapshot: Snapshot, candidates: readonly Candidate[]) => {
     const posted = new Set<string>();
     for (const [key, verdict] of unposted) {
-      if (noLongerQueued(snapshot, candidates, verdict)) {
+      const forgotten = whyForgotten(snapshot, candidates, verdict);
+      if (forgotten !== undefined) {
         unposted.delete(key);
         postFailures.delete(key);
-        log.info(
-          `dropped the unposted verdict of ${describeLane(verdict)}: the lane is no longer a candidate`,
-        );
+        log.info(`dropped the unposted verdict of ${describeLane(verdict)}: ${forgotten}`);
         continue;
       }
       // oxlint-disable-next-line no-await-in-loop -- one post at a time
@@ -315,10 +344,10 @@ export async function runCoordinator(
     return posted;
   };
 
-  /** Forget the waits of lanes the poll read and no longer queues. */
+  /** Forget the waits of lanes the poll read and no longer queues, or whose commit is gone. */
   const pruneWaits = (snapshot: Snapshot, candidates: readonly Candidate[]) => {
     for (const [key, waiting] of waits) {
-      if (noLongerQueued(snapshot, candidates, waiting)) {
+      if (whyForgotten(snapshot, candidates, waiting) !== undefined) {
         waits.delete(key);
       }
     }

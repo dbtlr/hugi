@@ -14,6 +14,7 @@ import type {
 } from '../queue/types';
 import { systemClock } from '../vm/clock';
 import {
+  commitGone,
   failureChanges,
   FIRST_WAIT_MS,
   laneKey,
@@ -462,6 +463,57 @@ describe('an unposted verdict', () => {
   });
 });
 
+const MOVED = sha('e');
+/** A poll of the repository with the pull request's head at `head`, declaring `build`. */
+const pullPoll = (head: string): Snapshot => [
+  repository(pushAt(lanesRead([])), [pullAt(lanesRead(['build']), head)]),
+];
+const failsFinal = (post: Post) =>
+  post.kind === 'lane' && post.status.state === 'success' ? postError() : undefined;
+const finalPostsOn = (posts: Post[], commit: string) =>
+  finalPostsOf(posts).filter((post) => post.target.sha === commit);
+
+describe('a commit that stops appearing', () => {
+  test('drops its unposted verdict once its repository no longer has it at a head', async () => {
+    const { logged, posts } = await coordinate({
+      failPost: failsFinal,
+      polls: [pullPoll(PR_HEAD), pullPoll(MOVED), pullPoll(MOVED)],
+    });
+    // The post after the run, and no retry once the pull request's head has moved on.
+    expect(finalPostsOn(posts, PR_HEAD)).toHaveLength(1);
+    expect(logged('info')).toContainEqual(
+      expect.stringContaining(
+        `dropped the unposted verdict of hugi / build on ${REPOSITORY}@${PR_HEAD.slice(0, 12)}`,
+      ),
+    );
+  });
+
+  test('keeps its unposted verdict while a pull request of its repository cannot be read', async () => {
+    const unreadPull: Snapshot = [
+      {
+        defaultBranch: pushAt(lanesRead([])),
+        kind: 'read',
+        pullRequestFailures: [{ cause: 'GitHub answered 502', number: 7 }],
+        pullRequests: [],
+        repository: REPOSITORY,
+      },
+    ];
+    const { posts } = await coordinate({
+      failPost: failsFinal,
+      polls: [pullPoll(PR_HEAD), unreadPull, unreadPull],
+    });
+    expect(finalPostsOn(posts, PR_HEAD)).toHaveLength(3);
+  });
+
+  test('forgets its wait, so it runs at once if it comes back', async () => {
+    const { runs } = await coordinate({
+      polls: [pullPoll(PR_HEAD), pullPoll(MOVED), pullPoll(PR_HEAD)],
+      runs: { build: noVerdict },
+    });
+    expect(runs.map((each) => each.at)).toEqual([0, INTERVAL_MS, 2 * INTERVAL_MS]);
+  });
+});
+
 describe('read failures', () => {
   test('are logged once while they last, and again when they clear', async () => {
     const { logged } = await coordinate({
@@ -633,6 +685,15 @@ describe('decisions', () => {
       appeared: [],
       cleared: [],
     });
+  });
+
+  test('a commit is gone only when a complete read of its repository finds it at no head', () => {
+    const moved = [repository(pushAt(lanesRead([])), [pullAt(lanesRead([]), sha('e'))])];
+    expect(commitGone(moved, REPOSITORY, PR_HEAD)).toBe(true);
+    expect(commitGone(moved, REPOSITORY, sha('e'))).toBe(false);
+    expect(commitGone(moved, REPOSITORY, HEAD)).toBe(false);
+    expect(commitGone(moved, 'example/other', PR_HEAD)).toBe(false);
+    expect(commitGone(failedPoll(), REPOSITORY, PR_HEAD)).toBe(false);
   });
 
   test('a lane is no longer queued only when the poll read its commit and left it out', () => {
