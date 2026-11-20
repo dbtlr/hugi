@@ -143,3 +143,52 @@ test('killing the VM process escalates to SIGKILL and its exit code resolves', a
   expect(await advanceUntilSettled(clock, vm.exited, STEP_MS)).toBe(137);
   expect(fake.calls[0]!.signals).toEqual(['SIGTERM', 'SIGKILL']);
 });
+
+const LISTING = JSON.stringify([
+  { Name: 'ci-timing-base', Running: false, Source: 'local' },
+  { Name: 'hugi-svc-a', Running: true, Source: 'local' },
+]);
+
+/** The error a `list` call ends with, or undefined when it succeeds. */
+async function listFailure(script: (args: readonly string[]) => FakeCommand) {
+  const { clock, tart } = setup(script);
+  return advanceUntilSettled(
+    clock,
+    tart.list().then(
+      () => undefined,
+      (caught: unknown) => caught,
+    ),
+    STEP_MS,
+  );
+}
+
+test('list asks tart for local VMs as JSON and returns their names', async () => {
+  const { clock, fake, tart } = setup(() => ({ output: LISTING }));
+  const names = await advanceUntilSettled(clock, tart.list(), STEP_MS);
+  expect(names).toEqual(['ci-timing-base', 'hugi-svc-a']);
+  expect(fake.calls[0]!.args).toEqual(['list', '--source', 'local', '--format', 'json']);
+});
+
+test('list keeps a listing longer than the output tail of one call', async () => {
+  const rows = Array.from({ length: 400 }, (_, index) => ({ Name: `hugi-svc-${index}` }));
+  const { clock, tart } = setup(() => ({ output: JSON.stringify(rows) }));
+  const names = await advanceUntilSettled(clock, tart.list(), STEP_MS);
+  expect(names).toHaveLength(400);
+});
+
+test.each(['{}', '[{"Nom":"x"}]', 'not json'])('list rejects the output %p', async (output) => {
+  expect(await listFailure(() => ({ output }))).toBeInstanceOf(Error);
+});
+
+test('a tart list that exits non-zero throws with its output', async () => {
+  const error = await listFailure(() => ({ exitCode: 1, output: 'boom\n' }));
+  expect(String(error)).toContain('exited 1: boom');
+});
+
+test('a hung tart list throws a typed timeout at its deadline', async () => {
+  const { clock, tart } = setup(() => ({ hangs: true }));
+  const error = await failureOf(clock, tart.list(), 1000);
+  expect(error).toMatchObject({ failure: 'timed-out' });
+  expect(error.message).toContain('tart list');
+  expect(clock.now()).toBeGreaterThanOrEqual(TART_LIST_DEADLINE_MS);
+});
