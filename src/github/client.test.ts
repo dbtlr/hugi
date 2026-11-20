@@ -294,6 +294,12 @@ describe('a failed read is one error naming the repository and endpoint', () => 
       status: 403,
     });
     expect(failure.message).toBe(`GitHub's API answered 403 for ${endpoint}.`);
+    expect(failure.status).toBe(403);
+  });
+
+  test('a 401 carries its status', async () => {
+    const failure = await failing({ body: '{}', status: 401 });
+    expect(failure.status).toBe(401);
   });
 
   test('a network failure', async () => {
