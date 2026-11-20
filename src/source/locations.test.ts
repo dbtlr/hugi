@@ -3,7 +3,13 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createRunDirectory, resolveCacheDir, resolveRunsDir, runDirectoryName } from './locations';
+import {
+  createRunDirectory,
+  resolveCacheDir,
+  resolveRunsDir,
+  resolveServiceStateDir,
+  runDirectoryName,
+} from './locations';
 
 test('the cache directory prefers the flag, then HUGI_CACHE_DIR, then the XDG cache, then ~/.cache', () => {
   const env = { HUGI_CACHE_DIR: '/env', XDG_CACHE_HOME: '/xdg' };
@@ -16,6 +22,11 @@ test('the cache directory prefers the flag, then HUGI_CACHE_DIR, then the XDG ca
 test('runs live under the XDG state directory, else ~/.local/state', () => {
   expect(resolveRunsDir({ XDG_STATE_HOME: '/state' }, '/home/u')).toBe('/state/hugi/runs');
   expect(resolveRunsDir({}, '/home/u')).toBe('/home/u/.local/state/hugi/runs');
+});
+
+test('the service state directory is hugi under the XDG state home, else ~/.local/state', () => {
+  expect(resolveServiceStateDir({ XDG_STATE_HOME: '/state' }, '/home/u')).toBe('/state/hugi');
+  expect(resolveServiceStateDir({ XDG_STATE_HOME: '' }, '/home/u')).toBe('/home/u/.local/state/hugi');
 });
 
 test('a run directory name sorts by time and carries the short commit', () => {

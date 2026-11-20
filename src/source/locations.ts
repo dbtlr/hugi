@@ -32,6 +32,11 @@ export function resolveRunsDir(env: Env, home: string): string {
   return join(present(env.XDG_STATE_HOME) ?? join(home, '.local', 'state'), 'hugi', 'runs');
 }
 
+/** The directory holding the service's state file and lock: `hugi` in the XDG state home. */
+export function resolveServiceStateDir(env: Env, home: string): string {
+  return join(present(env.XDG_STATE_HOME) ?? join(home, '.local', 'state'), 'hugi');
+}
+
 /** A fresh log directory name: the UTC time to the second, then the short commit. */
 export function runDirectoryName(now: Date, sha: string): string {
   const stamp = now
