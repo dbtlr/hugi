@@ -60,3 +60,12 @@ export function hasNonBmp(text: string): boolean {
 export function withoutNonBmp(text: string): string {
   return text.replace(/[\u{10000}-\u{10FFFF}]/gu, '\uFFFD');
 }
+
+/**
+ * `text` as a description may carry it: each character outside the BMP, and each lone surrogate
+ * (half of a pair, which no encoding can write), becomes U+FFFD. Every character is then one UTF-16
+ * unit, so a length count is a character count and a cut never splits a pair.
+ */
+export function wellFormedBmp(text: string): string {
+  return withoutNonBmp(text).toWellFormed();
+}

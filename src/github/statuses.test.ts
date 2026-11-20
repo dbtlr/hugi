@@ -186,6 +186,145 @@ describe('descriptions', () => {
   });
 });
 
+describe('descriptions with a step and a run id', () => {
+  const RUN_ID = '2026-11-19T233200Z-abcdef123-Xy7Kq2';
+
+  test('names the failing step, the cause, the run id and the merge sha', () => {
+    expect(
+      describeStatus({
+        cause: 'exit 3',
+        mergeSha: MERGE,
+        runId: RUN_ID,
+        state: 'failure',
+        step: 'Run tests',
+      }),
+    ).toBe(`Failed at Run tests: exit 3 [run ${RUN_ID}] (merge bbbbbbbbbbbb)`);
+  });
+
+  test('a run id alone, or with a step and no cause', () => {
+    expect(describeStatus({ runId: RUN_ID, state: 'success' })).toBe(`Passed [run ${RUN_ID}]`);
+    expect(describeStatus({ runId: RUN_ID, state: 'failure', step: 'Build' })).toBe(
+      `Failed at Build [run ${RUN_ID}]`,
+    );
+  });
+
+  test('a long step name and a long cause give way; the run id and merge sha stay whole at 140', () => {
+    const text = describeStatus({
+      cause: 'c'.repeat(500),
+      mergeSha: MERGE,
+      runId: RUN_ID,
+      state: 'failure',
+      step: 's'.repeat(500),
+    });
+    expect(characters(text)).toBe(DESCRIPTION_LIMIT);
+    expect(text.endsWith(` [run ${RUN_ID}] (merge bbbbbbbbbbbb)`)).toBe(true);
+    expect(text.startsWith(`Failed at ${'s'.repeat(39)}…: c`)).toBe(true);
+  });
+
+  const LONGEST_ID = `2026-11-19T233200Z-${'a'.repeat(40)}-Xy7Kq2`;
+
+  test('a longest run id (66 characters) with a long step, cause, headline and merge sha stays within 140', () => {
+    expect(LONGEST_ID).toHaveLength(66);
+    const text = describeStatus({
+      cause: 'c'.repeat(500),
+      headline: 'H'.repeat(500),
+      mergeSha: MERGE,
+      runId: LONGEST_ID,
+      state: 'failure',
+      step: 's'.repeat(500),
+    });
+    expect(text.length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
+    expect(text.endsWith(` [run ${LONGEST_ID}] (merge bbbbbbbbbbbb)`)).toBe(true);
+  });
+
+  test.each([
+    ['no step or cause', {}],
+    ['a step', { step: 's'.repeat(60) }],
+    ['a cause', { cause: 'c'.repeat(200) }],
+    ['both', { cause: 'c'.repeat(200), step: 's'.repeat(60) }],
+    ['a long headline', { cause: 'c', headline: 'H'.repeat(200), step: 's' }],
+    ['text outside the BMP', { cause: '😀'.repeat(100), step: '😀'.repeat(100) }],
+  ] as const)(
+    'with a valid run id and a merge sha, %s is at most 140 characters at every id length',
+    (_name, extra) => {
+      // From the shortest id the pattern allows to the longest, and with or without a merge sha.
+      for (let hex = 1; hex <= 40; hex += 1) {
+        const runId = `2026-11-19T233200Z-${'a'.repeat(hex)}-Xy7Kq2`;
+        for (const mergeSha of [undefined, MERGE]) {
+          const text = describeStatus({
+            ...extra,
+            ...(mergeSha === undefined ? {} : { mergeSha }),
+            runId,
+            state: 'failure',
+          });
+          expect(text.length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
+          expect(text).toContain(`[run ${runId}]`);
+        }
+      }
+    },
+  );
+
+  test('refuses a run id that is not a run name, or is over 80 characters', () => {
+    for (const runId of [
+      '',
+      'r'.repeat(70),
+      'r😀',
+      '2026-11-19T233200Z-abc-Xy7Kq2 [run x]',
+      'a'.repeat(81),
+      `${LONGEST_ID}${'a'.repeat(20)}`,
+    ]) {
+      expect(() => describeStatus({ runId, state: 'failure' })).toThrow('is not a run id');
+    }
+  });
+
+  test('replaces non-BMP characters in the step, and collapses the step whitespace', () => {
+    const text = describeStatus({
+      mergeSha: MERGE,
+      runId: RUN_ID,
+      state: 'failure',
+      step: 'Build 😀\n  all',
+    });
+    expect(text).toBe(`Failed at Build \uFFFD all [run ${RUN_ID}] (merge bbbbbbbbbbbb)`);
+  });
+
+  test('replaces a lone surrogate in the headline, step, cause and merge sha, and keeps the pairs counted', () => {
+    const lone = '\uD83D';
+    const text = describeStatus({
+      cause: `a${lone}b\uDE00c`,
+      headline: `H${lone}`,
+      mergeSha: `m${lone}m`,
+      runId: RUN_ID,
+      state: 'failure',
+      step: `s${lone}`,
+    });
+    expect(text).toBe(`H\uFFFD at s\uFFFD: a\uFFFDb\uFFFDc [run ${RUN_ID}] (merge m\uFFFDm)`);
+    expect(text.isWellFormed()).toBe(true);
+  });
+
+  test('a cut never leaves half of a surrogate pair', () => {
+    const text = describeStatus({
+      cause: `${'a'.repeat(80)}\uD83D\uDE00${'b'.repeat(100)}`,
+      runId: RUN_ID,
+      state: 'failure',
+    });
+    expect(text.isWellFormed()).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
+  });
+
+  test('a lane status carries the step and run id through reportLane', async () => {
+    const { posts, reporter } = recorder();
+    await reporter.reportLane({ mergeSha: MERGE, repository: REPO, sha: SHA }, BUILD, {
+      cause: 'exit 3',
+      runId: RUN_ID,
+      state: 'failure',
+      step: 'Test',
+    });
+    expect(posts[0]!.body.description).toBe(
+      `Failed at Test: exit 3 [run ${RUN_ID}] (merge bbbbbbbbbbbb)`,
+    );
+  });
+});
+
 describe('a failed post', () => {
   test('is one typed error naming the repository and endpoint', async () => {
     const { reporter } = recorder(

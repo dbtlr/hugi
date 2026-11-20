@@ -22,6 +22,8 @@ export type HugiConfig = {
   readonly allowlist: readonly string[];
   readonly pollIntervalSeconds: number;
   readonly vm: { readonly cpus: number; readonly memoryGb: number };
+  /** How long and how much of the runs directory Hugi keeps (`applyRetention`). */
+  readonly runs: { readonly maxAgeDays: number; readonly maxSizeGb: number };
   /** The GitHub App that posts statuses; absent when none is configured (`hugi run` needs none). */
   readonly githubApp?: GitHubAppConfig;
 };
@@ -36,6 +38,8 @@ export type GitHubAppConfig = {
 /** The VM size defaults are the runner's own (`VM_RESOURCES`, ADR-0003), so they are written once. */
 export const DEFAULTS = {
   cpus: VM_RESOURCES.cpus,
+  maxAgeDays: 30,
+  maxSizeGb: 5,
   memoryGb: VM_RESOURCES.memoryMb / 1024,
   pollIntervalSeconds: 60,
 } as const;
@@ -43,6 +47,8 @@ export const DEFAULTS = {
 const POLL_INTERVAL_RANGE = [15, 3600] as const;
 const CPUS_RANGE = [1, 16] as const;
 const MEMORY_GB_RANGE = [2, 64] as const;
+const MAX_AGE_DAYS_RANGE = [1, 3650] as const;
+const MAX_SIZE_GB_RANGE = [1, 100_000] as const;
 
 const LOGIN = /^[A-Za-z0-9]+([-_][A-Za-z0-9]+)*$/u;
 const LOGIN_MAX = 39;
@@ -157,6 +163,27 @@ function readVm(value: unknown): HugiConfig['vm'] {
   };
 }
 
+function readRuns(value: unknown): HugiConfig['runs'] {
+  if (value === undefined) {
+    return { maxAgeDays: DEFAULTS.maxAgeDays, maxSizeGb: DEFAULTS.maxSizeGb };
+  }
+  const runs = mappingOf(value, 'runs', ['max_age_days', 'max_size_gb']);
+  return {
+    maxAgeDays: integerOf(
+      runs.max_age_days,
+      'runs.max_age_days',
+      MAX_AGE_DAYS_RANGE,
+      DEFAULTS.maxAgeDays,
+    ),
+    maxSizeGb: integerOf(
+      runs.max_size_gb,
+      'runs.max_size_gb',
+      MAX_SIZE_GB_RANGE,
+      DEFAULTS.maxSizeGb,
+    ),
+  };
+}
+
 /** A key path the host can resolve without a working directory: absolute, or home-relative. */
 function isHostPath(text: string): boolean {
   return text.startsWith('/') || text.startsWith('~/');
@@ -191,6 +218,7 @@ export function validateConfig(parsed: unknown): HugiConfig {
     'allowlist',
     'poll_interval',
     'vm',
+    'runs',
     'github_app',
   ]);
   if (top.repositories === undefined) {
@@ -220,6 +248,7 @@ export function validateConfig(parsed: unknown): HugiConfig {
       DEFAULTS.pollIntervalSeconds,
     ),
     repositories: Object.freeze(repositories),
+    runs: Object.freeze(readRuns(top.runs)),
     vm: Object.freeze(readVm(top.vm)),
   });
 }

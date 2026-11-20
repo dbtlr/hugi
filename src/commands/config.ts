@@ -22,6 +22,7 @@ export function renderConfigReport({ config, path }: ConfigReport): string {
     `allowlist:${listLines(config.allowlist)}`,
     `poll_interval: ${config.pollIntervalSeconds}`,
     `vm: ${config.vm.cpus} cpus, ${config.vm.memoryGb} GB memory`,
+    `runs: keep ${config.runs.maxAgeDays} days, up to ${config.runs.maxSizeGb} GB`,
     config.githubApp === undefined
       ? 'github_app: not configured'
       : `github_app: ${config.githubApp.appId}, key ${config.githubApp.privateKeyPath}`,

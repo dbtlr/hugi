@@ -6,13 +6,14 @@
  */
 import { messageOf } from '../errors';
 import type { LaneRef } from '../lane/step-plan';
+import { RUN_DIRECTORY_NAME } from '../runs/store';
 import { GitHubAppError } from './app-auth';
 import type { TokenProvider } from './client';
 import { FULL_SHA } from './pull-request';
 import type { Fetch } from './pull-request';
 import { requestJson } from './request';
 import type { FailureDetail } from './request';
-import { DECLARATION_STATUS, laneStatusName, withoutNonBmp } from './status-name';
+import { DECLARATION_STATUS, laneStatusName, wellFormedBmp } from './status-name';
 
 /**
  * A status could not be posted. Names the repository and the endpoint. The caller decides what to
@@ -21,7 +22,8 @@ import { DECLARATION_STATUS, laneStatusName, withoutNonBmp } from './status-name
  * means the cached token was revoked, and the reporter has already dropped it, so one more try
  * mints a fresh one, while a 401 from minting the token (GitHub refused the App's JWT, a `cause`
  * that is a `GitHubAppError`) will fail the same way again; 403,
- * 404 and 422 will not pass until the App's permissions, the installation or the data change.
+ * 404 and 422 will not pass until the App's permissions, the installation or the data change; a 2xx
+ * means GitHub took the status but its answer could not be read, so the status was posted.
  */
 export class StatusPostError extends Error {
   override readonly name = 'StatusPostError';
@@ -64,10 +66,17 @@ export type DescriptionParts = {
   readonly mergeSha?: string;
   /** Replaces the state's headline, for a status that is not a lane's verdict. */
   readonly headline?: string;
+  /** The step that failed; shortened, and given up before the run id and merge sha. */
+  readonly step?: string;
+  /** The run's id, which `hugi logs <id>` takes; always kept, so a description leads to its logs. */
+  readonly runId?: string;
 };
 
 /** The longest headline; with the merge part and `: ` this leaves the cause room to spare. */
 const HEADLINE_LIMIT = 40;
+
+/** The longest failing step name a description shows. */
+const STEP_LIMIT = 40;
 
 /**
  * `text` cut to `max` characters, with an ellipsis when it was cut. It holds no character outside
@@ -77,25 +86,54 @@ function shorten(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-/**
- * The one place status descriptions are built: `<headline>[: <cause>][ (merge <sha>)]`, at most
- * `DESCRIPTION_LIMIT` characters. GitHub refuses a character outside the BMP in a description, so
- * each one becomes U+FFFD first, which also makes a character count the same as a UTF-16 unit.
- * The headline is capped at `HEADLINE_LIMIT`; the cause is whitespace-collapsed and gives way
- * first, so the merge sha is always kept.
- */
-export function describeStatus(parts: DescriptionParts): string {
-  const headline = shorten(withoutNonBmp(parts.headline ?? HEADLINES[parts.state]), HEADLINE_LIMIT);
-  const merge =
-    parts.mergeSha === undefined ? '' : ` (merge ${parts.mergeSha.slice(0, MERGE_SHA_LENGTH)})`;
-  const cause = withoutNonBmp(parts.cause ?? '')
+/** The longest run id a description accepts; real ids are at most 66 characters. */
+const RUN_ID_LIMIT = 80;
+
+/** `runId` when it is a run id; otherwise an error, because a description must lead to a real run. */
+function checkedRunId(runId: string): string {
+  if (runId.length > RUN_ID_LIMIT || !RUN_DIRECTORY_NAME.test(runId)) {
+    throw new Error(`"${shorten(plain(runId), 80)}" is not a run id.`);
+  }
+  return runId;
+}
+
+/** `text` with no character outside the BMP and its whitespace collapsed to single spaces. */
+function plain(text: string | undefined): string {
+  return wellFormedBmp(text ?? '')
     .replace(/\s+/gu, ' ')
     .trim();
-  if (cause === '') {
-    return `${headline}${merge}`;
-  }
-  const room = DESCRIPTION_LIMIT - headline.length - merge.length - 2;
-  return `${headline}: ${shorten(cause, room)}${merge}`;
+}
+
+/**
+ * The one place status descriptions are built:
+ * `<headline>[ at <step>][: <cause>][ [run <id>]][ (merge <sha>)]`, at most `DESCRIPTION_LIMIT`
+ * characters. GitHub refuses a character outside the BMP in a description, so each one, and each
+ * lone surrogate, becomes U+FFFD first, which also makes a character count the same as a UTF-16
+ * unit. A run id that is not a run's name, or is over `RUN_ID_LIMIT`, is an error. The run id and the
+ * merge sha are always kept: the id because `hugi logs <id>` must work from the description, the
+ * sha because shadow compares it. Everything else gives way to them: the headline is capped at
+ * `HEADLINE_LIMIT` (and further, should a very long run id leave no room), the step name takes
+ * what is left up to `STEP_LIMIT`, and the cause takes the rest, or is dropped when none is.
+ */
+export function describeStatus(parts: DescriptionParts): string {
+  const merge =
+    parts.mergeSha === undefined
+      ? ''
+      : ` (merge ${wellFormedBmp(parts.mergeSha).slice(0, MERGE_SHA_LENGTH)})`;
+  const runId = parts.runId === undefined ? '' : checkedRunId(parts.runId);
+  const run = runId === '' ? '' : ` [run ${runId}]`;
+  const kept = run.length + merge.length;
+  const headline = shorten(
+    wellFormedBmp(parts.headline ?? HEADLINES[parts.state]),
+    Math.max(1, Math.min(HEADLINE_LIMIT, DESCRIPTION_LIMIT - kept)),
+  );
+  const step = plain(parts.step);
+  const stepRoom = Math.min(STEP_LIMIT, DESCRIPTION_LIMIT - headline.length - kept - ' at '.length);
+  const at = step === '' || stepRoom < 1 ? '' : ` at ${shorten(step, stepRoom)}`;
+  const cause = plain(parts.cause);
+  const room = DESCRIPTION_LIMIT - headline.length - at.length - kept - 2;
+  const because = cause === '' || room < 1 ? '' : `: ${shorten(cause, room)}`;
+  return `${headline}${at}${because}${run}${merge}`;
 }
 
 /** The commit a status lands on and, for a pull request, the merge commit that was tested. */
@@ -112,6 +150,10 @@ export type LaneStatus = {
   readonly state: PostedState;
   /** Why a lane failed, when known. */
   readonly cause?: string;
+  /** The step that failed, when known. */
+  readonly step?: string;
+  /** The run's id, so the description leads to `hugi logs <id>`. */
+  readonly runId?: string;
   /** A link to the run's logs, when there is one. */
   readonly targetUrl?: string;
 };
@@ -187,6 +229,8 @@ export function createStatusReporter(options: StatusReporterOptions): StatusRepo
         description: describeStatus({
           state: status.state,
           ...(status.cause === undefined ? {} : { cause: status.cause }),
+          ...(status.step === undefined ? {} : { step: status.step }),
+          ...(status.runId === undefined ? {} : { runId: status.runId }),
           ...(target.mergeSha === undefined ? {} : { mergeSha: target.mergeSha }),
         }),
         state: status.state,

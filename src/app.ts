@@ -6,6 +6,7 @@ import { help } from '@loomcli/plugins/help';
 
 import { configCommand } from './commands/config';
 import type { ConfigCommandOverrides } from './commands/config';
+import { logsCommand } from './commands/logs';
 import { runCommand } from './commands/run';
 import type { RunCommandOverrides } from './commands/run';
 import { VERSION } from './version';
@@ -38,6 +39,7 @@ export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOv
     .result<{ text: string }>({ views: { text: textView } })
     .views({ text: textView }, { default: 'text' })
     .command(runCommand(run))
+    .command(logsCommand())
     .command(configCommand(config))
     .action(async ({ options, out }) => {
       await out.results({ text: options.version ? VERSION : USAGE });

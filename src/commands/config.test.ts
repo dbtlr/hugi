@@ -39,6 +39,7 @@ test('a valid file exits 0 and prints the effective configuration', async () => 
   expect(stdout).toContain('  - dbtlr/hugi');
   expect(stdout).toContain('poll_interval: 30');
   expect(stdout).toContain('vm: 4 cpus, 4 GB memory');
+  expect(stdout).toContain('runs: keep 30 days, up to 5 GB');
   expect(stdout).toContain('github_app: not configured');
 });
 
@@ -69,6 +70,7 @@ test('--format json prints the path and the configuration', async () => {
       allowlist: ['dbtlr'],
       pollIntervalSeconds: 30,
       repositories: ['dbtlr/hugi'],
+      runs: { maxAgeDays: 30, maxSizeGb: 5 },
       vm: { cpus: 4, memoryGb: 4 },
     },
     path: '/c.yaml',

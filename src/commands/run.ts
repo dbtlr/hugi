@@ -8,7 +8,12 @@ import { helpCommand } from '@loomcli/plugins/help/extension';
 import { readPullRequest } from '../github/pull-request';
 import { openHostSource, openPullRequestSource } from '../source/host-source';
 import type { HostSourceOptions } from '../source/host-source';
-import { createRunDirectory, resolveCacheDir, resolveRunsDir } from '../source/locations';
+import {
+  createRunDirectory,
+  resolveCacheDir,
+  resolveConfigPath,
+  resolveRunsDir,
+} from '../source/locations';
 import { parseRepository, RepositorySpecError } from '../source/repository-spec';
 import type { RepositorySpec } from '../source/repository-spec';
 import type { ActionResolution } from '../toolchain/resolver';
@@ -22,6 +27,7 @@ import {
 } from './run-args';
 import { exitCodeForVerdict, runLane } from './run-lane';
 import type { LaneReport, ReportStep, RunLaneDeps, RunLaneRequest } from './run-lane';
+import { recordRunStart, storeRun } from './run-record';
 
 const DESCRIPTION =
   'Run one lane of a repository at a commit in a throwaway VM and report its verdict.';
@@ -174,6 +180,7 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
         tempDir: host.tmpdir,
         uid: host.uid,
       };
+      const startedAt = new Date();
       const report = await runLane(request, {
         newLogDir: (sha) =>
           createRunDirectory(resolveRunsDir(host.env, host.home), new Date(), sha),
@@ -196,6 +203,16 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
               tart: createTartCli(host.spawn),
               warn: (message) => void out.warn(message),
             })),
+        runStarted: (start) =>
+          recordRunStart({ request, start, startedAt, warn: (message) => void out.warn(message) }),
+        warn: (message) => void out.warn(message),
+      });
+      await storeRun({
+        configPath: resolveConfigPath(undefined, host.env, host.home),
+        report,
+        request,
+        runsDir: resolveRunsDir(host.env, host.home),
+        startedAt,
         warn: (message) => void out.warn(message),
       });
       await out.results(report);

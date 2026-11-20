@@ -61,8 +61,19 @@ export type RunLaneDeps = {
   /** The VM runner with its tart, clock, and interrupt already bound. */
   readonly runInVm: (request: RunRequest) => Promise<RunResult>;
   readonly newLogDir: (sha: string) => Promise<string>;
+  /** Called once the run's log directory exists and before the VM boots; the run is then in flight. */
+  readonly runStarted?: (start: RunStart) => Promise<void>;
   /** Where non-fatal trouble, such as a snapshot left behind, is reported. */
   readonly warn: (message: string) => void;
+};
+
+/** What a run's record needs to say when its directory is created. */
+export type RunStart = {
+  readonly logDir: string;
+  readonly lane: LaneRef;
+  /** The commit the lane runs on: for a pull request, its merge commit. */
+  readonly sha: string;
+  readonly pullRequest?: { readonly number: number; readonly headSha: string };
 };
 
 /** Reasons a run has no VM result: the lane could not be read or resolved, which is a fail verdict. */
@@ -88,6 +99,8 @@ export type LaneReport = {
   /** For a pull_request run, once GitHub reported it: the number, and the head its status belongs on. */
   readonly pullRequest?: { readonly number: number; readonly headSha: string };
   readonly steps: readonly ReportStep[];
+  /** The lane as read, with its complete matrix row; absent when no VM ran. */
+  readonly lane?: LaneRef;
   /** The lane's tools, each action's resolution, and the notes; absent until resolution succeeds. */
   readonly toolchain?: ToolchainResolution;
   readonly logDir?: string;
@@ -388,6 +401,7 @@ async function runInGuest(
   try {
     // Inside the try, so a log directory that cannot be made still releases the snapshot.
     logDir = request.logDir ?? (await deps.newLogDir(source.sha));
+    await deps.runStarted?.({ lane: plan.lane, logDir, sha: source.sha, ...pullRequestOf(event) });
     result = await deps.runInVm({
       event,
       image: request.image,
@@ -400,6 +414,7 @@ async function runInGuest(
     await release(guest, deps.warn);
   }
   return {
+    lane: plan.lane,
     reason: result.reason,
     sha: source.sha,
     steps: withResolvedActions(plan, result.steps, toolchain.actions),
