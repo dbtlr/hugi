@@ -152,14 +152,15 @@ const LISTING = JSON.stringify([
 /** The error a `list` call ends with, or undefined when it succeeds. */
 async function listFailure(script: (args: readonly string[]) => FakeCommand) {
   const { clock, tart } = setup(script);
-  return advanceUntilSettled(
-    clock,
-    tart.list().then(
-      () => undefined,
-      (caught: unknown) => caught,
-    ),
-    STEP_MS,
-  );
+  const attempt = async (): Promise<unknown> => {
+    try {
+      await tart.list();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+  return advanceUntilSettled(clock, attempt(), STEP_MS);
 }
 
 test('list asks tart for local VMs as JSON and returns their names', async () => {
