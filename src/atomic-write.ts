@@ -17,9 +17,14 @@ export type AtomicWriteFiles = {
 
 const REAL_FILES: AtomicWriteFiles = { rename, rm, writeFile };
 
-/** A temporary name beside `path`: hidden, random, and ending in `.tmp`. */
+/**
+ * A temporary name beside `path`: hidden, unique to this process by its pid and among its writers
+ * by 8 random bytes, and ending in `.tmp`.
+ */
 export function temporaryPathFor(path: string): string {
-  return join(dirname(path), `.${basename(path)}.${randomBytes(4).toString('hex')}.tmp`);
+  // oxlint-disable-next-line @loomcli/host-bypass -- the name needs this process's pid; Host has none
+  const { pid } = process;
+  return join(dirname(path), `.${basename(path)}.${pid}.${randomBytes(8).toString('hex')}.tmp`);
 }
 
 /** Write `text` to `path` atomically, readable by the user only; a failed write leaves no temporary file. */
