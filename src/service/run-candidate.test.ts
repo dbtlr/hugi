@@ -340,3 +340,61 @@ test('each run gets its own run directory under the runs directory', async () =>
   await createRunCandidate(deps)(pushCandidate(), hooks);
   expect((await readdir(runsDir)).length).toBe(before.length + 1);
 });
+
+test("a pull request lane the merge's trigger leaves out is dropped to wait, and boots no VM", async () => {
+  const toRelease = stringify({
+    jobs: { build: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
+    on: { pull_request: { branches: ['release'] }, push: null },
+  });
+  const { deps, hooks, starts, vmCalls } = harness({
+    files: { ...FILES, '.github/hugi.yaml': declaration(['build']), [CI]: toRelease },
+  });
+  const outcome = await createRunCandidate(deps)(pullCandidate(), hooks);
+  expect(outcome).toMatchObject({ kind: 'dropped', waits: true });
+  expect(outcome.kind === 'dropped' && outcome.reason).toContain('leaves hugi / build out');
+  expect(vmCalls).toHaveLength(0);
+  expect(starts).toHaveLength(0);
+});
+
+test('the VM the run boots is the one its started hook names', async () => {
+  let made = 0;
+  const { deps, hooks, starts, vmCalls } = harness({ newVmId: () => `vm${(made += 1)}` });
+  await createRunCandidate(deps)(pushCandidate(), hooks);
+  expect(vmCalls).toHaveLength(1);
+  expect(starts[0]!.vmId).toBe(vmCalls[0]!.vmId);
+});
+
+test('a pull request run uses the facts read at run start, without reading them again', async () => {
+  let reads = 0;
+  const { deps, hooks, vmCalls } = harness({
+    readPullRequest: async () => {
+      reads += 1;
+      return reads === 1 ? FACTS : { ...FACTS, headSha: 'e'.repeat(40) };
+    },
+  });
+  await createRunCandidate(deps)(pullCandidate(), hooks);
+  expect(reads).toBe(1);
+  expect(vmCalls[0]!.request.event).toMatchObject({ pullRequest: { headSha: HEAD } });
+});
+
+test("the merge's declaration is read with the facts read at run start, not the poll's", async () => {
+  const toMain = stringify({
+    jobs: { build: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
+    on: { pull_request: { branches: ['main'] }, push: null },
+  });
+  const { deps, hooks, vmCalls } = harness({
+    files: { ...FILES, '.github/hugi.yaml': declaration(['build']), [CI]: toMain },
+  });
+  // The poll saw the pull request aimed at develop; at run start it is aimed at main.
+  const polled = pullCandidate();
+  const candidate: Candidate = {
+    ...polled,
+    event: {
+      kind: 'pull_request',
+      pullRequest: { baseRef: 'develop', headRef: 'feature', headSha: HEAD, number: 7 },
+    },
+  };
+  const outcome = await createRunCandidate(deps)(candidate, hooks);
+  expect(outcome).toMatchObject({ kind: 'finished', status: { state: 'success' } });
+  expect(vmCalls).toHaveLength(1);
+});
