@@ -79,6 +79,8 @@ export type Tart = {
   ) => Promise<ExecResult>;
   /** Aborting `signal` ends the `tart stop` process, which then throws. */
   readonly stop: (vm: string, options?: { readonly signal?: AbortSignal }) => Promise<void>;
+  /** The names of the local VMs (not OCI cache entries). */
+  readonly list: () => Promise<string[]>;
   /** Throws a `TartCallError` naming the VM when the delete outlives its deadline (`deadlineMs` can only shorten it). */
   readonly delete: (vm: string, options?: { readonly deadlineMs?: number }) => Promise<void>;
 };

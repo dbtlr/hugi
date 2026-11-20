@@ -17,8 +17,9 @@ import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan'
 import { openHostSource } from '../source/host-source';
 import type { GuestSource } from '../source/host-source';
 import { systemClock } from './clock';
-import { runInVm, VM_NAME_PREFIX } from './lifecycle';
+import { runInVm, SERVICE_VM_PREFIX, VM_NAME_PREFIX } from './lifecycle';
 import type { RunRequest } from './run-request';
+import { sweepVms } from './sweep';
 import { createTartCli } from './tart-cli';
 
 const DEFAULT_IMAGE =
@@ -80,14 +81,15 @@ const spawn: Host['spawn'] = (command, args, options) =>
   handle.spawn(command, args, { cwd: handle.cwd(), env: handle.env, ...options });
 
 /** Real dependencies for one run; `vm` is the name the run's VM gets. */
-function realDeps(interrupt = new AbortController().signal) {
+function realDeps(interrupt = new AbortController().signal, vmPrefix = VM_NAME_PREFIX) {
   const id = crypto.randomUUID().slice(0, 8);
   return {
     clock: systemClock,
     interrupt,
     newId: () => id,
     tart: createTartCli(spawn),
-    vm: `${VM_NAME_PREFIX}${id}`,
+    vm: `${vmPrefix}${id}`,
+    vmPrefix,
     warn: (message: string) => console.warn(message),
   };
 }
@@ -341,6 +343,68 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
       expect(result.steps[0]!.outcome).toBe('failure');
       expect(logOf(req, '01-step-1.log')).toContain('waiting');
+      expect(vmRemains(deps.vm)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    'sweeping the service prefix deletes the service VM and leaves a run VM',
+    async () => {
+      const tart = createTartCli(spawn);
+      const suffix = `sweeptest-${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`;
+      const serviceVm = `${SERVICE_VM_PREFIX}${suffix}`;
+      const runVm = `${VM_NAME_PREFIX}${suffix}`;
+      // The sweep deletes every hugi-svc-* VM, so refuse to run beside a real service's VM.
+      const foreign = listVms().filter((vm) => vm.name.startsWith(SERVICE_VM_PREFIX));
+      expect(foreign.map((vm) => vm.name)).toEqual([]);
+      try {
+        await tart.clone(GOLDEN_IMAGE, serviceVm);
+        await tart.clone(GOLDEN_IMAGE, runVm);
+        const result = await sweepVms(tart, SERVICE_VM_PREFIX);
+        expect(result).toEqual({ deleted: [serviceVm], failed: [] });
+        expect(vmRemains(serviceVm)).toBe(false);
+        expect(vmRemains(runVm)).toBe(true);
+        expect(await tart.list()).toContain('hugi-golden');
+      } finally {
+        for (const vm of [serviceVm, runVm]) {
+          if (vmRemains(vm)) {
+            // oxlint-disable-next-line no-await-in-loop -- cleanup, one at a time
+            await tart.delete(vm);
+          }
+        }
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    'a service run aborted mid-step resolves interrupted, leaves no VM, and reports how long it took',
+    async () => {
+      await waitForFreeSlot();
+      const req = request('service-shutdown', [step(1, 'echo waiting\nsleep 6006')]);
+      const interrupt = new AbortController();
+      const deps = realDeps(interrupt.signal, SERVICE_VM_PREFIX);
+      const abort = { at: 0 };
+      // Abort a few seconds after the step starts in the guest, as a SIGTERM to the service would.
+      const tart = {
+        ...deps.tart,
+        exec: async (...args: Parameters<typeof deps.tart.exec>) => {
+          if (args[2]?.stdin?.startsWith('# hugi-step 1\n')) {
+            setTimeout(() => {
+              abort.at = Date.now();
+              interrupt.abort();
+            }, 5000);
+          }
+          return deps.tart.exec(...args);
+        },
+      };
+      const result = await runInVm(req, { ...deps, tart });
+      const resolvedAfterMs = Date.now() - abort.at;
+      console.log(`abort-to-resolve: ${resolvedAfterMs} ms`);
+      expect(abort.at).toBeGreaterThan(0);
+      expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
+      expect(deps.vm.startsWith(SERVICE_VM_PREFIX)).toBe(true);
       expect(vmRemains(deps.vm)).toBe(false);
     },
     TEST_TIMEOUT_MS,

@@ -25,8 +25,15 @@ import type { StepTuning } from './step-executor';
 import type { Clock, Tart, VmProcess } from './tart';
 import { DELETE_RESERVE_MS, teardown, TEARDOWN_BUDGET_MS } from './teardown';
 import type { TeardownOutcome, TeardownTuning } from './teardown';
+import { assertVmPrefix } from './vm-prefix';
 
+/** The prefix of a run's VM, which the run deletes when it ends. */
 export const VM_NAME_PREFIX = 'hugi-run-';
+/**
+ * The prefix of a VM the coordinator service creates. The service sweeps `hugi-svc-*` at startup,
+ * so leftovers of a crashed service go while `hugi-run-*` VMs of a concurrent `hugi run` stay.
+ */
+export const SERVICE_VM_PREFIX = 'hugi-svc-';
 
 /**
  * The default VM size (ADR-0003). `hugi run` always uses it; the coordinator takes its size from
@@ -59,6 +66,8 @@ export type RunDeps = {
   readonly interrupt: AbortSignal;
   /** A short unique suffix for the VM name. */
   readonly newId: () => string;
+  /** The VM name prefix, `hugi-<word>-`; defaults to `VM_NAME_PREFIX`. Anything else makes `runInVm` throw before it clones. */
+  readonly vmPrefix?: string;
   /** Where cleanup problems and other non-fatal trouble are reported. */
   readonly warn: (message: string) => void;
   readonly tuning?: Partial<RunTuning>;
@@ -268,13 +277,16 @@ export function verdictFor(reason: RunReason): RunResult['verdict'] {
 
 /**
  * Run the request's plan in a fresh VM and delete the VM afterwards, whatever
- * happens. Never throws: a failure of the run itself is an `infrastructure`
+ * happens. Throws only for a `vmPrefix` that is not allowed, before any tart call. Otherwise it
+ * never throws: a failure of the run itself is an `infrastructure`
  * result with the error as its detail.
  */
 export async function runInVm(request: RunRequest, deps: RunDeps): Promise<RunResult> {
+  const vmPrefix = deps.vmPrefix ?? VM_NAME_PREFIX;
+  assertVmPrefix(vmPrefix);
   const tuning = { ...DEFAULT_TUNING, ...deps.tuning };
   const began = deps.clock.now();
-  const vm = `${VM_NAME_PREFIX}${deps.newId()}`;
+  const vm = `${vmPrefix}${deps.newId()}`;
   const state: RunState = {
     bootSeconds: 0,
     cloneSeconds: 0,

@@ -14,6 +14,7 @@ import {
   TART_CLONE_DEADLINE_MS,
   TART_DELETE_DEADLINE_MS,
   TART_EXEC_DEADLINE_MS,
+  TART_LIST_DEADLINE_MS,
   TART_SET_DEADLINE_MS,
   TART_STOP_DEADLINE_MS,
 } from './tart-process';
@@ -72,6 +73,43 @@ async function tartCommand(
     return;
   }
   throw outcome.kind === 'unstarted' ? outcome.error : overrun(command, options.vm, outcome);
+}
+
+/** The names in the JSON `tart list --source local --format json` prints: an array of rows with a `Name`. */
+function vmNamesIn(text: string): string[] {
+  const rows: unknown = JSON.parse(text);
+  if (!Array.isArray(rows)) {
+    throw new Error('tart list did not print a JSON array');
+  }
+  return rows.map((row: unknown) => {
+    if (typeof row === 'object' && row !== null && 'Name' in row && typeof row.Name === 'string') {
+      return row.Name;
+    }
+    throw new Error('tart list printed a row without a Name');
+  });
+}
+
+/** Run `tart list` for the local VMs. The whole output is kept: the call's own tail would cut a long listing. */
+async function listLocalVms(spawn: Spawn, clock: Clock): Promise<string[]> {
+  const args = ['list', '--source', 'local', '--format', 'json'];
+  const command = `tart ${args.join(' ')}`;
+  let output = '';
+  const outcome = await runTart(spawn, clock, args, {
+    deadlineMs: TART_LIST_DEADLINE_MS,
+    onOutput: (chunk) => {
+      output += chunk;
+    },
+  });
+  if (outcome.kind === 'unstarted') {
+    throw outcome.error;
+  }
+  if (outcome.kind !== 'completed') {
+    throw overrun(command, undefined, outcome);
+  }
+  if (outcome.exitCode !== 0) {
+    throw new Error(`${command} exited ${outcome.exitCode}: ${outcome.output.trim()}`);
+  }
+  return vmNamesIn(output);
 }
 
 /** The shorter of a call's own deadline and the one its caller asks for. */
@@ -142,6 +180,7 @@ export function createTartCli(spawn: Spawn, clock: Clock = systemClock): Tart {
         vm,
       }),
     exec: (vm, argv, options) => execInVm(spawn, clock, vm, argv, options),
+    list: () => listLocalVms(spawn, clock),
     run: (vm, options) => runVm(spawn, clock, vm, options),
     setResources: (vm, resources, options) =>
       tartCommand(
