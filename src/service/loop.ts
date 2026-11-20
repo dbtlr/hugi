@@ -137,24 +137,32 @@ export function failureChanges(
 }
 
 /**
- * Whether the poll read the commit: some event of it read its declaration, or found the skip
- * instruction. A failed read, or a pull request with no current merge, learned nothing about it.
+ * Whether the poll read the commit fully: its repository was read with no pull request whose read
+ * failed (any of them may be at the commit), and every event of the commit (the default branch
+ * head, each pull request at it) read its declaration or found the skip instruction. A failed
+ * read, or a pull request with no current merge, learned nothing, so one such event of the commit
+ * leaves it unread, whatever its other events found.
  */
 export function readsCommit(snapshot: Snapshot, repository: string, commit: string): boolean {
-  return snapshot.some(
-    (each) =>
-      each.kind === 'read' &&
-      [each.defaultBranch, ...each.pullRequests].some(
-        (read) =>
-          read.repository === repository &&
-          read.commit === commit &&
-          read.read.kind !== 'failed' &&
-          read.read.kind !== 'no-merge',
-      ),
-  );
+  return snapshot.some((each) => {
+    if (
+      each.kind !== 'read' ||
+      each.repository !== repository ||
+      each.pullRequestFailures.length > 0
+    ) {
+      return false;
+    }
+    const reads = [each.defaultBranch, ...each.pullRequests].filter(
+      (read) => read.commit === commit,
+    );
+    return (
+      reads.length > 0 &&
+      reads.every((read) => read.read.kind !== 'failed' && read.read.kind !== 'no-merge')
+    );
+  });
 }
 
-/** Whether the poll read the lane's commit and no longer queues the lane. */
+/** Whether the poll read the lane's commit fully and no longer queues the lane. */
 export function noLongerQueued(
   snapshot: Snapshot,
   candidates: readonly Candidate[],

@@ -531,6 +531,84 @@ describe('a commit that stops appearing', () => {
   });
 });
 
+describe('a commit read through several events', () => {
+  /** The pull request numbered `number` at `head`, read as `read`. */
+  const pullNumbered = (number: number, read: CommitRead, head = PR_HEAD): CommitSnapshot => {
+    const pullRequest = { baseRef: 'main', headRef: `feature-${number}`, headSha: head, number };
+    return {
+      commit: head,
+      event: { kind: 'pull_request', pullRequest },
+      read,
+      repository: REPOSITORY,
+    };
+  };
+  /** Pull request 7 cannot be read; pull request 8, at the same head, reads without the lane. */
+  const siblingWithoutLane: Snapshot = [
+    {
+      defaultBranch: pushAt(lanesRead([])),
+      kind: 'read',
+      pullRequestFailures: [{ cause: 'GitHub answered 502', number: 7 }],
+      pullRequests: [pullNumbered(8, lanesRead([]))],
+      repository: REPOSITORY,
+    },
+  ];
+  const sevenSelects: Snapshot = [
+    repository(pushAt(lanesRead([])), [
+      pullNumbered(7, lanesRead(['build'])),
+      pullNumbered(8, lanesRead([])),
+    ]),
+  ];
+
+  test('keeps an unposted verdict while one pull request at it cannot be read', async () => {
+    const { posts, runs } = await coordinate({
+      failPost: failsFinal,
+      polls: [sevenSelects, siblingWithoutLane, siblingWithoutLane],
+    });
+    expect(runs).toHaveLength(1);
+    expect(finalPostsOn(posts, PR_HEAD)).toHaveLength(3);
+  });
+
+  test('keeps a wait while one pull request at it cannot be read', async () => {
+    const { runs } = await coordinate({
+      polls: [sevenSelects, siblingWithoutLane, sevenSelects],
+      runs: { build: noVerdict },
+    });
+    expect(runs.map((each) => each.at)).toEqual([0]);
+  });
+
+  test('keeps an unposted verdict while the default branch head at it fails to read', async () => {
+    const headFailsPullReads: Snapshot = [
+      repository(pushAt({ cause: 'git fetch timed out', kind: 'failed' }), [
+        pullNumbered(7, lanesRead([]), HEAD),
+      ]),
+    ];
+    const { posts, runs } = await coordinate({
+      failPost: failsFinal,
+      polls: [pushPoll(['build']), headFailsPullReads, headFailsPullReads],
+    });
+    expect(runs).toHaveLength(1);
+    expect(finalPostsOn(posts, HEAD)).toHaveLength(3);
+  });
+
+  test('drops an unposted verdict once every read of it succeeds without the lane', async () => {
+    const { posts } = await coordinate({
+      failPost: failsFinal,
+      polls: [
+        sevenSelects,
+        [
+          repository(pushAt(lanesRead([])), [
+            pullNumbered(7, lanesRead([])),
+            pullNumbered(8, lanesRead([])),
+          ]),
+        ],
+        sevenSelects,
+      ],
+    });
+    // The post after the run only: the second poll drops it, and the third runs the lane again.
+    expect(finalPostsOn(posts, PR_HEAD)).toHaveLength(2);
+  });
+});
+
 describe('read failures', () => {
   test('are logged once while they last, and again when they clear', async () => {
     const { logged } = await coordinate({
