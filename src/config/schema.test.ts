@@ -70,10 +70,44 @@ test('without a github_app the configuration has none', () => {
   expect('githubApp' in validateConfig(MINIMAL)).toBe(false);
 });
 
+test('without path the configuration has no path property', () => {
+  expect('path' in validateConfig(MINIMAL)).toBe(false);
+});
+
+test('path keeps the directories in order and freezes the list', () => {
+  const path = ['/opt/homebrew/bin', '/usr/local/Tools and Utilities', '/opt/homebrew/bin'];
+  const config = validateConfig({ ...MINIMAL, path });
+  expect(config.path).toEqual(path);
+  expect(Object.isFrozen(config.path)).toBe(true);
+  expect(Object.isFrozen(path)).toBe(false);
+});
+
+test.each([1, 64])('path accepts %i directories', (length) => {
+  const path = Array.from({ length }, (_, i) => `/directory-${i}`);
+  expect(validateConfig({ ...MINIMAL, path }).path).toEqual(path);
+});
+
 const GITHUB_APP = { app_id: 1, private_key_path: '/keys/app.pem' };
 
 const refusals: readonly [string, unknown, string][] = [
   ['a null document', null, 'configuration: must be a mapping'],
+  ['path as null', { ...MINIMAL, path: null }, 'path: must be a list'],
+  ['path as a string', { ...MINIMAL, path: '/bin' }, 'path: must be a list'],
+  ['an empty path', { ...MINIMAL, path: [] }, 'path: must list 1 to 64 directories'],
+  [
+    'a path with 65 directories',
+    { ...MINIMAL, path: Array.from({ length: 65 }, (_, i) => `/bin-${i}`) },
+    'path: must list 1 to 64 directories',
+  ],
+  ['a numeric path entry', { ...MINIMAL, path: ['/bin', 1] }, 'path[1]: must be'],
+  ['an empty path entry', { ...MINIMAL, path: [''] }, 'path[0]: must be'],
+  ['a relative path entry', { ...MINIMAL, path: ['bin'] }, 'path[0]: must be'],
+  ['a home-relative path entry', { ...MINIMAL, path: ['~/bin'] }, 'path[0]: must be'],
+  [
+    'a path entry with a colon',
+    { ...MINIMAL, path: ['/bin', '/sbin', '/a:b'] },
+    'path[2]: must be',
+  ],
   ['a list document', [], 'configuration: must be a mapping'],
   ['a string document', 'hi', 'configuration: must be a mapping'],
   ['an unknown key', { ...MINIMAL, extra: 1 }, 'extra: is not a known key'],
