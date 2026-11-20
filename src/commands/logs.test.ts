@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +8,7 @@ import { mockProcess } from '@loomcli/testing';
 import { createApp } from '../app';
 import { writeRunRecord } from '../runs/record';
 import { sampleRecord, sampleRunningRecord } from '../runs/testing';
-import { serviceLogPath } from './logs';
+import { readTailLines, serviceLogPath, TAIL_MAX_BYTES } from './logs';
 
 const ID = '2026-11-19T100000Z-aaaaaaaaa-abc123';
 
@@ -334,6 +334,34 @@ test('only the tail of a large log is read, and a partial first line is dropped'
   expect(lines).toHaveLength(2);
   expect(lines[1]).toBe('2026-11-19T10:00:07.000Z info event 7');
   expect(lines[0]).toStartWith('2026-11-19T10:00:01.000Z info event 1 pad=');
+});
+
+test('the reader stops 1 MiB from the end, leaving out a record that begins before it', async () => {
+  // A few long records: the 50 lines asked for lie far beyond the bound.
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(2 * 1024 * 1024) } });
+  await writeServiceLog([long, long, serviceRecord(7)]);
+  expect(await readTailLines(serviceLog, 50)).toEqual([serviceRecord(7)]);
+});
+
+test('the reader reads no more than its bound, whatever the file holds', async () => {
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(3 * 1024 * 1024) } });
+  await writeServiceLog([long, serviceRecord(7)]);
+  let bytesRead = 0;
+  const counted = async (path: string) => {
+    const handle = await open(path, 'r');
+    return {
+      close: () => handle.close(),
+      read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const read = await handle.read(buffer, offset, length, position);
+        bytesRead += read.bytesRead;
+        return read;
+      },
+      stat: () => handle.stat(),
+    };
+  };
+  await readTailLines(serviceLog, 50, counted);
+  expect(bytesRead).toBeGreaterThan(0);
+  expect(bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
 });
 
 test('a multi-byte character is not split at a chunk boundary', async () => {

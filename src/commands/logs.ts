@@ -193,6 +193,9 @@ export type ServiceLogEntry = Readonly<Record<string, unknown>>;
 const DEFAULT_LINES = 50;
 const MAX_LINES = 10_000;
 const TAIL_CHUNK_BYTES = 64 * 1024;
+
+/** The most the tail reader reads, backward from the end: 10,000 records of ordinary length fit. */
+export const TAIL_MAX_BYTES = 1024 * 1024;
 const NEWLINE_BYTE = 10;
 
 function parseLineCount(text: string | undefined): number {
@@ -208,29 +211,48 @@ function parseLineCount(text: string | undefined): number {
   return count;
 }
 
+/** The part of a file handle the tail reader uses; the seam a test replaces to count its reads. */
+export type TailFile = {
+  readonly stat: () => Promise<{ readonly size: number }>;
+  readonly read: (
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => Promise<unknown>;
+  readonly close: () => Promise<void>;
+};
+
 /**
- * The last `count` non-empty lines of a file, reading backward in chunks so a large log is never
- * loaded whole. A first line that the read began in the middle of is dropped.
+ * The last `count` non-empty lines of a file, reading backward in chunks and at most
+ * `TAIL_MAX_BYTES`, so a large log is never loaded whole. A first line that the read began in the
+ * middle of is dropped: one cut by a chunk, and one that begins before the bound, so a run of long
+ * lines can yield fewer than `count`.
  */
-export async function readTailLines(path: string, count: number): Promise<string[]> {
-  const handle = await open(path, 'r');
+export async function readTailLines(
+  path: string,
+  count: number,
+  openFile: (path: string) => Promise<TailFile> = async (file) => open(file, 'r'),
+): Promise<string[]> {
+  const handle = await openFile(path);
   try {
     const { size } = await handle.stat();
+    const floor = Math.max(0, size - TAIL_MAX_BYTES);
     let position = size;
-    let tail = Buffer.alloc(0);
+    const chunks: Buffer[] = [];
     let newlines = 0;
     // `count` complete lines need `count` newlines after the first line the read may have cut.
-    while (position > 0 && newlines <= count) {
-      const length = Math.min(TAIL_CHUNK_BYTES, position);
+    while (position > floor && newlines <= count) {
+      const length = Math.min(TAIL_CHUNK_BYTES, position - floor);
       position -= length;
       const chunk = Buffer.alloc(length);
       // Each read depends on how many lines the last ones gave.
       // eslint-disable-next-line no-await-in-loop
       await handle.read(chunk, 0, length, position);
       newlines += chunk.filter((byte) => byte === NEWLINE_BYTE).length;
-      tail = Buffer.concat([chunk, tail]);
+      chunks.push(chunk);
     }
-    const lines = tail.toString('utf8').split('\n');
+    const lines = Buffer.concat(chunks.toReversed()).toString('utf8').split('\n');
     if (position > 0) {
       lines.shift();
     }
