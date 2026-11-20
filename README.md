@@ -205,40 +205,54 @@ A pull request's statuses go on its head commit, and the description records the
 
 ### What it does
 
-When it starts, `hugi serve` checks its setup and exits 1, saying what to fix, if any check fails: the configuration loads ([Configuration](#configuration)), it has a `github_app`, the App's private key is readable as [Reporting to GitHub](#reporting-to-github) requires, and `tart` and `git` are found on the search path (`path`, or the inherited `PATH`). It then deletes every VM whose name starts with `hugi-svc-`. The service is the only process that creates such VMs, so any it finds were left by a crash or a power loss. A VM it cannot delete is logged as an error, and the service still starts. It never touches any other VM: `hugi run` names its VMs `hugi-run-*` and may run in the second guest slot while the service runs.
+When it starts, `hugi serve` checks its setup and exits 1, saying what to fix, if any check fails: no other `hugi serve` is running for this user (a lock file in `$XDG_STATE_HOME/hugi`), the configuration loads ([Configuration](#configuration)), it has a `github_app`, the App's private key is readable as [Reporting to GitHub](#reporting-to-github) requires, and `tart` and `git` are found on the search path (`path`, or the inherited `PATH`). The refusal is written to the service log and the service state as well as to stderr, because launchd discards a user agent's output. Under launchd a refused start is retried every 10 seconds, so `hugi service status` shows it until it is fixed.
+
+It then deletes every VM whose name starts with `hugi-svc-`. Only `hugi serve` creates such VMs, and the lock lets one run at a time, so any it finds were left by a crash, a kill, or a power loss. A VM it cannot delete is logged as an error, and the service still starts. It never touches any other VM: `hugi run` names its VMs `hugi-run-*` and may run in the second guest slot while the service runs.
 
 Then it loops:
 
-1. **Poll.** Read every enrolled repository: the default branch head and the open pull requests the allowlist admits ([How it works](#how-it-works)). Polls start at least `poll_interval` seconds apart.
+1. **Poll.** Read every enrolled repository: the default branch head and the open pull requests the allowlist admits ([How it works](#how-it-works)). Polls start at least `poll_interval` seconds apart. A poll makes about 3 GitHub API requests per repository and 2 more per admitted open pull request, all on the App installation's limit of 5,000 an hour; at the default interval of 60 seconds that covers roughly 35 admitted pull requests. A read GitHub refuses for its rate limit fails like any other read.
 2. **Report refusals.** Post the `hugi` failure status for each commit whose lane declaration is refused and that does not have it yet.
-3. **Run the first candidate.** Take the first lane in the queue that lacks a verdict, run it in a VM named `hugi-svc-<id>`, and post its status: `pending` with its run id when its VM is about to boot, then `success` or `failure` when it ends. For a pull request, the run first resolves the merge commit again and reads the declaration, the lane's trigger and its `if:` at that merge ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)); a lane that merge no longer selects is dropped with no status, and a declaration that merge refuses posts the `hugi` status instead. A run with no verdict posts no final status, so its lane keeps `pending`, is a candidate again, and runs again after the next poll. A lane that cannot be read posts `failure` with no run id, because no VM booted and no run record exists.
-4. Go back to 1. When the queue is empty, wait for the next poll.
+3. **Run the first candidate.** Take the first lane in the queue that lacks a verdict and is not waiting (below), run it in a VM named `hugi-svc-<id>`, and post its status: `pending` with its run id when its VM is about to boot, then `success` or `failure` when it ends.
+   - For a pull request, the run first reads the pull request again. If its head is no longer the commit the poll saw, the candidate is dropped with no status, and the next poll derives the new head's lanes. Otherwise the run resolves the merge commit again and reads the declaration, the lane's trigger and its `if:` at that merge, and the run uses that same merge ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). A lane that merge no longer selects is dropped with no status, and a declaration that merge refuses posts the `hugi` status instead.
+   - A lane that cannot be read, or whose tools cannot be resolved, fails before a VM boots: it posts `failure` with no run id, because no run record exists.
+4. Go back to 1. When no candidate is left, wait for the next poll.
 
-The service runs one lane at a time. The queue is derived from GitHub's state at each poll, so a restart loses nothing: a lane whose run was cut short keeps `pending` and runs again. Each run is recorded under the runs directory like a `hugi run` ([Run records and logs](#run-records-and-logs)), and its status description carries its run id for `hugi logs`. A status Hugi fails to post is logged; the next poll sees the lane still lacks a verdict and runs it again.
+The service runs one lane at a time. The queue is derived from GitHub's state at each poll, so a restart loses nothing: a lane whose run was cut short keeps `pending` and runs again. Each run is recorded under the runs directory like a `hugi run` ([Run records and logs](#run-records-and-logs)), and its status description carries its run id for `hugi logs`.
+
+Two kinds of trouble make a lane wait, so that it cannot hold up the lanes behind it:
+
+- **No verdict.** A run with no verdict (its VM failed to boot, say, or its source could not be fetched) posts no final status, so the lane keeps `pending`. It runs again only after a wait of 5 minutes, which doubles after each further run with no verdict, up to an hour; the other candidates run meanwhile. A `pending` status that cannot be posted skips the run and starts the same wait.
+- **Unposted verdict.** When a final status cannot be posted, the service keeps the verdict and posts it again before it takes the next candidate, instead of running the lane again. The lane is skipped while its verdict waits to be posted.
+
+Waits and unposted verdicts are kept in memory, so a restart clears them. A lane that stays waiting is logged at each run.
 
 A read that fails at a poll (a repository, a branch head, a pull request) skips that commit until a later poll. The service logs each distinct failure once, when it first appears, and logs again when it clears; a failure Hugi does not expect, such as one caused by a bug, is logged as an error. Every `git` call the service makes has a deadline, so a hung fetch cannot stall the loop.
 
-On SIGTERM or Ctrl-C the service stops taking work, interrupts the run in flight, deletes its VM, and exits within the shutdown limit of three minutes, as an interrupted `hugi run` does. The interrupted run records no verdict, so its lane runs again after the restart.
+On SIGTERM or Ctrl-C the service stops taking work, interrupts the run in flight, deletes its VM, and exits. Run by hand, it waits up to three minutes for that, as an interrupted `hugi run` does. Under launchd it may have less: launchd kills an agent a system-defined time after SIGTERM, about 20 seconds, and Loom's agent does not lengthen it. A VM left by that kill is deleted at the next start, so stop the service while `hugi service status` shows the run as `idle` before you `uninstall` it. The interrupted run records no verdict, so its lane runs again after the restart. A run killed before it finished keeps its `running` record; retention treats it as stale once it is older than `runs.max_age_days`.
 
 ### Installing the service
 
-`hugi service install` installs `hugi serve` as a launchd user agent and starts it; launchd restarts it whenever it exits. `hugi service start`, `stop`, `restart` and `uninstall` do what they say. The agent runs with the environment launchd gives it, not your shell's: set `path` in the configuration, and keep the configuration at its default location, since the agent sets no `HUGI_CONFIG` or `XDG_*` variable. Restart the service after you change the configuration; `hugi serve` reads it once, when it starts.
+`hugi service install` installs `hugi serve` as a launchd user agent and starts it; launchd restarts it whenever it exits. Run it from the built binary (`bun run build`, then `dist/hugi service install`): Loom refuses to install a development run, and the agent runs the binary from the path it was installed from, so reinstall after moving it. `hugi service start`, `stop`, `restart` and `uninstall` do what they say. Restart the service after you change the configuration; `hugi serve` reads it once, when it starts.
+
+The agent runs with the environment launchd gives it, not your shell's. It has no `HUGI_CONFIG`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` or `TART_HOME`, so it reads `~/.config/hugi/config.yaml`, keeps its runs, state and lock under `~/.local/state/hugi`, and uses tart's default VM store. Set `path` in the configuration so it finds tart and git. On the service's host, leave those variables unset in your shell too, or set them to those same defaults; otherwise `hugi config check`, `hugi logs` and `hugi service status` read other files than the service does.
 
 A launchd user agent starts only when its user's session starts. For the service to come back after a reboot, the host's user must log in automatically.
 
-`hugi service status` reports whether the agent is installed and running and, once it is installed, these rows from the state the service writes at `$XDG_STATE_HOME/hugi/service.json`:
+`hugi service status` reports whether the agent is installed and running and, once it is installed, these rows:
 
 | Row | Shows |
 | --- | --- |
 | `run` | The lane in flight, as its status name, with its repository, commit and elapsed time; or `idle`. |
-| `queue` | How many candidates the last poll found. |
+| `queue` | How many candidates the last poll found, and how many of them are waiting. |
 | `last poll` | When the last poll ended, and `ok` or how many reads failed. |
-| `leftover VMs` | `hugi-svc-*` VMs other than the run in flight's, or `none`. |
+| `start` | When the service started, or why its last start was refused. |
+| `leftover VMs` | `hugi-svc-*` VMs other than the run in flight's, listed with tart when `status` runs; or `none`. |
 | `log` | The service log's path. |
 
-The state describes the last time the service wrote it; when no service process is running, `status` says the rows are stale.
+Every row but `leftover VMs` comes from the state the service writes at `$XDG_STATE_HOME/hugi/service.json`. It describes the last time the service wrote it, so when no service process is running, `status` says those rows are stale.
 
-The service logs to `~/Library/Logs/hugi/hugi.jsonl`, one JSON record per line, rotated at 10 MB with five old files kept. `hugi logs --service` prints its last 50 records as text; `--lines <n>` changes the count, and `--format json` prints the records as JSON.
+Hugi's log goes to `~/Library/Logs/hugi/hugi.jsonl`, one JSON record per line, rotated at 10 MB with five old files kept. `hugi serve` writes nearly all of it; other commands add only their own log records. `hugi logs --service` prints its last 50 records as text; `--lines <n>` changes the count, and `--format json` prints the records as JSON.
 
 ## Documentation
 
