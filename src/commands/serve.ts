@@ -14,7 +14,7 @@ import { checkAppKey, createInstallationTokens, requireGitHubApp } from '../gith
 import type { InstallationTokens } from '../github/app-auth';
 import { createGitHubReader } from '../github/client';
 import type { GitHubReader } from '../github/client';
-import type { Fetch } from '../github/pull-request';
+import type { Fetch, PullRequestFacts } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
 import { hostEnv, requireHostTools, spawnWithTools } from '../service/host-tools';
@@ -37,6 +37,7 @@ import {
   resolveServiceStateDir,
 } from '../source/locations';
 import { githubRepositorySpec } from '../source/repository-spec';
+import type { GitHubRepositorySpec, RepositorySpec } from '../source/repository-spec';
 import { systemClock } from '../vm/clock';
 import { runInVm, SERVICE_VM_PREFIX } from '../vm/lifecycle';
 import { sweepVms } from '../vm/sweep';
@@ -194,6 +195,11 @@ async function coordinate(
   });
   const github = perRepositoryReader(fetch, tokens);
   const sourceOptions = serviceSourceOptions(ports, setup);
+  // The poll and the run open sources the same way, so one binding serves both.
+  const openSource = (spec: RepositorySpec, commit: string) =>
+    openHostSource(spec, commit, sourceOptions);
+  const openPullRequest = (spec: GitHubRepositorySpec, facts: PullRequestFacts) =>
+    openPullRequestSource(spec, facts, sourceOptions);
   await runCoordinator(config, {
     clock: ports.clock,
     log,
@@ -202,9 +208,8 @@ async function coordinate(
       pollRepositories(config, {
         github,
         openPullRequest: (repository, facts) =>
-          openPullRequestSource(githubRepositorySpec(repository), facts, sourceOptions),
-        openPush: (repository, sha) =>
-          openHostSource(githubRepositorySpec(repository), sha, sourceOptions),
+          openPullRequest(githubRepositorySpec(repository), facts),
+        openPush: (repository, sha) => openSource(githubRepositorySpec(repository), sha),
       }),
     report,
     reporter: createStatusReporter({
@@ -216,8 +221,8 @@ async function coordinate(
       configPath: ports.paths.configPath,
       newVmId: ports.newVmId,
       now: ports.now,
-      openPullRequestSource: (spec, facts) => openPullRequestSource(spec, facts, sourceOptions),
-      openSource: (spec, commit) => openHostSource(spec, commit, sourceOptions),
+      openPullRequestSource: openPullRequest,
+      openSource,
       readPullRequest: (repository, number) => github.pullRequest(repository, number),
       runInVm: serviceRunInVm(ports, config, setup),
       runsDir: ports.paths.runsDir,

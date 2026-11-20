@@ -56,6 +56,8 @@ type Script = (command: string, args: readonly string[]) => FakeCommand;
 function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {}) {
   const clock = new FakeClock();
   const spawned: string[] = [];
+  /** Each program started, by the command it was started as, and the PATH it was given. */
+  const started: { command: string; path: string | undefined }[] = [];
   let next: { command: string; args: readonly string[] } | undefined;
   const fake = new FakeSpawn(clock, (args) => script(next?.command ?? '', args));
   const ports: ServePorts = {
@@ -69,6 +71,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
       platform: 'linux',
       spawn: (command, args, options) => {
         spawned.push([command, ...args].join(' '));
+        started.push({ command, path: options?.env?.PATH });
         next = { args, command };
         return fake.spawn(command, args, options);
       },
@@ -84,7 +87,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
     signal: new AbortController().signal,
     ...overrides,
   };
-  return { clock, ports, spawned };
+  return { clock, ports, spawned, started };
 }
 
 const VM_LIST = JSON.stringify([
@@ -144,6 +147,107 @@ test("the service's git calls end at the service's git deadline", async () => {
   expect(progress.failure?.message).toContain('git timed out after 600 seconds');
 });
 
+test("the service's git runs by the path found, with `path` as its PATH", async () => {
+  const { ports, started } = portsOf(() => ({ exitCode: 128 }));
+  const setup = await serveDeps(ports).checkSetup(config);
+  const options = { ...serviceSourceOptions(ports, setup), cacheDir: join(scratch, 'cache') };
+  await rejectionOf(openHostSource(githubRepositorySpec('dbtlr/hugi'), 'a'.repeat(40), options));
+  expect(started[0]).toEqual({ command: join(bin, 'git'), path: bin });
+});
+
+const BRANCH_HEAD = 'a'.repeat(40);
+
+/** GitHub for one enrolled repository with no open pull requests: the App's token and the reads a poll makes. */
+const fakeGitHub: ServePorts['fetch'] = async (url) => {
+  const path = new URL(url).pathname;
+  if (path.endsWith('/installation')) {
+    return Response.json({ id: 99 });
+  }
+  if (path.endsWith('/access_tokens')) {
+    const expires = new Date(Date.now() + 3_600_000).toISOString();
+    return Response.json({ expires_at: expires, token: 'ghs_test' }, { status: 201 });
+  }
+  const answers: Record<string, unknown> = {
+    '/repos/dbtlr/hugi': { default_branch: 'main' },
+    '/repos/dbtlr/hugi/branches/main': { commit: { commit: { message: 'm' }, sha: BRANCH_HEAD } },
+    '/repos/dbtlr/hugi/pulls': [],
+  };
+  return path in answers ? Response.json(answers[path]) : new Response('', { status: 404 });
+};
+
+/** Wait, on the real clock and for at most a few seconds, until `condition` holds. */
+async function until(condition: () => boolean): Promise<void> {
+  for (let tries = 0; tries < 1000 && !condition(); tries += 1) {
+    // oxlint-disable-next-line no-await-in-loop -- polls a condition the loop's I/O settles
+    await Bun.sleep(2);
+  }
+}
+
+/** The coordinator as `hugi serve` binds it, started on the fake host; git answers from `git`. */
+async function startCoordinator(git: FakeCommand) {
+  const stop = new AbortController();
+  const warnings: string[] = [];
+  const events: unknown[] = [];
+  const log = {
+    error: () => {},
+    info: () => {},
+    warn: (message: string) => warnings.push(message),
+  };
+  const { clock, ports, started } = portsOf((command) => (command.endsWith('git') ? git : {}), {
+    fetch: fakeGitHub,
+    log,
+    signal: stop.signal,
+  });
+  const deps = serveDeps(ports);
+  const setup = await deps.checkSetup(config);
+  const progress = { ended: false };
+  const coordinate = async () => {
+    await deps.coordinate(config, setup, async (event) => {
+      events.push(event);
+    });
+    progress.ended = true;
+  };
+  const ended = coordinate();
+  return { clock, ended, events, progress, started, stop, warnings };
+}
+
+describe('the coordinator', () => {
+  test("polls with the setup check's git and `path`, each git call within the service's deadline", async () => {
+    const run = await startCoordinator({ hangs: true });
+    const gitStarted = () => run.started.some((each) => each.command.endsWith('git'));
+    await until(gitStarted);
+    expect(run.started.find((each) => each.command.endsWith('git'))).toEqual({
+      command: join(bin, 'git'),
+      path: bin,
+    });
+    const timedOut = () =>
+      run.warnings.some((each) => each.includes('timed out after 600 seconds'));
+    // Ten minutes and the termination grace, on the fake clock.
+    for (let minute = 0; minute < 12 && !timedOut(); minute += 1) {
+      run.clock.advance(60_000);
+      // oxlint-disable-next-line no-await-in-loop -- the clock moves one step at a time
+      await settle();
+    }
+    expect(timedOut()).toBe(true);
+    run.stop.abort();
+    for (let minute = 0; minute < 12 && !run.progress.ended; minute += 1) {
+      run.clock.advance(60_000);
+      // oxlint-disable-next-line no-await-in-loop -- the clock moves one step at a time
+      await settle();
+    }
+    await run.ended;
+  });
+
+  test('ends when the service is asked to stop', async () => {
+    const run = await startCoordinator({ exitCode: 128 });
+    await until(() => run.events.length > 0);
+    expect(run.events).toContainEqual(expect.objectContaining({ kind: 'poll-ended' }));
+    run.stop.abort();
+    await until(() => run.progress.ended);
+    expect(run.progress.ended).toBe(true);
+  });
+});
+
 const REQUEST: RunRequest = {
   event: { event: 'push', refName: 'main', refType: 'branch', repository: 'dbtlr/hugi', sha: 'a' },
   image: 'hugi-golden',
@@ -189,6 +293,13 @@ describe("a candidate's VM", () => {
     const deps = await vmDepsOf(portsOf().ports, config);
     expect(`${deps.vmPrefix}${deps.newId()}`).toBe('hugi-svc-c0ffee12');
     expect(deps.resources).toEqual({ cpus: 6, memoryMb: 8192 });
+  });
+
+  test('is driven by the tart the setup check found, with `path` as its PATH', async () => {
+    const { ports, started } = portsOf(tartScript);
+    const deps = await vmDepsOf(ports, config);
+    await deps.tart.list();
+    expect(started).toEqual([{ command: join(bin, 'tart'), path: bin }]);
   });
 
   test('is interrupted when the service is asked to stop', async () => {
