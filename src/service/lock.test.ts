@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -174,4 +174,13 @@ onDarwin('a lock file nobody holds has no holder, whatever pid it records', asyn
 test('no lock file, or no darwin, means no holder', async () => {
   expect(await serveLockHolder(lockPath(), process.platform)).toBeUndefined();
   expect(await serveLockHolder(lockPath(), 'linux')).toBeUndefined();
+});
+
+onDarwin('a longer pid left by an earlier holder does not outlive the new record', async () => {
+  await mkdir(dir, { recursive: true });
+  await writeFile(lockPath(), '1234567890');
+  const release = await acquireServeLock(lockPath(), holder(process.pid));
+  expect(await readFile(lockPath(), 'utf8')).toBe(`${process.pid}\n`);
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBe(process.pid);
+  await release();
 });
