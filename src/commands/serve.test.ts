@@ -209,3 +209,13 @@ test('a second service on the same host is refused the lock', async () => {
   expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
   await release();
 });
+
+test('a service started with another XDG_STATE_HOME contends for the same lock', async () => {
+  const home = join(scratch, 'home');
+  const elsewhere = servePaths(undefined, { XDG_STATE_HOME: join(scratch, 'elsewhere') }, home);
+  expect(elsewhere.lockPath).toBe(join(home, '.local', 'state', 'hugi', 'serve.lock'));
+  const release = await serveDeps(portsOf(servePs).ports).acquireLock();
+  const second = serveDeps(portsOf(servePs, { paths: elsewhere, pid: process.pid + 1 }).ports);
+  expect(await rejectionOf(second.acquireLock())).toBeInstanceOf(ServeLockError);
+  await release();
+});

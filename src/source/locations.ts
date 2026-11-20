@@ -32,9 +32,18 @@ export function resolveRunsDir(env: Env, home: string): string {
   return join(present(env.XDG_STATE_HOME) ?? join(home, '.local', 'state'), 'hugi', 'runs');
 }
 
-/** The directory holding the service's state file and lock: `hugi` in the XDG state home. */
+/** The directory holding the service's state file: `hugi` in the XDG state home. */
 export function resolveServiceStateDir(env: Env, home: string): string {
   return join(present(env.XDG_STATE_HOME) ?? join(home, '.local', 'state'), 'hugi');
+}
+
+/**
+ * The single-instance lock of `hugi serve`: always `~/.local/state/hugi/serve.lock`. It does not
+ * follow `XDG_STATE_HOME`, because the startup sweep covers tart's whole VM store: a service
+ * started where that variable differs must still find the lock of the one already running.
+ */
+export function resolveServeLockPath(home: string): string {
+  return join(home, '.local', 'state', 'hugi', 'serve.lock');
 }
 
 /** A fresh log directory name: the UTC time to the second, then the short commit. */

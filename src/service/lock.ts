@@ -1,11 +1,11 @@
 /**
- * The single-instance lock of `hugi serve`: `serve.lock` in Hugi's state directory, recording the
- * holder's pid and the boot time. A lock is stale, and taken over, when the machine has rebooted
+ * The single-instance lock of `hugi serve` (`resolveServeLockPath`), recording the holder's pid and
+ * the boot time. A lock is stale, and taken over, when the machine has rebooted
  * since, its pid is not alive, or the live pid is not a `hugi serve`. Every process fact comes in
  * through `ServeLockDeps`, so tests need no real process.
  */
 import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
@@ -13,9 +13,6 @@ import type { Host } from '@loomcli/core';
 import { temporaryPathFor } from '../atomic-write';
 import { errnoCode } from '../errno';
 import { isMapping } from '../yaml/strict';
-
-/** The lock's file name inside the state directory. */
-export const SERVE_LOCK_FILE = 'serve.lock';
 
 /** Exit 1: another `hugi serve` holds the lock, or won a take-over. */
 export class ServeLockError extends FatalError {
@@ -113,11 +110,11 @@ async function isHeld(held: LockContents, boot: string, deps: ServeLockDeps): Pr
   return command === undefined || isServeCommand(command);
 }
 
-function refusal(pid: number | undefined, dir: string): ServeLockError {
+function refusal(pid: number | undefined, path: string): ServeLockError {
   const holder = pid === undefined ? 'another hugi serve' : `hugi serve (pid ${pid})`;
   return new ServeLockError(
     `${holder} already runs for this user, so this one will not start. ` +
-      `Stop it, or remove ${join(dir, SERVE_LOCK_FILE)} if no service is running.`,
+      `Stop it, or remove ${path} if no service is running.`,
   );
 }
 
@@ -182,10 +179,10 @@ async function enterTakeOver(mutex: string, files: LockFiles): Promise<void> {
 }
 
 /** Refuse when the lock at `path` is held by a live `hugi serve` of this boot. */
-async function refuseIfHeld(path: string, dir: string, boot: string, deps: ServeLockDeps) {
+async function refuseIfHeld(path: string, boot: string, deps: ServeLockDeps) {
   const held = await readLock(path);
   if (held !== undefined && (await isHeld(held, boot, deps))) {
-    throw refusal(held.pid, dir);
+    throw refusal(held.pid, path);
   }
 }
 
@@ -197,7 +194,6 @@ async function refuseIfHeld(path: string, dir: string, boot: string, deps: Serve
  */
 async function takeOver(
   path: string,
-  dir: string,
   temporary: string,
   boot: string,
   deps: ServeLockDeps,
@@ -206,10 +202,10 @@ async function takeOver(
   const mutex = takeOverMutex(path);
   await enterTakeOver(mutex, files);
   try {
-    await refuseIfHeld(path, dir, boot, deps);
+    await refuseIfHeld(path, boot, deps);
     await rm(path, { force: true });
     if (!(await created(() => files.link(temporary, path)))) {
-      throw refusal((await readLock(path))?.pid, dir);
+      throw refusal((await readLock(path))?.pid, path);
     }
   } finally {
     await rm(mutex, { force: true, recursive: true });
@@ -224,12 +220,11 @@ async function takeOver(
  * both hold it. Returns `release`, which deletes the lock only while it still holds this pid.
  */
 export async function acquireServeLock(
-  dir: string,
+  path: string,
   deps: ServeLockDeps,
   files: LockFiles = REAL_FILES,
 ): Promise<() => Promise<void>> {
-  await mkdir(dir, { mode: 0o700, recursive: true });
-  const path = join(dir, SERVE_LOCK_FILE);
+  await mkdir(dirname(path), { mode: 0o700, recursive: true });
   const boot = await deps.bootTime();
   const temporary = temporaryPathFor(path);
   try {
@@ -237,8 +232,8 @@ export async function acquireServeLock(
       mode: 0o600,
     });
     if (!(await created(() => files.link(temporary, path)))) {
-      await refuseIfHeld(path, dir, boot, deps);
-      await takeOver(path, dir, temporary, boot, deps, files);
+      await refuseIfHeld(path, boot, deps);
+      await takeOver(path, temporary, boot, deps, files);
     }
   } finally {
     await rm(temporary, { force: true });

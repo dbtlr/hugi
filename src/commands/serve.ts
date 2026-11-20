@@ -4,8 +4,6 @@
  * sequence is `startService` and the loop `runCoordinator`; `serveDeps` binds them to the leaf
  * ports (the host's spawn and paths, fetch, the VM runner, the clocks), so a test can replace each.
  */
-import { dirname, join } from 'node:path';
-
 import { Command } from '@loomcli/core';
 import type { Host, Log } from '@loomcli/core';
 import { helpCommand } from '@loomcli/plugins/help/extension';
@@ -20,7 +18,7 @@ import type { Fetch } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
 import { hostEnv, requireHostTools, spawnWithTools } from '../service/host-tools';
-import { acquireServeLock, createServeLockDeps, SERVE_LOCK_FILE } from '../service/lock';
+import { acquireServeLock, createServeLockDeps } from '../service/lock';
 import { runCoordinator } from '../service/loop';
 import type { CoordinatorLog } from '../service/loop';
 import { createRunCandidate } from '../service/run-candidate';
@@ -35,6 +33,7 @@ import {
   resolveCacheDir,
   resolveConfigPath,
   resolveRunsDir,
+  resolveServeLockPath,
   resolveServiceStateDir,
 } from '../source/locations';
 import { githubRepositorySpec } from '../source/repository-spec';
@@ -76,7 +75,7 @@ export function servePaths(
   return {
     cacheDir: resolveCacheDir(undefined, env, home),
     configPath: resolveConfigPath(configFlag, env, home),
-    lockPath: join(resolveServiceStateDir(env, home), SERVE_LOCK_FILE),
+    lockPath: resolveServeLockPath(home),
     runsDir: resolveRunsDir(env, home),
     stateDir: resolveServiceStateDir(env, home),
   };
@@ -231,7 +230,7 @@ export function serveDeps(ports: ServePorts): StartDeps<ServeSetup> {
   return {
     acquireLock: () =>
       acquireServeLock(
-        dirname(paths.lockPath),
+        paths.lockPath,
         createServeLockDeps(host.spawn, { pid, platform: host.platform }),
       ),
     checkSetup: (config) => checkSetup(ports, config),

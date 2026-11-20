@@ -16,13 +16,7 @@ import { join } from 'node:path';
 import type { Host } from '@loomcli/core';
 
 import { rejectionOf } from '../runs/testing';
-import {
-  acquireServeLock,
-  createServeLockDeps,
-  SERVE_LOCK_FILE,
-  ServeLockError,
-  TAKE_OVER_STALE_MS,
-} from './lock';
+import { acquireServeLock, createServeLockDeps, ServeLockError, TAKE_OVER_STALE_MS } from './lock';
 import type { LockFiles, ServeLockDeps } from './lock';
 
 let scratch: string;
@@ -47,7 +41,8 @@ function deps(overrides: Partial<ServeLockDeps> = {}): ServeLockDeps {
   };
 }
 
-const lockPath = () => join(dir, SERVE_LOCK_FILE);
+const LOCK_FILE = 'serve.lock';
+const lockPath = () => join(dir, LOCK_FILE);
 
 /** `ps` says pid 50 runs another program and every other pid is a `hugi serve`. */
 const notServe = async (pid: number) => (pid === 50 ? 'vim notes' : 'hugi serve');
@@ -66,14 +61,14 @@ const writeLock = async (pid: number, boot = BOOT) => {
 };
 
 test('with no lock it takes one recording its pid and the boot time, in a private directory', async () => {
-  await acquireServeLock(dir, deps());
+  await acquireServeLock(lockPath(), deps());
   expect(JSON.parse(await readFile(lockPath(), 'utf8'))).toEqual({ bootTime: BOOT, pid: 100 });
   expect((await stat(dir)).mode & 0o777).toBe(0o700);
 });
 
 test('a lock held by a live hugi serve is refused, naming its pid, with exit 1', async () => {
-  await acquireServeLock(dir, deps({ pid: 50 }));
-  const refusal = await acquireServeLock(dir, deps()).catch((error: unknown) => error);
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
+  const refusal = await acquireServeLock(lockPath(), deps()).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(ServeLockError);
   expect(refusal instanceof Error && refusal.message).toContain('50');
   expect(ServeLockError.exitCode).toBe(1);
@@ -81,9 +76,9 @@ test('a lock held by a live hugi serve is refused, naming its pid, with exit 1',
 });
 
 test('a live hugi serve keeps the lock when the boot time drifts by microseconds', async () => {
-  await acquireServeLock(dir, deps({ pid: 50 }));
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
   const drifted = '{ sec = 1788622746, usec = 195373 } Sat Sep  5 11:39:06 2026';
-  const refusal = await acquireServeLock(dir, deps({ bootTime: async () => drifted })).catch(
+  const refusal = await acquireServeLock(lockPath(), deps({ bootTime: async () => drifted })).catch(
     (error: unknown) => error,
   );
   expect(refusal).toBeInstanceOf(ServeLockError);
@@ -93,11 +88,12 @@ test.each([
   ['its holder could not read the boot time', 'unknown'],
   ['this starter cannot read the boot time', BOOT],
 ])('a live hugi serve keeps the lock when %s', async (_name, holderBoot) => {
-  await acquireServeLock(dir, deps({ bootTime: async () => holderBoot, pid: 50 }));
+  await acquireServeLock(lockPath(), deps({ bootTime: async () => holderBoot, pid: 50 }));
   const starterBoot = holderBoot === 'unknown' ? BOOT : 'unknown';
-  const refusal = await acquireServeLock(dir, deps({ bootTime: async () => starterBoot })).catch(
-    (error: unknown) => error,
-  );
+  const refusal = await acquireServeLock(
+    lockPath(),
+    deps({ bootTime: async () => starterBoot }),
+  ).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(ServeLockError);
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(50);
 });
@@ -114,17 +110,18 @@ test.each([
     { commandOf: async () => 'hugi run ci.yml:test' },
   ],
 ])('a lock is taken over when %s', async (_name, override) => {
-  await acquireServeLock(dir, deps({ pid: 50 }));
-  await acquireServeLock(dir, deps({ pid: 100, ...override }));
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
+  await acquireServeLock(lockPath(), deps({ pid: 100, ...override }));
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-  expect(await readdir(dir)).toEqual([SERVE_LOCK_FILE]);
+  expect(await readdir(dir)).toEqual([LOCK_FILE]);
 });
 
 test('a live pid whose command cannot be read is not taken from', async () => {
-  await acquireServeLock(dir, deps({ pid: 50 }));
-  const refusal = await acquireServeLock(dir, deps({ commandOf: async () => undefined })).catch(
-    (error: unknown) => error,
-  );
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
+  const refusal = await acquireServeLock(
+    lockPath(),
+    deps({ commandOf: async () => undefined }),
+  ).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(ServeLockError);
 });
 
@@ -133,9 +130,9 @@ test.each([
   ['no pid', '{"bootTime":"boot-1"}'],
   ['empty', ''],
 ])('a lock file that is %s is taken over', async (_name, text) => {
-  await acquireServeLock(dir, deps({ pid: 50 }));
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
   await writeFile(lockPath(), text);
-  await acquireServeLock(dir, deps());
+  await acquireServeLock(lockPath(), deps());
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
 });
 
@@ -159,12 +156,12 @@ function rivalLinksFirst(rivalPid: number): LockFiles {
 test('a take-over whose link loses to another starter is refused, naming the winner', async () => {
   await writeLock(50);
   const refusal = await rejectionOf(
-    acquireServeLock(dir, deps({ isAlive: (pid) => pid !== 50 }), rivalLinksFirst(77)),
+    acquireServeLock(lockPath(), deps({ isAlive: (pid) => pid !== 50 }), rivalLinksFirst(77)),
   );
   expect(refusal).toBeInstanceOf(ServeLockError);
   expect(refusal.message).toContain('77');
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(77);
-  expect(await readdir(dir)).toEqual([SERVE_LOCK_FILE]);
+  expect(await readdir(dir)).toEqual([LOCK_FILE]);
 });
 
 const mutexPath = () => `${lockPath()}.takeover`;
@@ -183,7 +180,7 @@ describe('the take-over mutex', () => {
         return mkdir(path, options);
       },
     };
-    expect(await rejectionOf(acquireServeLock(dir, deps(), watched))).toBeInstanceOf(
+    expect(await rejectionOf(acquireServeLock(lockPath(), deps(), watched))).toBeInstanceOf(
       ServeLockError,
     );
     expect(made).toEqual([]);
@@ -192,7 +189,7 @@ describe('the take-over mutex', () => {
   test('held by another starter refuses the take-over and is left alone', async () => {
     await writeLock(50);
     await mkdir(mutexPath());
-    const refusal = await rejectionOf(acquireServeLock(dir, dead()));
+    const refusal = await rejectionOf(acquireServeLock(lockPath(), dead()));
     expect(refusal).toBeInstanceOf(ServeLockError);
     expect(refusal.message).toContain('taking over');
     expect((await stat(mutexPath())).isDirectory()).toBe(true);
@@ -204,9 +201,9 @@ describe('the take-over mutex', () => {
     await mkdir(mutexPath());
     const old = new Date(Date.now() - TAKE_OVER_STALE_MS - 5000);
     await utimes(mutexPath(), old, old);
-    await acquireServeLock(dir, dead());
+    await acquireServeLock(lockPath(), dead());
     expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(100);
-    expect(await readdir(dir)).toEqual([SERVE_LOCK_FILE]);
+    expect(await readdir(dir)).toEqual([LOCK_FILE]);
   });
 
   test('is removed when the take-over fails', async () => {
@@ -220,7 +217,7 @@ describe('the take-over mutex', () => {
         await link(from, to);
       },
     };
-    expect((await rejectionOf(acquireServeLock(dir, dead(), failing))).message).toBe(
+    expect((await rejectionOf(acquireServeLock(lockPath(), dead(), failing))).message).toBe(
       'disk on fire',
     );
     // Neither the mutex nor this starter's temporary file is left; the stale lock was removed.
@@ -245,12 +242,12 @@ test('a starter never takes over a lock that is still being written', async () =
     ...REAL_FILES,
     writeFile: async (path, text, options) => {
       await writeFile(path, '', options);
-      rival ??= outcomeOf(acquireServeLock(dir, deps({ pid: 60 })));
+      rival ??= outcomeOf(acquireServeLock(lockPath(), deps({ pid: 60 })));
       await rival;
       await writeFile(path, text, { ...options, flag: 'w' });
     },
   };
-  const first = await outcomeOf(acquireServeLock(dir, deps(), halting));
+  const first = await outcomeOf(acquireServeLock(lockPath(), deps(), halting));
   const outcomes = [first, await rival];
   expect(outcomes.filter((outcome) => outcome === 'held')).toHaveLength(1);
   const holder = first === 'held' ? 100 : 60;
@@ -264,12 +261,12 @@ test('a starter whose stale judgement another take-over overtakes does not also 
   let rival: Promise<unknown> | undefined;
   const overtaken = async (pid: number) => {
     if (pid === 50) {
-      rival ??= outcomeOf(acquireServeLock(dir, deps({ commandOf: notServe, pid: 60 })));
+      rival ??= outcomeOf(acquireServeLock(lockPath(), deps({ commandOf: notServe, pid: 60 })));
       await rival;
     }
     return notServe(pid);
   };
-  const first = await outcomeOf(acquireServeLock(dir, deps({ commandOf: overtaken })));
+  const first = await outcomeOf(acquireServeLock(lockPath(), deps({ commandOf: overtaken })));
   const outcomes = [first, await rival];
   expect(outcomes.filter((outcome) => outcome === 'held')).toHaveLength(1);
   const holder = first === 'held' ? 100 : 60;
@@ -277,18 +274,18 @@ test('a starter whose stale judgement another take-over overtakes does not also 
 });
 
 test('release deletes the lock only while it still holds this pid', async () => {
-  const release = await acquireServeLock(dir, deps());
+  const release = await acquireServeLock(lockPath(), deps());
   await release();
   expect(await readdir(dir)).toEqual([]);
 
-  const again = await acquireServeLock(dir, deps());
+  const again = await acquireServeLock(lockPath(), deps());
   await writeLock(9);
   await again();
   expect(JSON.parse(await readFile(lockPath(), 'utf8')).pid).toBe(9);
 });
 
 test('release is harmless when the lock is already gone', async () => {
-  const release = await acquireServeLock(dir, deps());
+  const release = await acquireServeLock(lockPath(), deps());
   await rm(lockPath());
   await release();
 });
