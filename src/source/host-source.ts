@@ -110,6 +110,8 @@ export type OpenedSource = HostSource & CommitMessageReader;
 
 export type HostSourceOptions = {
   readonly cacheDir: string;
+  /** An optional deadline for each host git call. */
+  readonly deadlineMs?: number;
   /** The run's `host.spawn`, the only way this module starts a program. */
   readonly spawn: Host['spawn'];
   /** The run's `host.env`, from which git's environment is built. */
@@ -309,6 +311,7 @@ function guestSourceOf(spec: RepositorySpec, sha: string, options: HostSourceOpt
   const gitFor = (transport: GitTransport) =>
     createGit({
       cwd: options.cwd,
+      deadlineMs: options.deadlineMs,
       env: options.env,
       lazyFetch: false,
       spawn: options.spawn,
@@ -340,6 +343,7 @@ function guestSourceOf(spec: RepositorySpec, sha: string, options: HostSourceOpt
 function sourceGit(spec: RepositorySpec, options: HostSourceOptions): Git {
   return createGit({
     cwd: options.cwd,
+    deadlineMs: options.deadlineMs,
     env: options.env,
     lazyFetch: spec.kind === 'github',
     spawn: options.spawn,
