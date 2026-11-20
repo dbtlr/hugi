@@ -133,7 +133,7 @@ test('the sweep deletes only hugi-svc-* VMs', async () => {
 });
 
 test("the service's git calls end at the service's git deadline", async () => {
-  const { clock, ports } = portsOf(() => ({ hangs: true }));
+  const { clock, ports, started } = portsOf(() => ({ hangs: true }));
   const setup = await serveDeps(ports).checkSetup(config);
   const options = { ...serviceSourceOptions(ports, setup), cacheDir: join(scratch, 'cache') };
   const progress: { failure?: Error } = {};
@@ -143,6 +143,8 @@ test("the service's git calls end at the service's git deadline", async () => {
     );
   };
   void open();
+  // The deadline starts with the spawn, so move the clock only once git has started.
+  await until(() => started.some((each) => each.command.endsWith('git')));
   // Ten minutes and the termination grace, on the fake clock.
   for (let minute = 0; minute < 12 && progress.failure === undefined; minute += 1) {
     clock.advance(60_000);
@@ -375,11 +377,13 @@ async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
     }
   });
   await until(() => seen.length > 0);
-  await advanceUntilSettled(clock, ended);
   const [first] = seen;
   if (first === undefined) {
+    // Awaiting the coordinator would hang: stop it and fail now.
+    stop.abort();
     throw new Error('no candidate reached the VM runner');
   }
+  await advanceUntilSettled(clock, ended);
   return {
     first,
     // What the run started, the poll's calls left out: each program, its PATH, and its arguments.
