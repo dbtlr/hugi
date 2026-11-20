@@ -49,10 +49,17 @@ onDarwin('release frees the lock for the next start, which records its own pid',
   await releaseNext();
 });
 
-/** The source of a child that takes the lock at `path`, says so, and waits to be killed. */
+/**
+ * The source of a child that takes the lock at `path`, says so, and waits to be killed. It keeps the
+ * release closure, as `startService` does: a dropped one lets the collector close the handle, and
+ * with it the lock, which the forced collections before it says so would show.
+ */
 const childHolding = (path: string) => `
   const { acquireServeLock } = await import(${JSON.stringify(join(import.meta.dir, 'lock.ts'))});
-  await acquireServeLock(${JSON.stringify(path)}, { pid: process.pid, platform: 'darwin' });
+  globalThis.release = await acquireServeLock(${JSON.stringify(path)}, { pid: process.pid, platform: 'darwin' });
+  Bun.gc(true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  Bun.gc(true);
   console.log('held');
   setInterval(() => {}, 60_000);
 `;
