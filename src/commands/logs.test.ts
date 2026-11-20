@@ -422,6 +422,7 @@ test.each([
   ['no run and no --service', [], 'logs <run>'],
   ['a run with --service', ['some-run', '--service'], '--service'],
   ['--lines without --service', ['some-run', '--lines', '5'], '--lines'],
+  ['--all with --service', ['--service', '--all'], '--all'],
   ['--lines of 0', ['--service', '--lines', '0'], '1 to 10000'],
   ['--lines of 10001', ['--service', '--lines', '10001'], '1 to 10000'],
   ['--lines that is not a number', ['--service', '--lines', 'many'], '1 to 10000'],

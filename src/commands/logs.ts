@@ -293,8 +293,7 @@ function renderEntry(entry: ServiceLogEntry): string {
     return entry.raw;
   }
   const { fields, level, message, time, ...rest } = entry;
-  const nested =
-    typeof fields === 'object' && fields !== null && !Array.isArray(fields) ? fields : {};
+  const nested = isMapping(fields) ? fields : {};
   const head = [time, level, message].filter((part) => part !== undefined).map(String);
   const extra = Object.entries({ ...nested, ...rest }).map(
     ([key, value]) => `${key}=${fieldText(value)}`,
@@ -332,7 +331,7 @@ export function logsCommand() {
       description: 'A run id, or a unique prefix of one. Not with --service.',
     })
     .option('all', {
-      description: "Print every step's log, not only the failing one.",
+      description: "Print every step's log, not only the failing one. Not with --service.",
       type: 'boolean',
     })
     .option('service', {
@@ -349,6 +348,9 @@ export function logsCommand() {
       if (options.service) {
         if (args.run !== undefined) {
           throw new LogsUsageError('--service takes no <run>: it prints the service log.');
+        }
+        if (options.all) {
+          throw new LogsUsageError('--all works only with a run: the service log has no steps.');
         }
         const count = parseLineCount(options.lines);
         const path = serviceLogPath(host.env, host.home, host.platform);
