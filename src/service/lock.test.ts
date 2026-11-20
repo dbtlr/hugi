@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { rejectionOf } from '../runs/testing';
-import { acquireServeLock, ServeLockError, serveLockHolder } from './lock';
+import { acquireServeLock, pidAlive, ServeLockError, serveLockHolder } from './lock';
 
 /** The lock is darwin's `O_EXLOCK`, so a test of the real lock runs only there. */
 const onDarwin = test.skipIf(process.platform !== 'darwin');
@@ -38,6 +38,38 @@ onDarwin(
     expect(refusal.message).toContain('pid 100');
     expect(ServeLockError.exitCode).toBe(1);
     await release();
+  },
+);
+
+onDarwin(
+  'a start that meets a lock held only for a moment, as by a status probe, waits and takes it',
+  async () => {
+    const brief = await acquireServeLock(lockPath(), holder(100));
+    const waits: number[] = [];
+    const release = await acquireServeLock(lockPath(), holder(200), async (ms) => {
+      waits.push(ms);
+      await brief();
+    });
+    expect(waits).toEqual([20]);
+    expect(await readFile(lockPath(), 'utf8')).toBe('200\n');
+    await release();
+  },
+);
+
+onDarwin(
+  'a start that meets a lock held throughout tries 10 times, 20 ms apart, then is refused',
+  async () => {
+    const held = await acquireServeLock(lockPath(), holder(100));
+    const waits: number[] = [];
+    const refusal = await rejectionOf(
+      acquireServeLock(lockPath(), holder(200), async (ms) => {
+        waits.push(ms);
+      }),
+    );
+    expect(waits).toEqual(Array.from({ length: 9 }, () => 20));
+    expect(refusal).toBeInstanceOf(ServeLockError);
+    expect(refusal.message).toContain('pid 100');
+    await held();
   },
 );
 
@@ -96,9 +128,36 @@ test('off darwin the service refuses to start, since it runs only on macOS', asy
   expect(refusal.message).toContain('only on macOS');
 });
 
-onDarwin('the lock holder is the pid written by the process that holds the lock', async () => {
-  const release = await acquireServeLock(lockPath(), holder(42));
-  expect(await serveLockHolder(lockPath(), 'darwin')).toBe(42);
+onDarwin('the lock holder is the live pid written by the process that holds the lock', async () => {
+  const release = await acquireServeLock(lockPath(), holder(process.pid));
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBe(process.pid);
+  await release();
+});
+
+/** The pid of a process that has exited. */
+async function deadPid(): Promise<number> {
+  const child = Bun.spawn([process.execPath, '-e', '']);
+  await child.exited;
+  return child.pid;
+}
+
+test('a pid is alive while its process runs, including one this user may not signal', async () => {
+  expect(pidAlive(process.pid)).toBe(true);
+  expect(pidAlive(1)).toBe(true);
+  expect(pidAlive(await deadPid())).toBe(false);
+});
+
+onDarwin('a held lock whose recorded pid is dead has no live holder', async () => {
+  const dead = await deadPid();
+  const release = await acquireServeLock(lockPath(), holder(dead));
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBeUndefined();
+  await release();
+});
+
+onDarwin('a held lock that records no pid yet has no holder', async () => {
+  const release = await acquireServeLock(lockPath(), holder(process.pid));
+  await writeFile(lockPath(), '');
+  expect(await serveLockHolder(lockPath(), 'darwin')).toBeUndefined();
   await release();
 });
 

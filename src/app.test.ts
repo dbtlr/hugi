@@ -109,13 +109,16 @@ describe.skipIf(process.platform !== 'darwin')(
   'whether hugi service status reads the state as live',
   () => {
     let home: string;
-    beforeEach(async () => {
-      home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
-      await writeServiceState(resolveServiceStateDir({}, home), {
-        pid: 42,
+    /** The state a hugi serve with this pid wrote. */
+    const writeStateOf = (pid: number) =>
+      writeServiceState(resolveServiceStateDir({}, home), {
+        pid,
         start: { kind: 'running' },
         startedAt: '2026-11-19T10:00:00.000Z',
       });
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
+      await writeStateOf(process.pid);
     });
     afterEach(async () => {
       await rm(home, { force: true, recursive: true });
@@ -132,7 +135,7 @@ describe.skipIf(process.platform !== 'darwin')(
 
     test('live while the hugi serve that wrote it holds the lock', async () => {
       const release = await acquireServeLock(resolveServeLockPath(home), {
-        pid: 42,
+        pid: process.pid,
         platform: 'darwin',
       });
       try {
@@ -144,16 +147,33 @@ describe.skipIf(process.platform !== 'darwin')(
 
     test('stale once the lock is free, though the lock file still names its pid', async () => {
       const release = await acquireServeLock(resolveServeLockPath(home), {
-        pid: 42,
+        pid: process.pid,
         platform: 'darwin',
       });
       await release();
       expect(await startRow()).toContain('stale');
     });
 
-    test('stale while another hugi serve holds the lock', async () => {
+    test('stale while the lock is held but the pid it and the state name is dead', async () => {
+      // A new hugi serve between taking the lock and writing its pid still shows the last one's.
+      const exited = Bun.spawn([process.execPath, '-e', '']);
+      await exited.exited;
+      await writeStateOf(exited.pid);
       const release = await acquireServeLock(resolveServeLockPath(home), {
-        pid: 43,
+        pid: exited.pid,
+        platform: 'darwin',
+      });
+      try {
+        expect(await startRow()).toContain('stale');
+      } finally {
+        await release();
+      }
+    });
+
+    test('stale while another hugi serve holds the lock', async () => {
+      // pid 1 is alive, so only the pid differing makes the state stale.
+      const release = await acquireServeLock(resolveServeLockPath(home), {
+        pid: 1,
         platform: 'darwin',
       });
       try {
