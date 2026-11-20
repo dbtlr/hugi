@@ -2,9 +2,15 @@
 import type { LaneStatus } from '../github/statuses';
 import type { FinishedRecord, RecordedStep, RunRecord } from './record';
 
-/** The first step that failed or timed out, which is the one whose log explains the verdict. */
+/**
+ * The first step that failed or timed out and set the verdict, which is the one whose log explains
+ * it. A failure that `continue-on-error` let pass did not set it.
+ */
 export function failingStep(record: FinishedRecord): RecordedStep | undefined {
-  return record.steps.find((step) => step.outcome === 'failure' || step.outcome === 'timeout');
+  return record.steps.find(
+    (step) =>
+      (step.outcome === 'failure' || step.outcome === 'timeout') && step.continuedOnError !== true,
+  );
 }
 
 /**

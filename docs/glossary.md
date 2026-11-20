@@ -9,7 +9,7 @@ Hugi runs a repository's macOS CI lanes in throwaway VMs on its own host and rep
 ## Running
 
 **Lane**:
-One job, with its matrix values fixed, that a repository's lane declaration names for Hugi to run on macOS. The job's workflow file, GitHub's or a Hugi workflow, is the lane's only definition.
+One job, with its matrix values fixed, that a repository's lane declaration names for Hugi to run on macOS. The job's workflow file, GitHub's or a Hugi workflow, is the lane's only definition, except that a lane declared with `tools: mise` also takes tools from the repository's mise config.
 _Avoid_: Job (when Hugi's unit is meant), pipeline, check
 
 **Step plan**:
@@ -39,6 +39,14 @@ _Avoid_: Hosted verdict
 **Hugi workflow**:
 A workflow-syntax file under `.github/hugi/` that holds a repository's promoted lanes. GitHub never runs it. Hugi reads it like any workflow, `on:` block included.
 _Avoid_: Shadow workflow, private workflow
+
+**Workflow tools**:
+The tools Hugi resolves for a lane from its job's setup actions and the repository's Rust toolchain files, installed before the job's steps run. Under `tools: mise`, the repository's mise config adds to them and must agree with them.
+_Avoid_: Toolchain (for the whole set), setup tools
+
+**Tool environment**:
+The `PATH` and tool variables every step of a run gets, computed once by Hugi from the installed tools, so a step runs its tools directly and never through mise's shims.
+_Avoid_: Shims, toolchain environment
 
 **Golden image**:
 The VM image every run is cloned from, holding the toolchains and warm package caches the enrolled lanes need.

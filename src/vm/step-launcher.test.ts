@@ -57,14 +57,16 @@ test('the step shell runs directly, never under a mise wrapper', () => {
   expect(launcher).toContain("'bash' '--noprofile' '--norc' '-eo' 'pipefail'");
 });
 
-test('PATH starts with the mise shims, then Homebrew, then the system paths', () => {
-  expect(launch()).toContain(
-    'export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
+test('the base PATH is Homebrew, then the system paths, with no mise shims', () => {
+  const launcher = launch();
+  expect(launcher).toContain(
+    'export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
   );
+  expect(launcher).not.toContain('shims');
 });
 
-test('GITHUB_PATH additions go in front of the mise shims', () => {
-  expect(guestPath(['/custom/bin'])).toStartWith('/custom/bin:$HOME/.local/share/mise/shims:');
+test('GITHUB_PATH additions go in front of the base PATH', () => {
+  expect(guestPath(['/custom/bin'])).toStartWith('/custom/bin:/opt/homebrew/bin:');
 });
 
 test('the inherited PATH is not appended', () => {
@@ -88,6 +90,14 @@ test('the step starts detached in a session of its own, with its output and stat
   expect(launcher).toContain(`/bin/mv '${files.status}.tmp' '${files.status}'`);
   // The launcher itself returns at once; nothing it starts keeps tart exec's pipes open.
   expect(launcher.trimEnd()).toEndWith(`>> '${files.log}' 2>&1 < /dev/null &`);
+});
+
+test('the step gets SIGINT and SIGQUIT back at their defaults, which a background job of the launcher shell ignores', () => {
+  const launcher = launch();
+  expect(launcher).toContain('$SIG{INT} = "DEFAULT"; $SIG{QUIT} = "DEFAULT";');
+  // The reset comes after the session starts and before the step's shell is exec'd.
+  expect(launcher.indexOf('POSIX::setsid()')).toBeLessThan(launcher.indexOf('$SIG{INT}'));
+  expect(launcher.indexOf('$SIG{INT}')).toBeLessThan(launcher.indexOf('exec @ARGV'));
 });
 
 test('each step starts with fresh, empty GITHUB_ENV, GITHUB_PATH, and GITHUB_OUTPUT files', () => {

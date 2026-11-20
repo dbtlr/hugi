@@ -38,6 +38,23 @@ describe('the run record', () => {
     expect(await readRunRecord(dir)).toEqual(running);
   });
 
+  test('keeps a step that continue-on-error let pass, and refuses any other value for the mark', async () => {
+    const steps = [
+      {
+        continuedOnError: true as const,
+        index: 1,
+        log: '01-lint.log',
+        name: 'Lint',
+        outcome: 'failure',
+      },
+    ];
+    await writeRunRecord(dir, sampleRecord({ steps }));
+    expect(await readRunRecord(dir)).toEqual(sampleRecord({ steps }));
+    expect(
+      await refusalOf({ ...sampleRecord(), steps: [{ ...steps[0], continuedOnError: 'yes' }] }),
+    ).toContain('not a Hugi run record');
+  });
+
   test('names the lane by its status name and keeps the complete matrix row', () => {
     expect(sampleRecord().lane).toEqual({
       job: 'test',

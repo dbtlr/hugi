@@ -19,8 +19,10 @@ cp "$SHARE/tools.toml" "$HOME/.config/mise/config.toml"
 mise install --yes
 mise reshim
 
-# Put the shims on PATH for login shells and interactive bash. A plain `tart exec` command or a
-# non-interactive, non-login bash (`bash -c`) reads none of these files, so a run sets PATH itself.
+# Put the shims on PATH for login shells and interactive bash, for people who open a shell in the
+# VM. A plain `tart exec` command or a non-interactive, non-login bash (`bash -c`) reads none of
+# these files, and a run does not use the shims: it computes the tool environment with `mise env`
+# and sets PATH itself (ADR-0006).
 # shellcheck disable=SC2016  # the line is written literally; the shell expands it at login
 shim_path='export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:$PATH"'
 for rc in .zshenv .zprofile .bash_profile .bashrc; do

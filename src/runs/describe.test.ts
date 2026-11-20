@@ -24,6 +24,17 @@ test('the failing step is the first that failed or timed out', () => {
   );
 });
 
+test('a failure continue-on-error let pass is not the failing step', () => {
+  const record = sampleRecord({
+    steps: [
+      { continuedOnError: true, index: 1, log: '01-lint.log', name: 'Lint', outcome: 'failure' },
+      { index: 2, log: '02-build.log', name: 'Build', outcome: 'failure' },
+    ],
+  });
+  expect(failingStep(record)?.name).toBe('Build');
+  expect(laneStatusOf(record)).toMatchObject({ state: 'failure', step: 'Build' });
+});
+
 test('a failed run stands for a failure with its step, cause and run id', () => {
   expect(laneStatusOf(sampleRecord({ detail: 'exit 3' }))).toEqual({
     cause: 'exit 3',

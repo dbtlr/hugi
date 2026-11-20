@@ -4,7 +4,7 @@ title: ADR-0001 - GitHub never schedules
 description: Hugi is a standalone coordinator that decides when lanes run. GitHub only supplies commits and receives verdicts as commit statuses; no run waits on a GitHub runner.
 status: accepted
 created: 2026-11-18
-modified: 2026-11-18
+modified: 2026-11-19
 ---
 # ADR-0001 - GitHub never schedules
 
@@ -25,4 +25,4 @@ Hugi learns about commits by polling, not by webhooks. The host should expose no
 
 ## Consequences
 
-The workflow file stays the only definition of a lane: Hugi reads the job's steps from it instead of restating them. The hosted macOS job can stay in the workflow behind a switch, as a fallback for when the host is down. [ADR-0004](0004-lanes-declared-in-hugi-yaml.md) replaces this fallback: promotion moves the job out of GitHub's workflow, and the fallback for an outage is removing Hugi's statuses from the required checks, then a commit that moves the job back.
+The workflow file stays the only definition of a lane: Hugi reads the job's steps from it instead of restating them. [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) amends this for a lane that also takes tools from the repository's mise config. The hosted macOS job can stay in the workflow behind a switch, as a fallback for when the host is down. [ADR-0004](0004-lanes-declared-in-hugi-yaml.md) replaces this fallback: promotion moves the job out of GitHub's workflow, and the fallback for an outage is removing Hugi's statuses from the required checks, then a commit that moves the job back.

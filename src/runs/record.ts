@@ -21,6 +21,8 @@ export type RecordedStep = {
   readonly name: string;
   readonly outcome: string;
   readonly log?: string;
+  /** The step failed, but its `continue-on-error` kept it from setting the verdict. */
+  readonly continuedOnError?: true;
 };
 
 type RecordBase = {
@@ -146,8 +148,9 @@ function isStep(value: unknown): value is RecordedStep {
   if (!isObject(value)) {
     return false;
   }
-  const { index, log, name, outcome } = value;
+  const { continuedOnError, index, log, name, outcome } = value;
   return (
+    (continuedOnError === undefined || continuedOnError === true) &&
     typeof index === 'number' &&
     Number.isInteger(index) &&
     isString(name) &&

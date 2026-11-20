@@ -41,6 +41,8 @@ type LaneSelection = {
   readonly matrix: LaneRef['matrix'];
   readonly needs: NonNullable<EventContext['needs']>;
   readonly image: string;
+  /** Where the lane's tools come from (ADR-0006): the workflow alone, or also the repository's mise config. */
+  readonly toolSource: RunRequest['toolSource'];
   /** Where step logs go; the default is a fresh directory from `deps.newLogDir`. */
   readonly logDir?: string;
 };
@@ -373,6 +375,15 @@ async function runAtSource(
   if ('report' in resolved) {
     return resolved.report;
   }
+  // A fault in the lane's tools, which the run owns (ADR-0006), so no VM boots for it.
+  if (request.toolSource === 'mise' && checkoutStepIndex(plan) === undefined) {
+    return noVm(
+      'toolchain-unresolvable',
+      'fail',
+      'the lane takes its tools from the mise config (tools: mise), but its job has no actions/checkout step, so there is no repository config to read.',
+      source.sha,
+    );
+  }
   return runInGuest(request, deps, source, { event, plan, toolchain: resolved.toolchain });
 }
 
@@ -408,6 +419,7 @@ async function runInGuest(
       logDir,
       plan,
       source: guest.location,
+      toolSource: request.toolSource,
       tools: toolchain.tools,
     });
   } finally {

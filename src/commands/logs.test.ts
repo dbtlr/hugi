@@ -121,6 +121,24 @@ test('the failing step is printed even when it is not the first step', async () 
   expect(stdout).not.toContain('--- step 1');
 });
 
+test('a failure continue-on-error let pass is passed over for the step that set the verdict', async () => {
+  await writeRunRecord(
+    join(runsDir, ID),
+    sampleRecord({
+      steps: [
+        { continuedOnError: true, index: 1, log: '01-lint.log', name: 'Lint', outcome: 'failure' },
+        { index: 2, log: '02-build.log', name: 'Build', outcome: 'failure' },
+      ],
+    }),
+  );
+  await writeFile(join(runsDir, ID, '01-lint.log'), 'an ignored warning\n');
+  await writeFile(join(runsDir, ID, '02-build.log'), 'the real error\n');
+  const { stdout } = await hugi(ID);
+  expect(stdout).toContain('--- step 2: Build');
+  expect(stdout).toContain('the real error');
+  expect(stdout).not.toContain('an ignored warning');
+});
+
 test('a running run is shown as running, with no verdict or steps', async () => {
   await writeRunRecord(join(runsDir, ID), sampleRunningRecord());
   const { exitCode, stdout } = await hugi(ID);

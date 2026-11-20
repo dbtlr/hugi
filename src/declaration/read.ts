@@ -16,7 +16,7 @@ import { neededJobs } from '../lane/workflow';
 import { parseStrictYaml } from '../yaml/strict';
 import { DeclarationRefusalError } from './errors';
 import { readEntries } from './schema';
-import type { Entry } from './schema';
+import type { Entry, ToolsSource } from './schema';
 
 /** Where a repository declares its lanes. */
 export const DECLARATION_PATH = '.github/hugi.yaml';
@@ -27,10 +27,13 @@ export const DECLARATION_PATH = '.github/hugi.yaml';
  */
 export type CommitFiles = (path: string) => Promise<string | null>;
 
+/** A declared lane: its identity as the lane reader takes it, and where its tools come from (ADR-0006). */
+export type DeclaredLane = LaneRef & { readonly tools: ToolsSource };
+
 export type Declaration =
   /** The commit has no declaration, so it has no lanes and Hugi posts nothing for it. */
   | { readonly kind: 'none' }
-  | { readonly kind: 'lanes'; readonly lanes: readonly LaneRef[] }
+  | { readonly kind: 'lanes'; readonly lanes: readonly DeclaredLane[] }
   /** The whole declaration is refused; `cause` is one line for the declaration status. */
   | { readonly kind: 'refused'; readonly cause: string };
 
@@ -249,7 +252,7 @@ function jobLanes(
     } catch (cause) {
       throw fault(`${where}, row ${JSON.stringify(row)}`, cause);
     }
-    declared.add({ job: jobId, matrix: row, workflow: entry.workflow }, where);
+    declared.add({ job: jobId, matrix: row, tools: entry.tools, workflow: entry.workflow }, where);
   }
 }
 
@@ -288,11 +291,11 @@ function described(lane: LaneRef): string {
  * ignoring case as GitHub does.
  */
 class DeclaredLanes {
-  readonly lanes: LaneRef[] = [];
-  readonly #buckets = new Map<string, LaneRef[]>();
-  readonly #statusNames = new Map<string, LaneRef>();
+  readonly lanes: DeclaredLane[] = [];
+  readonly #buckets = new Map<string, DeclaredLane[]>();
+  readonly #statusNames = new Map<string, DeclaredLane>();
 
-  add(lane: LaneRef, where: string) {
+  add(lane: DeclaredLane, where: string) {
     if (this.lanes.length >= MAX_DECLARED_LANES) {
       throw new DeclarationRefusalError(
         `${where}: the declaration has more than ${MAX_DECLARED_LANES} lanes, the most it may have`,
@@ -308,9 +311,9 @@ class DeclaredLanes {
       );
     }
     const statusName = laneStatusName(lane);
-    if (hasNonBmp(statusName)) {
+    if (hasNonBmp(statusName) || !statusName.isWellFormed()) {
       throw new DeclarationRefusalError(
-        `${described(lane)} has the status name "${statusName}", and GitHub accepts no 4-byte characters in a status name`,
+        `GitHub accepts no 4-byte or unpaired surrogate characters in a status name, and ${described(lane)} has the status name ${JSON.stringify(statusName)}`,
       );
     }
     const named = this.#statusNames.get(statusNameKey(statusName));
@@ -347,7 +350,7 @@ function entryLanes(
   }
 }
 
-async function declaredLanes(declarationText: string, files: CommitFiles): Promise<LaneRef[]> {
+async function declaredLanes(declarationText: string, files: CommitFiles): Promise<DeclaredLane[]> {
   const bytes = Buffer.byteLength(declarationText);
   if (bytes > MAX_DECLARATION_BYTES) {
     throw new DeclarationRefusalError(

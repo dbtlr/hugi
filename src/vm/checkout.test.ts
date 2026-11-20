@@ -19,6 +19,7 @@ const requestWith = (source: RunRequest['source']): RunRequest => ({
     timeoutMinutes: 10,
   },
   source,
+  toolSource: 'workflow',
   tools: [],
 });
 
