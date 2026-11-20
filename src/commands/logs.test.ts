@@ -8,7 +8,7 @@ import { mockProcess } from '@loomcli/testing';
 import { createApp } from '../app';
 import { writeRunRecord } from '../runs/record';
 import { sampleRecord, sampleRunningRecord } from '../runs/testing';
-import { readTailLines, serviceLogPath, TAIL_MAX_BYTES } from './logs';
+import { readTailLines, serviceLogPath, TAIL_CHUNK_BYTES, TAIL_MAX_BYTES } from './logs';
 
 const ID = '2026-11-19T100000Z-aaaaaaaaa-abc123';
 
@@ -362,6 +362,22 @@ test('the reader reads no more than its bound, whatever the file holds', async (
   await readTailLines(serviceLog, 50, counted);
   expect(bytesRead).toBeGreaterThan(0);
   expect(bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
+});
+
+test('a chunk that ends with exactly the newlines asked for is followed by one more', async () => {
+  // Three lines of 0.6 chunks: the last chunk begins inside the second line and holds two newlines.
+  const length = Math.floor(TAIL_CHUNK_BYTES * 0.6);
+  const [first, second, third] = ['a'.repeat(length), 'b'.repeat(length), 'c'.repeat(length)];
+  await writeFile(serviceLog, `${first}\n${second}\n${third}\n`);
+  expect(await readTailLines(serviceLog, 2)).toEqual([second, third]);
+});
+
+test('a multi-byte character the chunk boundary falls inside is decoded whole', async () => {
+  // The last chunk begins after the first of the check mark's three bytes.
+  const line = `\u2713${'c'.repeat(TAIL_CHUNK_BYTES - 3)}`;
+  await writeFile(serviceLog, `a\n${line}\n`);
+  expect(Buffer.byteLength(`a\n${line}\n`) - TAIL_CHUNK_BYTES).toBe(3);
+  expect(await readTailLines(serviceLog, 1)).toEqual([line]);
 });
 
 test('a multi-byte character is not split at a chunk boundary', async () => {

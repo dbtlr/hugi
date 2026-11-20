@@ -192,7 +192,8 @@ export type ServiceLogEntry = Readonly<Record<string, unknown>>;
 /** The default and the bounds of `--lines`. */
 const DEFAULT_LINES = 50;
 const MAX_LINES = 10_000;
-const TAIL_CHUNK_BYTES = 64 * 1024;
+/** How much the tail reader reads at a time, backward from the end. */
+export const TAIL_CHUNK_BYTES = 64 * 1024;
 
 /** The most the tail reader reads, backward from the end: 10,000 records of ordinary length fit. */
 export const TAIL_MAX_BYTES = 1024 * 1024;
