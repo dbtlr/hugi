@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { access, constants, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
@@ -41,7 +41,12 @@ type IsExecutable = (path: string) => boolean | Promise<boolean>;
 async function isExecutableFile(path: string): Promise<boolean> {
   try {
     const file = await stat(path);
-    return file.isFile() && (file.mode & 0o111) !== 0;
+    if (!file.isFile()) {
+      return false;
+    }
+    // Any execute bit is not enough: it may belong to another user.
+    await access(path, constants.X_OK);
+    return true;
   } catch {
     return false;
   }

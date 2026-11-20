@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
-import { resolve } from 'node:path';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { FatalError } from '@loomcli/core';
 import type { Host } from '@loomcli/core';
@@ -52,6 +54,23 @@ test('findExecutable returns an absolute path for relative and empty PATH entrie
 test('the production lookup accepts executable files and refuses directories', async () => {
   expect(await findExecutable('sh', '/bin')).toBe('/bin/sh');
   expect(await findExecutable('bin', '/usr')).toBeUndefined();
+});
+
+test('the production lookup skips a file this user cannot execute', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hugi-hosttools-'));
+  try {
+    await mkdir(join(root, 'first'));
+    await mkdir(join(root, 'later'));
+    await writeFile(join(root, 'first', 'tool'), '#!/bin/sh\n');
+    await chmod(join(root, 'first', 'tool'), 0o001); // only "other" may execute it, so this user may not
+    await writeFile(join(root, 'later', 'tool'), '#!/bin/sh\n');
+    await chmod(join(root, 'later', 'tool'), 0o755);
+    expect(await findExecutable('tool', `${join(root, 'first')}:${join(root, 'later')}`)).toBe(
+      join(root, 'later', 'tool'),
+    );
+  } finally {
+    await rm(root, { recursive: true });
+  }
 });
 
 test('requireHostTools returns the resolved paths when both tools are present', async () => {
