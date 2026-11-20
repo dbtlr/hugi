@@ -5,7 +5,7 @@
  * whole declaration. Files are data: nothing in them runs here.
  */
 import { messageOf } from '../errors';
-import { laneStatusName, statusNameKey } from '../github/status-name';
+import { hasNonBmp, laneStatusName, statusNameKey } from '../github/status-name';
 import { jobSettingScope, laneValues } from '../lane/contexts';
 import { matchesValue, matrixRows, readMatrixEntries, selectRow } from '../lane/matrix';
 import type { Combination, MatrixEntryProblem, Scalar } from '../lane/matrix';
@@ -308,13 +308,18 @@ class DeclaredLanes {
       );
     }
     const statusName = laneStatusName(lane);
+    if (hasNonBmp(statusName)) {
+      throw new DeclarationRefusalError(
+        `${described(lane)} has the status name "${statusName}", and GitHub accepts no 4-byte characters in a status name`,
+      );
+    }
     const named = this.#statusNames.get(statusNameKey(statusName));
     if (named !== undefined) {
       const earlier = laneStatusName(named);
       const names =
         earlier === statusName
           ? `the status name "${statusName}"`
-          : `the status names "${earlier}" and "${statusName}", which GitHub treats as one`;
+          : `the status names "${earlier}" and "${statusName}", which Hugi compares as one status name`;
       throw new DeclarationRefusalError(
         `two lanes have ${names}: ${described(named)} and ${described(lane)}`,
       );

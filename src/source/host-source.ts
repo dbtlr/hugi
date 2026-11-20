@@ -5,7 +5,7 @@
  * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`). A pull
  * request is read at GitHub's merge commit, only after checking the merge is current (ADR-0005).
  */
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Host } from '@loomcli/core';
@@ -15,6 +15,7 @@ import type { PullRequestFacts } from '../github/pull-request';
 import type { SourceLocation } from '../vm';
 import { createGit } from './git';
 import type { Git, GitTransport } from './git';
+import { inspectPrivacy } from './private-path';
 import type { GitHubRepositorySpec, RepositorySpec } from './repository-spec';
 import { snapshotCommit } from './snapshot';
 
@@ -152,19 +153,14 @@ const SHARED_WRITE = 0o022;
  * from. `false` when the path does not exist yet. A runtime with no user ID skips the owner check.
  */
 async function checkPrivate(path: string, uid: number | undefined): Promise<boolean> {
-  let info;
-  try {
-    info = await stat(path);
-  } catch {
-    return false;
-  }
-  if (uid !== undefined && info.uid !== uid) {
+  const privacy = await inspectPrivacy(path, uid, SHARED_WRITE);
+  if (privacy === 'foreign-owner') {
     throw new SourceError(`The cache path ${path} is not owned by the current user; remove it.`);
   }
-  if ((info.mode & SHARED_WRITE) !== 0) {
+  if (privacy === 'shared-access') {
     throw new SourceError(`The cache path ${path} is writable by other users; remove it.`);
   }
-  return true;
+  return privacy === 'private';
 }
 
 /** The refs a refresh mirrors from the repository URL; a pull request's refs are fetched on their own. */

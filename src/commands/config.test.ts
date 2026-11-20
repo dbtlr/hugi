@@ -39,6 +39,14 @@ test('a valid file exits 0 and prints the effective configuration', async () => 
   expect(stdout).toContain('  - dbtlr/hugi');
   expect(stdout).toContain('poll_interval: 30');
   expect(stdout).toContain('vm: 4 cpus, 4 GB memory');
+  expect(stdout).toContain('github_app: not configured');
+});
+
+test('a configured github_app prints its id and key path', async () => {
+  const { stdout } = await hugi(['config', 'check', '--config', '/c.yaml'], {
+    '/c.yaml': `${VALID}github_app:\n  app_id: 7\n  private_key_path: ~/app.pem\n`,
+  });
+  expect(stdout).toContain('github_app: 7, key ~/app.pem');
 });
 
 test('an empty allowlist prints as none', async () => {

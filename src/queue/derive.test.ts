@@ -264,7 +264,7 @@ describe('the runs in flight', () => {
   });
 });
 
-describe('status names compare ignoring case, as GitHub compares contexts', () => {
+describe('status names are compared by statusNameKey, so case and accents do not tell two apart', () => {
   test('a verdict on a name in other case settles the lane', () => {
     expect(names([repo('o/r', lanes({ 'HUGI / PLATFORM': 'success' }))])).toEqual([
       'o/r@a hugi / test (macos-latest)',
@@ -313,6 +313,11 @@ describe('status names compare ignoring case, as GitHub compares contexts', () =
       expect(names([repo('o/r', read)])).toEqual([]);
     },
   );
+
+  test('a verdict on a name with an accent settles the lane without it', () => {
+    const cafe = { ...PLATFORM, job: 'cafe' };
+    expect(names([repo('o/r', lanes({ 'hugi / café': 'success' }, cafe))])).toEqual([]);
+  });
 
   test('two lanes of one commit whose names differ only in case are queued once', () => {
     const upper = { ...PLATFORM, job: 'PLATFORM' };

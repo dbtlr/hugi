@@ -32,7 +32,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 | Lane reader | Checks that GitHub would accept the workflow file as a whole, then reads the named job at the commit into a step plan, with its expressions expanded and its read-time conditions decided, failing loudly on anything it cannot read. |
 | Toolchain resolution | Maps each setup action in the plan to pinned tool versions or a documented no-op, and reads the repository's Rust toolchain file. See [supported actions](docs/supported-actions.md). |
 | VM lifecycle | Clones a golden image, boots it, fetches the commit, installs the lane's tools in an "Install tools" step, runs the steps, collects logs, and deletes the VM. The workspace is empty until the lane's `actions/checkout` step, which checks the commit out. The image holds warm package caches and default tool versions. Uses [tart](https://tart.run) on Apple's Virtualization framework. |
-| Reporter | Posts a commit status for each lane. |
+| Reporter | Authenticates as the Hugi GitHub App and posts a commit status for each lane: `pending` when its run starts, then `success` or `failure`. A refused declaration posts one `failure` status named `hugi`. See [Reporting to GitHub](#reporting-to-github). |
 
 ## Plan
 
@@ -122,9 +122,37 @@ poll_interval: 60 # optional, seconds between polls of GitHub, 15 to 3600, defau
 vm: # optional, the size of each run's VM (ADR-0003)
   cpus: 4 # 1 to 16, default 4
   memory_gb: 4 # 2 to 64, default 4
+github_app: # optional; needed only by the code that posts statuses, not by `hugi run`
+  app_id: 123456 # the App's id, from its settings page
+  private_key_path: ~/.config/hugi/app.pem # absolute, or starting with ~/
 ```
 
 Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
+
+## Reporting to GitHub
+
+Hugi posts its verdicts as commit statuses, authenticated as a GitHub App. An organization or user installs the App on each enrolled repository. The App needs these permissions and no others:
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| Commit statuses | Write | Post each lane's status, and read a commit's statuses, which tell Hugi which lanes already have a verdict. |
+| Contents | Read | Read `.github/hugi.yaml` and the workflow files. |
+| Pull requests | Read | List open pull requests and read their merge state. |
+| Metadata | Read | Mandatory: GitHub grants it to every App. |
+
+The App's private key stays on the host, in the file `github_app.private_key_path` names; the operator creates the App, downloads the key, and stores it there. Hugi refuses a key that is not a regular file, that another user can read or write, that another user owns, or that has an access control list (`chmod 600` it, and `chmod -N` it on macOS). Hugi signs a short-lived JWT with the key, exchanges it for an installation token scoped to one repository, caches the token until shortly before it expires, and uses it for both reads and posts. The key, the JWT and the tokens exist only on the host; none reaches a VM. If `github_app` is missing from the configuration, the code that posts statuses fails and names the key to add.
+
+A lane's status is named from its identity, not its workflow path, so promoting a job to another file keeps the name branch protection requires:
+
+| Lane | Status name |
+| --- | --- |
+| Job `build`, no matrix | `hugi / build` |
+| Job `test`, matrix row `os: macos-15`, `xcode: 16` | `hugi / test (macos-15, 16)` |
+| A commit whose lane declaration is refused | `hugi` |
+
+The name lists the matrix row's values in the order the workflow lists its matrix keys, with one limitation: JavaScript orders integer-like object keys, such as `'2'`, before the others, so such a key's value is listed first whatever its place in the workflow. Two lanes whose names GitHub treats as one context are refused, so names are compared the way GitHub was observed to compare contexts: ignoring case and accents, with `ß` equal to `s` and trailing spaces trimmed. A status name cannot hold an emoji or any other character outside the Basic Multilingual Plane (a 4-byte character in UTF-8), which GitHub refuses, so a declaration with such a name is refused. The name stays stable for a lane. A promoted workflow must list its matrix keys in the same order for the names to match.
+
+A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened and the merge commit is always kept.
 
 ## Documentation
 

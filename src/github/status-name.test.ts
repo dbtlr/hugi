@@ -39,8 +39,34 @@ test('two names that differ only in case have one key, as GitHub treats them as 
 test.each([
   ['sigma, final sigma, and capital sigma', ['aσ', 'aς', 'aΣ', 'AΣ']],
   ['the Kelvin sign and k', ['\u212A', 'k', 'K']],
-  ['sharp s and SS', ['ß', 'SS', 'ss']],
-  ['capital sharp s, sharp s, and SS', ['\u1E9E', 'ß', 'SS']],
+  ['capital sharp s and sharp s', ['\u1E9E', 'ß']],
 ])('%s have one key, however the case maps them', (_label, names) => {
   expect(new Set(names.map(statusNameKey)).size).toBe(1);
+});
+
+/** Pairs observed on 2026-11-19: GitHub merges these contexts, so they must share a key. */
+const GITHUB_MERGES: readonly (readonly [string, string])[] = [
+  ['hugi / build', 'HUGI / BUILD'],
+  ['İstanbul', 'istanbul'],
+  ['Ǆ', 'ǆ'],
+  ['café', 'cafe'],
+  ['straße', 'strase'],
+  ['pad', 'pad '],
+];
+
+test.each(GITHUB_MERGES)('GitHub merges %j and %j, so they share a key', (a, b) => {
+  expect(statusNameKey(a)).toBe(statusNameKey(b));
+});
+
+/** GitHub keeps these apart; Hugi merging them only refuses more, the safe direction. */
+test.each([
+  ['ﬁx', 'fix'],
+  ['ı', 'i'],
+])('Hugi merges %j and %j although GitHub keeps them apart', (a, b) => {
+  expect(statusNameKey(a)).toBe(statusNameKey(b));
+});
+
+test('names GitHub keeps apart and Hugi too', () => {
+  expect(statusNameKey('Ａ')).not.toBe(statusNameKey('a'));
+  expect(statusNameKey('straße')).not.toBe(statusNameKey('STRASSE'));
 });
