@@ -56,7 +56,10 @@ test('the production lookup accepts executable files and refuses directories', a
   expect(await findExecutable('bin', '/usr')).toBeUndefined();
 });
 
-test('the production lookup skips a file this user cannot execute', async () => {
+// Root passes the execute check whatever the mode, so the test means nothing as root.
+const unlessRoot = test.skipIf(process.getuid?.() === 0);
+
+unlessRoot('the production lookup skips a file this user cannot execute', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hugi-hosttools-'));
   try {
     await mkdir(join(root, 'first'));
