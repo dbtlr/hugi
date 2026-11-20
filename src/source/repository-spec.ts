@@ -36,6 +36,18 @@ export function parseRepository(text: string, cwd: string, home: string): Reposi
   );
 }
 
+/**
+ * An enrolled repository as a GitHub source. Enrolment admits only `owner/name`, so anything else
+ * is a bug and throws.
+ */
+export function githubRepositorySpec(repository: string): GitHubRepositorySpec {
+  const spec = GITHUB_NAME.test(repository) ? parseRepository(repository, '/', '/') : undefined;
+  if (spec?.kind !== 'github') {
+    throw new RepositorySpecError(`"${repository}" is not an owner/name GitHub repository.`);
+  }
+  return spec;
+}
+
 /** The `github.repository` a run sees: the GitHub name, else `local/<directory>` for a local path. */
 export function repositoryLabel(spec: RepositorySpec): string {
   return spec.kind === 'github' ? spec.name : `local/${basename(spec.path)}`;

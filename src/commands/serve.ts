@@ -31,8 +31,7 @@ import {
   resolveRunsDir,
   resolveServiceStateDir,
 } from '../source/locations';
-import { parseRepository } from '../source/repository-spec';
-import type { GitHubRepositorySpec } from '../source/repository-spec';
+import { githubRepositorySpec } from '../source/repository-spec';
 import { systemClock } from '../vm/clock';
 import { runInVm, SERVICE_VM_PREFIX } from '../vm/lifecycle';
 import { sweepVms } from '../vm/sweep';
@@ -107,13 +106,6 @@ async function coordinate(
     tempDir: host.tmpdir,
     uid: host.uid,
   };
-  const specOf = (repository: string): GitHubRepositorySpec => {
-    const spec = parseRepository(repository, host.cwd, host.home);
-    if (spec.kind !== 'github') {
-      throw new Error(`${repository} is not an owner/name GitHub repository.`);
-    }
-    return spec;
-  };
   const resources = { cpus: config.vm.cpus, memoryMb: config.vm.memoryGb * 1024 };
   await runCoordinator(config, {
     clock: systemClock,
@@ -122,8 +114,9 @@ async function coordinate(
       pollRepositories(config, {
         github,
         openPullRequest: (repository, facts) =>
-          openPullRequestSource(specOf(repository), facts, sourceOptions),
-        openPush: (repository, sha) => openHostSource(specOf(repository), sha, sourceOptions),
+          openPullRequestSource(githubRepositorySpec(repository), facts, sourceOptions),
+        openPush: (repository, sha) =>
+          openHostSource(githubRepositorySpec(repository), sha, sourceOptions),
       }),
     report,
     reporter: createStatusReporter({

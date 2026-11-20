@@ -23,7 +23,7 @@ import { laneStatusOf } from '../runs/describe';
 import { NoCurrentMergeError, SourceError } from '../source/host-source';
 import type { OpenedSource } from '../source/host-source';
 import { createRunDirectory } from '../source/locations';
-import { parseRepository } from '../source/repository-spec';
+import { githubRepositorySpec } from '../source/repository-spec';
 import type { GitHubRepositorySpec } from '../source/repository-spec';
 import type { RunRequest, RunResult } from '../vm';
 
@@ -87,15 +87,6 @@ export type RunCandidateDeps = {
   readonly now: () => Date;
   readonly warn: (message: string) => void;
 };
-
-/** The enrolled repository as a GitHub source; enrolment admits only `owner/name`. */
-function githubSpec(repository: string): GitHubRepositorySpec {
-  const spec = parseRepository(repository, '/', '/');
-  if (spec.kind !== 'github') {
-    throw new Error(`"${repository}" is not an owner/name repository.`);
-  }
-  return spec;
-}
 
 const laneRefOf = ({ job, matrix, workflow }: LaneRef): LaneRef => ({ job, matrix, workflow });
 
@@ -209,7 +200,7 @@ export function createRunCandidate(deps: RunCandidateDeps): RunCandidate {
       event: 'push',
       refName: branch,
       refType: 'branch',
-      repository: githubSpec(candidate.repository),
+      repository: githubRepositorySpec(candidate.repository),
     };
     const target = { repository: candidate.repository, sha: candidate.commit };
     return run(
@@ -251,7 +242,7 @@ export function createRunCandidate(deps: RunCandidateDeps): RunCandidate {
         reason: `pull request ${number}'s head is now ${facts.headSha}, not ${candidate.commit}`,
       };
     }
-    const spec = githubSpec(repository);
+    const spec = githubRepositorySpec(repository);
     let source: OpenedSource;
     try {
       source = await deps.openPullRequestSource(spec, facts);

@@ -1,6 +1,11 @@
 import { expect, test } from 'bun:test';
 
-import { parseRepository, repositoryLabel, RepositorySpecError } from './repository-spec';
+import {
+  githubRepositorySpec,
+  parseRepository,
+  repositoryLabel,
+  RepositorySpecError,
+} from './repository-spec';
 
 const parse = (text: string) => parseRepository(text, '/work/here', '/home/u');
 
@@ -37,4 +42,14 @@ test('the label is the GitHub name, or local/<directory>', () => {
 
 test('owner/name.git names the same repository as owner/name', () => {
   expect(parse('dbtlr/norn-next.git')).toEqual(parse('dbtlr/norn-next'));
+});
+
+test('an enrolled owner/name is a GitHub source, and anything else is refused', () => {
+  expect(githubRepositorySpec('dbtlr/hugi')).toEqual({
+    cloneUrl: 'https://github.com/dbtlr/hugi.git',
+    kind: 'github',
+    name: 'dbtlr/hugi',
+  });
+  expect(() => githubRepositorySpec('./hugi')).toThrow(RepositorySpecError);
+  expect(() => githubRepositorySpec('owner/..')).toThrow(RepositorySpecError);
 });
