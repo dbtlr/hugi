@@ -21,14 +21,19 @@ export class ServeLockError extends FatalError {
 }
 
 /** What the lock needs to know about processes and the machine. */
-export type ServeLockDeps = {
-  /** This process's pid. */
-  readonly pid: number;
+/** What the lock needs to know about processes and the machine to judge a holder. */
+export type ProcessFacts = {
   /** A word that changes at each reboot. */
   readonly bootTime: () => Promise<string>;
   readonly isAlive: (pid: number) => boolean;
   /** The command line of `pid`, or `undefined` when it cannot be read. */
   readonly commandOf: (pid: number) => Promise<string | undefined>;
+};
+
+/** What a starter needs: the process facts, and its own pid. */
+export type ServeLockDeps = ProcessFacts & {
+  /** This process's pid. */
+  readonly pid: number;
 };
 
 /** The file operations a starter's own steps use; the seam a test replaces to stage a rival between them. */
@@ -102,7 +107,7 @@ function isOtherBoot(held: string, current: string): boolean {
  * leaves the decision to the pid and its command. A live pid whose command cannot be read is
  * treated as live, so an unreadable `ps` never lets a second service start.
  */
-async function isHeld(held: LockContents, boot: string, deps: ServeLockDeps): Promise<boolean> {
+async function isHeld(held: LockContents, boot: string, deps: ProcessFacts): Promise<boolean> {
   if (isOtherBoot(held.bootTime, boot) || !deps.isAlive(held.pid)) {
     return false;
   }
@@ -176,6 +181,20 @@ async function enterTakeOver(mutex: string, files: LockFiles): Promise<void> {
   if (!(await created(make))) {
     throw takeOverRefusal(mutex);
   }
+}
+
+/**
+ * The pid of the live `hugi serve` of this boot that holds the lock at `path`, judged as a starter
+ * judges it, or `undefined` when no such process holds it.
+ */
+export async function serveLockHolder(
+  path: string,
+  facts: ProcessFacts,
+): Promise<number | undefined> {
+  const held = await readLock(path);
+  return held !== undefined && (await isHeld(held, await facts.bootTime(), facts))
+    ? held.pid
+    : undefined;
 }
 
 /** Refuse when the lock at `path` is held by a live `hugi serve` of this boot. */
@@ -288,17 +307,13 @@ function processIsAlive(pid: number): boolean {
  * not; and a boot time one starter could read and another could not would make a held lock look
  * stale.
  */
-export function createServeLockDeps(
-  spawn: Spawn,
-  from: { readonly pid: number; readonly platform: string },
-): ServeLockDeps {
+export function createProcessFacts(spawn: Spawn, platform: string): ProcessFacts {
   return {
     bootTime: async () =>
-      from.platform === 'darwin'
+      platform === 'darwin'
         ? ((await output(spawn, '/usr/sbin/sysctl', ['-n', 'kern.boottime'])) ?? UNKNOWN_BOOT)
         : UNKNOWN_BOOT,
     commandOf: (pid) => output(spawn, '/bin/ps', ['-p', String(pid), '-o', 'command=']),
     isAlive: processIsAlive,
-    pid: from.pid,
   };
 }

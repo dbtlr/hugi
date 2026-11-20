@@ -18,7 +18,7 @@ import type { Fetch } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
 import { hostEnv, requireHostTools, spawnWithTools } from '../service/host-tools';
-import { acquireServeLock, createServeLockDeps } from '../service/lock';
+import { acquireServeLock, createProcessFacts } from '../service/lock';
 import { runCoordinator } from '../service/loop';
 import type { CoordinatorLog } from '../service/loop';
 import { createRunCandidate } from '../service/run-candidate';
@@ -229,10 +229,7 @@ export function serveDeps(ports: ServePorts): StartDeps<ServeSetup> {
   const { host, log, paths, pid } = ports;
   return {
     acquireLock: () =>
-      acquireServeLock(
-        paths.lockPath,
-        createServeLockDeps(host.spawn, { pid, platform: host.platform }),
-      ),
+      acquireServeLock(paths.lockPath, { ...createProcessFacts(host.spawn, host.platform), pid }),
     checkSetup: (config) => checkSetup(ports, config),
     coordinate: (config, setup, report) => coordinate(ports, config, setup, report),
     loadConfig: () => loadConfig(paths.configPath),

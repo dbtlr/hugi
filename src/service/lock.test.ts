@@ -16,7 +16,13 @@ import { join } from 'node:path';
 import type { Host } from '@loomcli/core';
 
 import { rejectionOf } from '../runs/testing';
-import { acquireServeLock, createServeLockDeps, ServeLockError, TAKE_OVER_STALE_MS } from './lock';
+import {
+  acquireServeLock,
+  createProcessFacts,
+  ServeLockError,
+  serveLockHolder,
+  TAKE_OVER_STALE_MS,
+} from './lock';
 import type { LockFiles, ServeLockDeps } from './lock';
 
 let scratch: string;
@@ -290,6 +296,14 @@ test('release is harmless when the lock is already gone', async () => {
   await release();
 });
 
+test('the lock holder is the live hugi serve that holds it, judged as a starter judges it', async () => {
+  expect(await serveLockHolder(lockPath(), deps())).toBeUndefined();
+  await acquireServeLock(lockPath(), deps({ pid: 50 }));
+  expect(await serveLockHolder(lockPath(), deps())).toBe(50);
+  expect(await serveLockHolder(lockPath(), dead())).toBeUndefined();
+  expect(await serveLockHolder(lockPath(), deps({ commandOf: notServe }))).toBeUndefined();
+});
+
 type Reply = { code: number; text: string };
 
 function fakeSpawn(replies: Record<string, Reply>) {
@@ -312,7 +326,7 @@ test('production deps read the darwin boot time from sysctl and the command from
     '/bin/ps -p 321 -o command=': { code: 0, text: '/opt/hugi serve\n' },
     '/usr/sbin/sysctl -n kern.boottime': { code: 0, text: '{ sec = 1700000000, usec = 5 } Tue\n' },
   });
-  const real = createServeLockDeps(spawn, { pid: 1, platform: 'darwin' });
+  const real = createProcessFacts(spawn, 'darwin');
   expect(await real.bootTime()).toBe('{ sec = 1700000000, usec = 5 } Tue');
   expect(await real.commandOf(321)).toBe('/opt/hugi serve');
   // By absolute path: a caller's PATH, or a configured `path`, may not reach /bin or /usr/sbin.
@@ -320,17 +334,17 @@ test('production deps read the darwin boot time from sysctl and the command from
 });
 
 test('production commandOf is undefined when ps fails or prints nothing', async () => {
-  const real = createServeLockDeps(fakeSpawn({}).spawn, { pid: 1, platform: 'darwin' });
+  const real = createProcessFacts(fakeSpawn({}).spawn, 'darwin');
   expect(await real.commandOf(321)).toBeUndefined();
 });
 
 test('production isAlive is true for this process, false for a pid that cannot exist', () => {
-  const real = createServeLockDeps(fakeSpawn({}).spawn, { pid: process.pid, platform: 'darwin' });
+  const real = createProcessFacts(fakeSpawn({}).spawn, 'darwin');
   expect(real.isAlive(process.pid)).toBe(true);
   expect(real.isAlive(2 ** 22 + 12345)).toBe(false);
 });
 
 test('off darwin the boot time is a fixed word, so only the other checks decide', async () => {
-  const real = createServeLockDeps(fakeSpawn({}).spawn, { pid: 1, platform: 'linux' });
+  const real = createProcessFacts(fakeSpawn({}).spawn, 'linux');
   expect(await real.bootTime()).toBe('unknown');
 });

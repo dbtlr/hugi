@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 
 import { createProbe, formatElapsed, formatRelative, serviceRows } from './probe';
 import type { ProbeInput } from './probe';
@@ -24,13 +24,15 @@ const state: ServiceState = {
 function input(overrides: Partial<ProbeInput> = {}): ProbeInput {
   return {
     listVms: async () => [],
+    lockHolder: 42,
     logPath: '/logs/hugi.jsonl',
     now: NOW,
-    running: true,
     state,
     ...overrides,
   };
 }
+
+const STALE = ' (stale: the hugi serve that wrote it no longer runs)';
 
 const listVms = async () => ['hugi-svc-run1', 'hugi-svc-old', 'hugi-run-x', 'golden'];
 
@@ -69,24 +71,27 @@ test('no run in flight is idle; failed reads are counted', async () => {
   expect(rows['last poll']).toBe('2026-11-19T10:09:59.000Z (1s ago), 2 reads failed');
 });
 
-test('a refused start shows when and why', async () => {
+test('a refused start shows when and why, and is stale, since its process has exited', async () => {
   const rows = await byName({
+    lockHolder: undefined,
     state: {
       pid: 1,
       start: { at: '2026-11-19T10:09:00.000Z', kind: 'refused', reason: 'tart not found on PATH' },
       startedAt: '2026-11-19T10:09:00.000Z',
     },
   });
-  expect(rows.start).toBe('refused 2026-11-19T10:09:00.000Z (1m ago): tart not found on PATH');
-  expect(rows.queue).toBe('no poll yet');
-  expect(rows['last poll']).toBe('no poll yet');
-  expect(rows.run).toBe('idle');
+  expect(rows.start).toBe(
+    `refused 2026-11-19T10:09:00.000Z (1m ago): tart not found on PATH${STALE}`,
+  );
+  expect(rows.queue).toBe(`no poll yet${STALE}`);
+  expect(rows['last poll']).toBe(`no poll yet${STALE}`);
+  expect(rows.run).toBe(`idle${STALE}`);
 });
 
-test('with no service process every row read from the state says it is stale', async () => {
-  const rows = await byName({ running: false });
+test('unless the process that wrote it holds the lock, every row read from the state says it is stale', async () => {
+  const rows = await byName({ lockHolder: undefined });
   for (const name of ['run', 'queue', 'last poll', 'start']) {
-    expect(rows[name]).toEndWith('(stale: no service process)');
+    expect(rows[name]).toEndWith('(stale: the hugi serve that wrote it no longer runs)');
   }
   expect(rows['leftover VMs']).not.toContain('stale');
   expect(rows.log).toBe('/logs/hugi.jsonl');
@@ -108,9 +113,9 @@ test('an unreadable state says so in each state row', async () => {
   }
 });
 
-test('leftover VMs lists hugi-svc-* names only, and leaves out the run in flight while running', async () => {
+test('leftover VMs lists hugi-svc-* names only, and leaves out the run in flight while live', async () => {
   expect((await byName({ listVms }))['leftover VMs']).toBe('hugi-svc-old');
-  expect((await byName({ listVms, running: false }))['leftover VMs']).toBe(
+  expect((await byName({ listVms, lockHolder: undefined }))['leftover VMs']).toBe(
     'hugi-svc-run1, hugi-svc-old',
   );
   expect((await byName({ listVms, state: undefined }))['leftover VMs']).toBe(
@@ -138,22 +143,42 @@ test('relative and elapsed times read short', () => {
   expect(formatElapsed(3_725_000)).toBe('1h02m05s');
 });
 
-test('createProbe reads the state file and uses the manager’s running flag', async () => {
-  const probe = createProbe({
-    listVms: async () => [],
+/** The service manager's word on whether a process runs, which the probe does not trust. */
+const manager = (running: boolean) => ({
+  state: {
+    installed: true,
+    label: 'dev.hugi',
+    notes: [],
+    running,
+    state: running ? 'running' : 'not running',
+    unit: '/unit.plist',
+  },
+});
+/** The probe of the state in `state` (pid 42), with this lock holder. */
+const probeWith = (lockHolder: () => Promise<number | undefined>) =>
+  createProbe({
+    listVms,
+    lockHolder,
     logPath: '/logs/hugi.jsonl',
     now: () => NOW,
     readState: async () => state,
   });
-  const rows = await probe({
-    state: {
-      installed: true,
-      label: 'dev.hugi',
-      notes: [],
-      running: false,
-      state: 'not loaded',
-      unit: '/unit.plist',
-    },
+const rowsOf = async (rows: Promise<readonly { name: string; value: string }[]>) =>
+  Object.fromEntries((await rows).map((row) => [row.name, row.value]));
+
+describe('whether the state is live', () => {
+  test('a hugi serve run by hand, with the agent stopped, is live: its VM is not a leftover', async () => {
+    const rows = await rowsOf(probeWith(async () => 42)(manager(false)));
+    expect(rows.start).not.toContain('stale');
+    expect(rows['leftover VMs']).toBe('hugi-svc-old');
   });
-  expect(rows.find((row) => row.name === 'start')?.value).toContain('stale');
+
+  test('just after a crash the dead instance is stale, though launchd runs a new process', async () => {
+    for (const holder of [undefined, 99]) {
+      // oxlint-disable-next-line no-await-in-loop -- two cases
+      const rows = await rowsOf(probeWith(async () => holder)(manager(true)));
+      expect(rows.start).toContain('stale');
+      expect(rows['leftover VMs']).toBe('hugi-svc-run1, hugi-svc-old');
+    }
+  });
 });

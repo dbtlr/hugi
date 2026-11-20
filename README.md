@@ -247,10 +247,10 @@ A launchd user agent starts only when its user's session starts. For the service
 | `queue` | How many candidates the last poll found, and how many of them are waiting. |
 | `last poll` | When the last poll ended, and `ok` or how many reads failed. |
 | `start` | When the service started, or why its last start was refused. |
-| `leftover VMs` | `hugi-svc-*` VMs, listed with tart when `status` runs, leaving out the run in flight's VM, which the state names, while a service process is running; `none`; or why tart could not list them. |
+| `leftover VMs` | `hugi-svc-*` VMs, listed with tart when `status` runs, leaving out the run in flight's VM, which the state names, while the state is live (below); `none`; or why tart could not list them. |
 | `log` | The service log's path. |
 
-Every row but `leftover VMs` comes from the state the service writes at `$XDG_STATE_HOME/hugi/service.json`. It describes the last time the service wrote it, so when no service process is running, `status` says those rows are stale.
+Every row but `leftover VMs` comes from the state the service writes at `$XDG_STATE_HOME/hugi/service.json`. It describes the last time a service wrote it, so it is live only while the `hugi serve` that wrote it still runs and holds the lock, whether launchd started it or you did; otherwise `status` says those rows are stale.
 
 Hugi's log goes to `~/Library/Logs/hugi/hugi.jsonl`, one JSON record per line, rotated at 10 MB with five old files kept. `hugi serve` writes nearly all of it; other commands add only their own log records. `hugi logs --service` prints its last 50 records as text; `--lines <n>` changes the count, and `--format json` prints the records as JSON.
 

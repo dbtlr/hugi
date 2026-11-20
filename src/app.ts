@@ -13,9 +13,10 @@ import { logsCommand, serviceLogPath } from './commands/logs';
 import { runCommand } from './commands/run';
 import type { RunCommandOverrides } from './commands/run';
 import { serveCommand } from './commands/serve';
+import { createProcessFacts, serveLockHolder } from './service/lock';
 import { createProbe } from './service/probe';
 import { readServiceState } from './service/state';
-import { resolveServiceStateDir } from './source/locations';
+import { resolveServeLockPath, resolveServiceStateDir } from './source/locations';
 import { VERSION } from './version';
 import { createTartCli } from './vm/tart-cli';
 
@@ -44,6 +45,11 @@ function statusRows(context: ProbeContext) {
   const { host } = context;
   return createProbe({
     listVms: () => createTartCli(host.spawn).list(),
+    lockHolder: () =>
+      serveLockHolder(
+        resolveServeLockPath(host.home),
+        createProcessFacts(host.spawn, host.platform),
+      ),
     logPath: serviceLogPath(host.env, host.home, host.platform),
     now: () => new Date(),
     readState: () => readServiceState(resolveServiceStateDir(host.env, host.home)),
