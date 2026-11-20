@@ -424,8 +424,8 @@ export async function runCoordinator(
   };
 
   /**
-   * Run start's lane reader refused a lane the poll selected, so the next poll would queue it
-   * again at once: it waits as after a run with no verdict, and each reason is logged once.
+   * Run start no longer selects a lane the poll selected, so the next poll may queue it again at
+   * once: it waits as after a run with no verdict, and each reason is logged once.
    */
   const waitAfterDrop = (candidate: Candidate, reason: string) => {
     const { previous } = startWait(candidate, reason);

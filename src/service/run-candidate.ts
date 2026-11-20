@@ -34,8 +34,9 @@ export const SERVICE_IMAGE = 'hugi-golden';
 export type CandidateOutcome =
   /**
    * The candidate no longer stands: no status, and no wait; the next poll considers it again. With
-   * `waits`, run start's lane reader refused a lane the poll selected, so the next poll would
-   * select it again: the lane waits as after a run with no verdict.
+   * `waits`, run start no longer selects a lane the poll selected (its lane reader refuses it, or
+   * the merge no longer declares it or leaves it out), so the next poll may select it again: the
+   * lane waits as after a run with no verdict.
    */
   | { readonly kind: 'dropped'; readonly reason: string; readonly waits?: true }
   /** The merge refuses the declaration: post the `hugi` status on `target`. */
@@ -269,15 +270,17 @@ export function createRunCandidate(deps: RunCandidateDeps): RunCandidate {
       }
       throw error;
     }
+    // A merge that no longer selects the lane waits: the next poll may select it again, as when
+    // the poll read an earlier merge, and would otherwise drop it again at every poll.
     if (declaration.kind === 'none') {
-      return { kind: 'dropped', reason: 'the merge commit has no lane declaration' };
+      return { kind: 'dropped', reason: 'the merge commit has no lane declaration', waits: true };
     }
     if (declaration.kind === 'refused') {
       return { cause: declaration.cause, kind: 'declaration-refused', target };
     }
     const lane = laneAtMerge(candidate, declaration.lanes);
     if (typeof lane === 'string') {
-      return { kind: 'dropped', reason: lane };
+      return { kind: 'dropped', reason: lane, waits: true };
     }
     const request: RunLaneRequest = {
       ...selection(lane),

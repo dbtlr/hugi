@@ -199,10 +199,12 @@ test('a lane that cannot be read fails with its cause and no run id, and boots n
   });
 });
 
-test("a pull request lane whose job's if: is false at the merge is dropped with no status", async () => {
+test("a pull request lane whose job's if: is false at the merge is dropped with no status, to wait", async () => {
   const { deps, hooks, vmCalls } = harness();
+  // The next poll may select the lane again, so it waits as after a run with no verdict.
   expect(await createRunCandidate(deps)(pullCandidate('release'), hooks)).toMatchObject({
     kind: 'dropped',
+    waits: true,
   });
   expect(vmCalls).toHaveLength(0);
 });
@@ -260,7 +262,7 @@ test('a failed read of the pull request at run start finishes with no verdict', 
   });
 });
 
-test('a pull request with no current merge is dropped', async () => {
+test('a pull request with no current merge is dropped, with no wait', async () => {
   const { deps, hooks } = harness({
     openPullRequestSource: async () => {
       throw new NoCurrentMergeError('conflict', 'pull request 7 has a merge conflict');
@@ -298,19 +300,21 @@ test('a declaration the merge refuses posts the declaration status on the head',
   expect(vmCalls).toHaveLength(0);
 });
 
-test('a lane the merge no longer declares is dropped', async () => {
+test('a lane the merge no longer declares is dropped to wait', async () => {
   const { deps, hooks } = harness({
     files: { ...FILES, '.github/hugi.yaml': declaration(['release']) },
   });
-  const outcome = await createRunCandidate(deps)(pullCandidate(), hooks);
-  expect(outcome).toMatchObject({ kind: 'dropped' });
-  expect(outcome).not.toHaveProperty('waits');
+  expect(await createRunCandidate(deps)(pullCandidate(), hooks)).toMatchObject({
+    kind: 'dropped',
+    waits: true,
+  });
 });
 
-test('a merge with no declaration drops the lane', async () => {
+test('a merge with no declaration drops the lane to wait', async () => {
   const { deps, hooks } = harness({ files: { [CI]: WORKFLOW } });
   expect(await createRunCandidate(deps)(pullCandidate(), hooks)).toMatchObject({
     kind: 'dropped',
+    waits: true,
   });
 });
 
