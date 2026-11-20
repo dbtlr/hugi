@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 
 import type { CommitStatusState } from '../github/client';
 import { StatusPostError } from '../github/statuses';
@@ -12,7 +12,6 @@ import type {
   RepositorySnapshot,
   Snapshot,
 } from '../queue/types';
-import { systemClock } from '../vm/clock';
 import {
   commitGone,
   failureChanges,
@@ -704,42 +703,41 @@ test('stopping takes no more work and ends once the run in flight has ended', as
 
 test('a backward step of the wall clock does not change the poll cadence', async () => {
   const controller = new AbortController();
-  // The longest the test waits: three polls 50 ms apart take well under this.
-  const giveUp = setTimeout(() => controller.abort(), 2000);
-  const wall = Date.now;
-  const stepped = spyOn(Date, 'now');
+  const intervalMs = 60_000;
+  // The monotonic clock the cadence follows, and a separate wall clock that is stepped backward.
+  let monotonic = 0;
+  let wall = WALL_ORIGIN;
   const starts: number[] = [];
   const reporter: StatusReporter = { reportLane: async () => {}, reportRefusal: async () => {} };
-  try {
-    await runCoordinator(
-      { pollIntervalSeconds: 0.05 },
-      {
-        clock: systemClock,
-        log: { error: () => {}, info: () => {}, warn: () => {} },
-        now: () => new Date(Date.now()),
-        poll: async () => {
-          starts.push(performance.now());
-          if (starts.length === 1) {
-            const back = wall() - 2 * 60 * MINUTE;
-            stepped.mockReturnValue(back);
-          }
-          if (starts.length === 3) {
-            controller.abort();
-          }
-          return [];
+  await runCoordinator(
+    { pollIntervalSeconds: intervalMs / 1000 },
+    {
+      clock: {
+        now: () => monotonic,
+        sleep: async (milliseconds) => {
+          monotonic += milliseconds;
+          return true;
         },
-        report: () => {},
-        reporter,
-        runCandidate: async (candidate) => noVerdict(candidate, { started: async () => {} }),
-        signal: controller.signal,
       },
-    );
-  } finally {
-    clearTimeout(giveUp);
-    stepped.mockRestore();
-  }
-  expect(starts).toHaveLength(3);
-  expect((starts[2] ?? 0) - (starts[0] ?? 0)).toBeLessThan(1000);
+      log: { error: () => {}, info: () => {}, warn: () => {} },
+      now: () => new Date(wall),
+      poll: async () => {
+        starts.push(monotonic);
+        if (starts.length === 1) {
+          wall -= 2 * 60 * MINUTE;
+        }
+        if (starts.length === 3) {
+          controller.abort();
+        }
+        return [];
+      },
+      report: () => {},
+      reporter,
+      runCandidate: async (candidate) => noVerdict(candidate, { started: async () => {} }),
+      signal: controller.signal,
+    },
+  );
+  expect(starts).toEqual([0, intervalMs, 2 * intervalMs]);
 });
 
 describe('decisions', () => {
