@@ -21,7 +21,17 @@
  * - `GIT_NO_LAZY_FETCH=1` for a local repository, so a partial clone's promisor remote is never
  *   contacted: a missing object is a read failure, not a fetch.
  */
-import type { Host } from '@loomcli/core';
+import type { Child, ChildExit, Host } from '@loomcli/core';
+
+import { systemClock } from '../vm/clock';
+import { resolvesWithin } from '../vm/deadline';
+import type { Clock } from '../vm/tart';
+
+/** The service allows up to ten minutes for each host git command. */
+export const SERVICE_GIT_DEADLINE_MS = 600_000;
+
+const GIT_TERM_GRACE_MS = 1000;
+const GIT_KILL_WAIT_MS = 1000;
 
 /** The transport a remote source fetches over: https in production; tests serve fixtures over file. */
 export type GitTransport = 'file' | 'https';
@@ -29,6 +39,8 @@ export type GitTransport = 'file' | 'https';
 export type GitOptions = {
   /** The run's `host.spawn`, the only way this module starts a program. */
   readonly spawn: Host['spawn'];
+  /** An optional deadline for each git call, before termination begins. */
+  readonly deadlineMs?: number;
   /** The run's `host.env`, from which git's environment is built. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly cwd: string;
@@ -88,18 +100,49 @@ export function hardenedEnv(
   };
 }
 
-export function createGit(options: GitOptions): Git {
+function outcomeOf(exit: ChildExit): GitOutcome {
+  if (exit.kind === 'unstarted') {
+    return { ok: false, stderr: exit.error.message, stdout: '' };
+  }
+  return { ok: exit.code === 0, stderr: exit.stderr.text, stdout: exit.stdout.text };
+}
+
+/** Give git a chance to exit gracefully and bound the wait even if its pipes stay open. */
+async function terminateGit(child: Child, clock: Clock): Promise<ChildExit | undefined> {
+  child.kill('SIGTERM');
+  const terminated = await resolvesWithin(clock, child.exited, GIT_TERM_GRACE_MS);
+  if (terminated !== undefined) {
+    return terminated;
+  }
+  child.kill('SIGKILL');
+  return resolvesWithin(clock, child.exited, GIT_KILL_WAIT_MS);
+}
+
+async function boundedOutcome(child: Child, clock: Clock, deadlineMs: number): Promise<GitOutcome> {
+  const exit = await resolvesWithin(clock, child.exited, deadlineMs);
+  if (exit !== undefined) {
+    return outcomeOf(exit);
+  }
+  const stopped = await terminateGit(child, clock);
+  return {
+    ok: false,
+    stderr: `git timed out after ${deadlineMs / 1000} seconds.`,
+    stdout: stopped?.kind === 'exited' ? stopped.stdout.text : '',
+  };
+}
+
+export function createGit(options: GitOptions, clock: Clock = systemClock): Git {
   const env = hardenedEnv(options.env, options.lazyFetch);
   const config = hardenedConfig(options.transport);
+  const { deadlineMs } = options;
   return async (gitDir, args) => {
     const scoped = gitDir === undefined ? [] : ['--git-dir', gitDir];
-    const exit = await options.spawn('git', [...config, ...scoped, ...args], {
+    const child = options.spawn('git', [...config, ...scoped, ...args], {
       cwd: options.cwd,
       env,
-    }).exited;
-    if (exit.kind === 'unstarted') {
-      return { ok: false, stderr: exit.error.message, stdout: '' };
-    }
-    return { ok: exit.code === 0, stderr: exit.stderr.text, stdout: exit.stdout.text };
+    });
+    return deadlineMs === undefined
+      ? outcomeOf(await child.exited)
+      : boundedOutcome(child, clock, deadlineMs);
   };
 }

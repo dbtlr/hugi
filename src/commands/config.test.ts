@@ -5,6 +5,7 @@ import { mockProcess } from '@loomcli/testing';
 import { createApp } from '../app';
 
 const VALID = 'repositories: [dbtlr/hugi]\nallowlist: [dbtlr]\npoll_interval: 30\n';
+const WITH_PATH = `${VALID}path: [/opt/homebrew/bin, /usr/bin]\n`;
 
 /** Runs `hugi` with the given files by path; any other path is missing. */
 async function hugi(
@@ -41,6 +42,7 @@ test('a valid file exits 0 and prints the effective configuration', async () => 
   expect(stdout).toContain('vm: 4 cpus, 4 GB memory');
   expect(stdout).toContain('runs: keep 30 days, up to 5 GB');
   expect(stdout).toContain('github_app: not configured');
+  expect(stdout).toContain('path: inherited PATH');
 });
 
 test('a configured github_app prints its id and key path', async () => {
@@ -48,6 +50,14 @@ test('a configured github_app prints its id and key path', async () => {
     '/c.yaml': `${VALID}github_app:\n  app_id: 7\n  private_key_path: ~/app.pem\n`,
   });
   expect(stdout).toContain('github_app: 7, key ~/app.pem');
+});
+
+test('a configured path prints its directories in search order', async () => {
+  const { exitCode, stdout } = await hugi(['config', 'check', '--config', '/c.yaml'], {
+    '/c.yaml': WITH_PATH,
+  });
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain('path:\n  - /opt/homebrew/bin\n  - /usr/bin\n');
 });
 
 test('an empty allowlist prints as none', async () => {
@@ -75,6 +85,15 @@ test('--format json prints the path and the configuration', async () => {
     },
     path: '/c.yaml',
   });
+});
+
+test('--format json includes the configured search path under config', async () => {
+  const { exitCode, stdout } = await hugi(
+    ['config', 'check', '--config', '/c.yaml', '--format', 'json'],
+    { '/c.yaml': WITH_PATH },
+  );
+  expect(exitCode).toBe(0);
+  expect(JSON.parse(stdout)).toMatchObject({ config: { path: ['/opt/homebrew/bin', '/usr/bin'] } });
 });
 
 test('without --config the file is HUGI_CONFIG, else the XDG default under home', async () => {
