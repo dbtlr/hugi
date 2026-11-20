@@ -188,6 +188,31 @@ async function readStatuses(
   return statuses;
 }
 
+/**
+ * What a commit's lane declaration decides for its event: there is none, it is refused, or each
+ * declared lane runs or is left out.
+ */
+export type DeclarationAt =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'refused'; readonly cause: string }
+  | { readonly kind: 'lanes'; readonly lanes: readonly LaneDecision[] };
+
+/** Read the declaration at the source and decide each lane for the event. */
+async function declarationAt(source: CommitSource, considered: Considered): Promise<DeclarationAt> {
+  const files = commitFiles(source);
+  const declaration = await readDeclaration(files);
+  if (declaration.kind !== 'lanes') {
+    return declaration;
+  }
+  const workflowAt = workflowsAt(files, considered.trigger);
+  const lanes: LaneDecision[] = [];
+  for (const lane of declaration.lanes) {
+    // oxlint-disable-next-line no-await-in-loop -- one lane at a time, in declaration order
+    lanes.push(decideLane(lane, await workflowAt(lane.workflow), considered.context));
+  }
+  return { kind: 'lanes', lanes };
+}
+
 /** Read the declaration at the source, decide each lane, and read the statuses on `commit`. */
 async function readCommit(
   github: GitHubReader,
@@ -196,22 +221,44 @@ async function readCommit(
   source: CommitSource,
   considered: Considered,
 ): Promise<CommitRead> {
-  const files = commitFiles(source);
-  const declaration = await readDeclaration(files);
+  const declaration = await declarationAt(source, considered);
   if (declaration.kind === 'none') {
     return { kind: 'no-declaration' };
   }
-  if (declaration.kind === 'refused') {
-    const statuses = await readStatuses(github, repository, commit);
-    return { cause: declaration.cause, kind: 'refused', statuses };
-  }
-  const workflowAt = workflowsAt(files, considered.trigger);
-  const lanes: LaneDecision[] = [];
-  for (const lane of declaration.lanes) {
-    // oxlint-disable-next-line no-await-in-loop -- one lane at a time, in declaration order
-    lanes.push(decideLane(lane, await workflowAt(lane.workflow), considered.context));
-  }
-  return { kind: 'lanes', lanes, statuses: await readStatuses(github, repository, commit) };
+  const statuses = await readStatuses(github, repository, commit);
+  return declaration.kind === 'refused'
+    ? { cause: declaration.cause, kind: 'refused', statuses }
+    : { kind: 'lanes', lanes: declaration.lanes, statuses };
+}
+
+/** A pull request's `pull_request` event at its merge commit, as the lane reader and the trigger see it. */
+function pullRequestConsidered(
+  repository: string,
+  facts: PullRequestFacts,
+  source: CommitSource,
+): Considered {
+  return {
+    context: pullRequestEvent(facts, repository, source.sha),
+    trigger: {
+      baseRef: facts.baseRef,
+      changedFiles: once(source.changedFiles),
+      kind: 'pull_request',
+    },
+  };
+}
+
+/**
+ * The declaration at a pull request's merge commit, each lane decided for its `pull_request`
+ * event by its trigger and its job's `if:`, exactly as a poll decides it. A run reads it again at
+ * the merge it resolved when it starts (ADR-0005). A failed read of the source throws its
+ * `SourceError`.
+ */
+export function pullRequestDeclarationAt(
+  repository: string,
+  facts: PullRequestFacts,
+  source: CommitSource,
+): Promise<DeclarationAt> {
+  return declarationAt(source, pullRequestConsidered(repository, facts, source));
 }
 
 /** A failed GitHub or git read, which skips what was being read for this poll. */
@@ -326,14 +373,7 @@ async function readPull(
   if (skipsWorkflows(await source.commitMessage(commit))) {
     return snapshot({ kind: 'skipped' });
   }
-  const considered: Considered = {
-    context: pullRequestEvent(facts, repository, source.sha),
-    trigger: {
-      baseRef: facts.baseRef,
-      changedFiles: once(source.changedFiles),
-      kind: 'pull_request',
-    },
-  };
+  const considered = pullRequestConsidered(repository, facts, source);
   return snapshot(await readCommit(deps.github, repository, commit, source, considered));
 }
 
