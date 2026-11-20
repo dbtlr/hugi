@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { stringify } from 'yaml';
+
 import { DEFAULTS } from '../config/schema';
 import type { HugiConfig } from '../config/schema';
 import { rejectionOf } from '../runs/testing';
@@ -12,7 +14,7 @@ import { acquireServeLock, ServeLockError } from '../service/lock';
 import { openHostSource } from '../source/host-source';
 import { githubRepositorySpec } from '../source/repository-spec';
 import type { RunRequest, RunResult } from '../vm';
-import { FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
+import { advanceUntilSettled, FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
 import type { FakeCommand } from '../vm/fake-tart';
 import type { RunDeps } from '../vm/lifecycle';
 import { serveDeps, servePaths, serviceRunInVm, serviceSourceOptions } from './serve';
@@ -246,6 +248,164 @@ describe('the coordinator', () => {
     await until(() => run.progress.ended);
     expect(run.progress.ended).toBe(true);
   });
+});
+
+const PR_HEAD = 'c'.repeat(40);
+const PR_MERGE = 'd'.repeat(40);
+const PR_BASE = 'e'.repeat(40);
+
+/** A repository whose one lane, ci.yml's build, runs on a push to main and on a pull request. */
+const LANE_FILES: Readonly<Record<string, string>> = {
+  '.github/hugi.yaml': stringify({ lanes: [{ jobs: ['build'], workflow: 'ci.yml' }] }),
+  '.github/workflows/ci.yml': stringify({
+    jobs: { build: { 'runs-on': 'macos-latest', steps: [{ run: 'true' }] } },
+    on: { pull_request: null, push: { branches: ['main'] } },
+  }),
+};
+
+/** git's arguments after the hardening `-c` settings and the `--git-dir` scope. */
+function gitCommandOf(args: readonly string[]): readonly string[] {
+  const rest = [...args];
+  while (rest[0] === '-c' || rest[0] === '--git-dir') {
+    rest.splice(0, 2);
+  }
+  return rest;
+}
+
+/**
+ * git over a cache that holds every commit: clones and fetches succeed, pull request 7's refs name
+ * its head and merge, and the commits in `withLanes` hold `LANE_FILES` while the others hold none.
+ */
+function fakeGit(withLanes: readonly string[]): (args: readonly string[]) => FakeCommand {
+  return (args) => {
+    const [command = '', ...rest] = gitCommandOf(args);
+    const last = rest.at(-1) ?? '';
+    switch (command) {
+      case 'rev-parse': {
+        const name = last.replace('^{commit}', '');
+        const refs: Record<string, string> = {
+          'refs/pull/7/head': PR_HEAD,
+          'refs/pull/7/merge': PR_MERGE,
+        };
+        return { output: `${refs[name] ?? name}\n` };
+      }
+      case 'show-ref': {
+        return { exitCode: 1 };
+      }
+      case 'rev-list': {
+        return {
+          output: last === PR_MERGE ? `${last} ${PR_BASE} ${PR_HEAD}\n` : `${last} ${PR_BASE}\n`,
+        };
+      }
+      case 'merge-base': {
+        return { output: `${PR_BASE}\n` };
+      }
+      case 'ls-tree': {
+        const sha = rest.at(-3) ?? '';
+        return withLanes.includes(sha) && last in LANE_FILES ? { output: `blob ${last}\0` } : {};
+      }
+      case 'cat-file': {
+        if (rest[0] === 'commit') {
+          return { output: 'tree t\n\nA commit\n' };
+        }
+        const path = last.slice(last.indexOf(':') + 1);
+        return { output: LANE_FILES[path] ?? '' };
+      }
+      default: {
+        return {};
+      }
+    }
+  };
+}
+
+/** GitHub for one enrolled repository, with pull request 7 open when `pull` is set; statuses post. */
+function laneGitHub(pull: boolean): ServePorts['fetch'] {
+  const pullRequest = {
+    base: { ref: 'main' },
+    head: { ref: 'feature', sha: PR_HEAD },
+    merge_commit_sha: PR_MERGE,
+    mergeable: true,
+    number: 7,
+    state: 'open',
+    user: { login: 'dbtlr' },
+  };
+  return async (url, init) => {
+    const path = new URL(url).pathname;
+    if (init?.method === 'POST' && path.includes('/statuses/')) {
+      return Response.json({}, { status: 201 });
+    }
+    if (path.includes('/commits/') && path.endsWith('/status')) {
+      return Response.json({ statuses: [] });
+    }
+    const answers: Record<string, unknown> = {
+      '/repos/dbtlr/hugi/pulls': pull ? [pullRequest] : [],
+      '/repos/dbtlr/hugi/pulls/7': pullRequest,
+    };
+    return path in answers ? Response.json(answers[path]) : fakeGitHub(url, init);
+  };
+}
+
+/**
+ * Run the coordinator as `hugi serve` binds it until its first candidate reaches the VM runner,
+ * then stop it. Returns what the candidate's run started after the poll, and the VM runner's deps.
+ */
+async function runFirstCandidate(pull: boolean, withLanes: readonly string[]) {
+  const stop = new AbortController();
+  const seen: { request: RunRequest; deps: RunDeps }[] = [];
+  const runInVm = async (request: RunRequest, deps: RunDeps): Promise<RunResult> => {
+    seen.push({ deps, request });
+    stop.abort();
+    return PASSED;
+  };
+  const git = fakeGit(withLanes);
+  const { clock, ports, spawned, started } = portsOf(
+    (command, args) => (command.endsWith('git') ? git(args) : { output: '[]' }),
+    { fetch: laneGitHub(pull), runInVm, signal: stop.signal },
+  );
+  const deps = serveDeps(ports);
+  const admitting = { ...config, allowlist: ['dbtlr'] };
+  const setup = await deps.checkSetup(admitting);
+  let polled = -1;
+  const ended = deps.coordinate(admitting, setup, async (event) => {
+    if (polled === -1 && (event as { kind: string }).kind === 'poll-ended') {
+      polled = started.length;
+    }
+  });
+  await until(() => seen.length > 0);
+  await advanceUntilSettled(clock, ended);
+  const [first] = seen;
+  if (first === undefined) {
+    throw new Error('no candidate reached the VM runner');
+  }
+  return {
+    first,
+    // What the run started, the poll's calls left out: each program, its PATH, and its arguments.
+    runArgs: spawned.slice(polled).map((line) => gitCommandOf(line.split(' ').slice(1))),
+    runStarted: started.slice(polled),
+    signal: stop.signal,
+    started,
+  };
+}
+
+describe("a candidate's run, through the coordinator", () => {
+  test.each(['push', 'pull_request'] as const)(
+    "a %s candidate's git, tart and interrupt are the service's",
+    async (kind) => {
+      const pull = kind === 'pull_request';
+      const run = await runFirstCandidate(pull, pull ? [PR_MERGE] : [BRANCH_HEAD]);
+      expect(run.first.request.event.event).toBe(kind);
+      // The run opened its own source: a pull request's run fetches its refs, a push's resolves the commit.
+      expect(run.runArgs.map((args) => args[0])).toContain(pull ? 'fetch' : 'rev-parse');
+      expect(run.runStarted.length).toBeGreaterThan(0);
+      for (const each of run.runStarted) {
+        expect(each).toEqual({ command: join(bin, 'git'), path: bin });
+      }
+      expect(run.first.deps.interrupt).toBe(run.signal);
+      const before = run.started.length;
+      await run.first.deps.tart.list();
+      expect(run.started.slice(before)).toEqual([{ command: join(bin, 'tart'), path: bin }]);
+    },
+  );
 });
 
 const REQUEST: RunRequest = {
