@@ -133,6 +133,13 @@ const noVerdict: Run = async (candidate) => ({
 
 const dropped: Run = async () => ({ kind: 'dropped', reason: 'the head moved' });
 
+/** Run start's lane reader no longer selects the lane the poll selected. */
+const unselected: Run = async () => ({
+  kind: 'dropped',
+  reason: "the job's if: is false",
+  waits: true,
+});
+
 const postError = (status = 502) =>
   new StatusPostError(REPOSITORY, 'POST /repos/example/project/statuses/x', 'GitHub answered 502', {
     status,
@@ -328,6 +335,16 @@ test('a lane that stays waiting is logged at each run', async () => {
   expect(waiting).toHaveLength(2);
   // The wait ends 5 minutes after the run, as the wall clock shows it.
   expect(waiting[0]).toContain('waits until 2026-11-20T10:05:00.000Z after 1 runs');
+});
+
+test('a candidate dropped because run start no longer selects its lane waits, and is logged once', async () => {
+  const polls = Array.from({ length: 16 }, () => pushPoll(['build']));
+  const { logged, posts, runs } = await coordinate({ polls, runs: { build: unselected } });
+  expect(runs.map((each) => each.at)).toEqual([0, 5 * MINUTE, 15 * MINUTE]);
+  expect(posts).toEqual([]);
+  expect(logged('info').filter((message) => message.includes("the job's if: is false"))).toEqual([
+    `dropped hugi / build on ${REPOSITORY}@${HEAD.slice(0, 12)}: the job's if: is false; it waits as after a run with no verdict`,
+  ]);
 });
 
 test('a dropped candidate posts nothing and runs again at the next poll', async () => {

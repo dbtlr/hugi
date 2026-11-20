@@ -204,7 +204,11 @@ type UnpostedVerdict = LaneIdentity & {
   readonly status: LaneStatus;
 };
 
-type Waiting = LaneIdentity & { readonly wait: NoVerdictWait };
+type Waiting = LaneIdentity & {
+  readonly wait: NoVerdictWait;
+  /** Why run start last dropped the lane to wait, once that is logged; each reason is logged once. */
+  readonly dropped?: string;
+};
 
 const EMPTY_QUEUE: Queue = { candidates: [], declarationReports: [], failures: [] };
 
@@ -394,21 +398,45 @@ export async function runCoordinator(
     }
   };
 
-  const waitAfterNoVerdict = (candidate: Candidate, cause: string) => {
+  /** Make the lane wait one more time; `dropped` is why run start dropped it, if it did. */
+  const startWait = (candidate: Candidate, dropped?: string) => {
     const key = laneKey(candidate);
-    const wait = nextWait(waits.get(key)?.wait, clock.now());
+    const previous = waits.get(key);
+    const wait = nextWait(previous?.wait, clock.now());
     const { commit, repository, statusName } = candidate;
-    waits.set(key, { commit, repository, statusName, wait });
+    waits.set(key, { commit, repository, statusName, wait, ...(dropped ? { dropped } : {}) });
+    return { previous, wait };
+  };
+
+  const waitAfterNoVerdict = (candidate: Candidate, cause: string) => {
+    const { wait } = startWait(candidate);
     log.info(
       `${describeLane(candidate)} has no verdict (${cause}); it runs again after ${wallTimeOf(wait.until)}`,
     );
+  };
+
+  /**
+   * Run start's lane reader refused a lane the poll selected, so the next poll would queue it
+   * again at once: it waits as after a run with no verdict, and each reason is logged once.
+   */
+  const waitAfterDrop = (candidate: Candidate, reason: string) => {
+    const { previous } = startWait(candidate, reason);
+    if (previous?.dropped !== reason) {
+      log.info(
+        `dropped ${describeLane(candidate)}: ${reason}; it waits as after a run with no verdict`,
+      );
+    }
   };
 
   /** Post what a run's outcome calls for and keep what the loop must remember. */
   const settle = async (candidate: Candidate, outcome: CandidateOutcome) => {
     const key = laneKey(candidate);
     if (outcome.kind === 'dropped') {
-      log.info(`dropped ${describeLane(candidate)}: ${outcome.reason}`);
+      if (outcome.waits === true) {
+        waitAfterDrop(candidate, outcome.reason);
+      } else {
+        log.info(`dropped ${describeLane(candidate)}: ${outcome.reason}`);
+      }
       return;
     }
     if (outcome.kind === 'declaration-refused') {

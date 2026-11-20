@@ -32,8 +32,12 @@ export const SERVICE_IMAGE = 'hugi-golden';
 
 /** What a candidate's run came to, and so what the coordinator posts. */
 export type CandidateOutcome =
-  /** The candidate no longer stands: no status, and no wait; the next poll considers it again. */
-  | { readonly kind: 'dropped'; readonly reason: string }
+  /**
+   * The candidate no longer stands: no status, and no wait; the next poll considers it again. With
+   * `waits`, run start's lane reader refused a lane the poll selected, so the next poll would
+   * select it again: the lane waits as after a run with no verdict.
+   */
+  | { readonly kind: 'dropped'; readonly reason: string; readonly waits?: true }
   /** The merge refuses the declaration: post the `hugi` status on `target`. */
   | { readonly kind: 'declaration-refused'; readonly target: StatusTarget; readonly cause: string }
   | {
@@ -171,7 +175,7 @@ export function createRunCandidate(deps: RunCandidateDeps): RunCandidate {
       });
     } catch (error) {
       if (error instanceof RunUsageError) {
-        return { kind: 'dropped', reason: error.message };
+        return { kind: 'dropped', reason: error.message, waits: true };
       }
       throw error;
     }

@@ -207,14 +207,16 @@ test("a pull request lane whose job's if: is false at the merge is dropped with 
   expect(vmCalls).toHaveLength(0);
 });
 
-test("a push lane whose job's if: is false at run start is dropped, as hugi run's usage error", async () => {
+test("a push lane whose job's if: is false at run start is dropped to wait, as hugi run's usage error", async () => {
   const files = {
     ...FILES,
     [CI]: WORKFLOW.replace("github.event_name == 'push'", "github.event_name == 'never'"),
   };
   const { deps, hooks, vmCalls } = harness({ files });
+  // The poll selected the lane and would select it again, so it waits as after no verdict.
   expect(await createRunCandidate(deps)(pushCandidate('release'), hooks)).toMatchObject({
     kind: 'dropped',
+    waits: true,
   });
   expect(vmCalls).toHaveLength(0);
 });
@@ -237,9 +239,9 @@ test('a pull request whose head moved since the poll is dropped without opening 
   const { deps, hooks, opened } = harness({
     readPullRequest: async () => ({ ...FACTS, headSha: 'e'.repeat(40) }),
   });
-  expect(await createRunCandidate(deps)(pullCandidate(), hooks)).toMatchObject({
-    kind: 'dropped',
-  });
+  const outcome = await createRunCandidate(deps)(pullCandidate(), hooks);
+  expect(outcome).toMatchObject({ kind: 'dropped' });
+  expect(outcome).not.toHaveProperty('waits');
   expect(opened).toHaveLength(0);
 });
 
@@ -300,9 +302,9 @@ test('a lane the merge no longer declares is dropped', async () => {
   const { deps, hooks } = harness({
     files: { ...FILES, '.github/hugi.yaml': declaration(['release']) },
   });
-  expect(await createRunCandidate(deps)(pullCandidate(), hooks)).toMatchObject({
-    kind: 'dropped',
-  });
+  const outcome = await createRunCandidate(deps)(pullCandidate(), hooks);
+  expect(outcome).toMatchObject({ kind: 'dropped' });
+  expect(outcome).not.toHaveProperty('waits');
 });
 
 test('a merge with no declaration drops the lane', async () => {
