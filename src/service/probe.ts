@@ -7,11 +7,9 @@
 import type { ProbeContext, ServiceDetail } from '@loomcli/plugins/service';
 
 import { messageOf } from '../errors';
+import { SERVICE_VM_PREFIX } from '../vm/lifecycle';
 import { isServiceStateError } from './state';
 import type { ServiceState, ServiceStateError } from './state';
-
-/** The prefix of the VMs only `hugi serve` creates. */
-const SERVICE_VM_PREFIX = 'hugi-svc-';
 
 const STALE = ' (stale: no service process)';
 
