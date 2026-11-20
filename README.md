@@ -55,7 +55,7 @@ bun run build     # build the binary to dist/hugi
 
 ## Running a lane by hand
 
-`hugi run <repository> <commit> <workflow>:<job>` runs one lane at one commit in a throwaway VM and prints a verdict. `<repository>` is `owner/name` for a public GitHub repository, or a path to a local git repository (start it with `./`, `../`, `/`, or `~`). `<commit>` is a sha, a branch, or a tag. For an `owner/name` repository it can also be `pull/<n>`, pull request `<n>`, which runs as a `pull_request` event on GitHub's merge commit ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). Step logs go to a new directory under `$XDG_STATE_HOME/hugi/runs` unless `--logs` names one. Add `--format json` for the report as JSON.
+`hugi run <repository> <commit> <workflow>:<job>` runs one lane at one commit in a throwaway VM and prints a verdict. `<repository>` is `owner/name` for a public GitHub repository, or a path to a local git repository (start it with `./`, `../`, `/`, or `~`). `<commit>` is a sha, a branch, or a tag. For an `owner/name` repository it can also be `pull/<n>`, pull request `<n>`, which runs as a `pull_request` event on GitHub's merge commit ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). Step logs go to a new directory under `$XDG_STATE_HOME/hugi/runs` unless `--logs` names one. Add `--format json` for the report as JSON. Each run is kept as described in [Run records and logs](#run-records-and-logs).
 
 The host reads the workflow and toolchain files as data with `git`; nothing from the repository runs on the host. An `owner/name` repository is read through a bare partial clone in `$XDG_CACHE_HOME/hugi` (override with `--cache-dir` or `HUGI_CACHE_DIR`). The cache is created private to you, and Hugi refuses a cached clone that another user owns or can write. A local repository is read in place, and never through the cache. It reaches the VM as a snapshot: before booting, Hugi builds a temporary bare repository that holds only the commit, at depth 1, with no config, remote URL, or other ref carried over, and shares it read-only. Untracked files such as `.env` never reach the VM, and a subdirectory or a linked worktree works as well as the repository root. The snapshot is deleted when the run ends. Every `git` call is hardened so that neither the repository nor your git setup can run a program or use a credential:
 
@@ -107,6 +107,25 @@ Deleting the VM is best effort. When a delete fails, Hugi warns with the VM's na
 
 Every accepted macOS `runs-on` label, such as `macos-26` or `macos-latest`, runs on the golden image, which is built from macOS 15. A step that checks the macOS version sees 15 whatever label the lane names.
 
+## Run records and logs
+
+Each run that boots a VM has a run directory under `$XDG_STATE_HOME/hugi/runs`, and a record in it, from the moment the run starts. The directory's name is the run id, such as `2026-11-19T233200Z-abcdef123-Xy7Kq2`. It holds the step logs and `run.json`. `hugi run` writes `run.json` as `running` when it creates the directory, before the VM boots, and rewrites it as `finished` when the run ends; both writes are atomic, so a reader sees the old record or the whole new one. A run that stops before a VM boots (a lane that cannot be read, a tool that cannot be resolved, a commit that cannot be fetched) has no directory and no record.
+
+The record holds the run id, the lane (workflow, job id, complete matrix row, and its status name), the repository, the head commit and, for a pull request, the merge commit that was tested, the event, and the start time. A finished record adds the end time, the verdict with its reason (the cause, when there is no verdict), and each step's index, name, outcome, and log file name. Times are ISO 8601 UTC, as `Date.prototype.toISOString` writes them, and a log file name is `NN-<slug>.log`; `hugi logs` refuses a record that says otherwise. A directory that has no usable `run.json` is an orphan, left by a run that did not finish (for example, `hugi run` was killed before it wrote the record, or the file cannot be read).
+
+`hugi logs <run>` prints a run's summary and the failing step's log. `<run>` is a run id; a prefix works while it names one run. `--all` prints every step's log, and `--format json` prints the record with each printed log's path and contents, for agents. A running run is shown as running, and an orphan as "no record, left by a run that did not finish". `hugi logs` never reads outside the run directory: it refuses a `run.json` that is a symlink or names another run, and a step log that is a symlink or not a regular file. An unknown id, or a record it refuses, fails with exit code 1 and says why. A run kept in a `--logs` directory is not found by id.
+
+A status description ends with the run id, such as `Failed at Test: exit 3 [run 2026-11-19T233200Z-abcdef123-Xy7Kq2] (merge 0123456789ab)`, so `hugi logs 2026-11-19T233200Z-abcdef123-Xy7Kq2` works from it. The run id and the merge commit are always kept within the 140 characters; the failing step's name and the cause are shortened first. A run id that is not a run directory's name, or is longer than 80 characters, is an error, not a description.
+
+Retention runs after each `hugi run` writes its finished record. It deletes only real directories directly inside the runs directory that are named like a run; it follows no symlink, and leaves every other entry alone and out of the size. It never deletes the run just written. Otherwise:
+
+- A finished run is deleted when it ended more than `runs.max_age_days` ago.
+- A running run is never deleted, unless it is stale: it started more than `runs.max_age_days` ago. It is never deleted to make room.
+- An orphan is deleted when its directory's modification time is more than `runs.max_age_days` ago.
+- Then, while the runs directory holds more than `runs.max_size_gb`, the oldest runs go (finished runs and orphans, not running runs). Every run directory counts toward the size, a running run and an orphan included.
+
+`hugi run` reads the limits from the configuration file when there is one. With no file the defaults apply. When the file exists but is refused, `hugi run` warns and skips retention for that run, because limits it could not read are not limits to delete by.
+
 ## Configuration
 
 Hugi's configuration says which repositories are enrolled and whose pull requests may run. It never says what runs: lanes come from each repository's `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)), so a `lanes` key here is refused.
@@ -122,12 +141,15 @@ poll_interval: 60 # optional, seconds between polls of GitHub, 15 to 3600, defau
 vm: # optional, the size of each run's VM (ADR-0003)
   cpus: 4 # 1 to 16, default 4
   memory_gb: 4 # 2 to 64, default 4
+runs: # optional, how much of the runs directory Hugi keeps
+  max_age_days: 30 # 1 to 3650, default 30
+  max_size_gb: 5 # 1 to 100000, default 5
 github_app: # optional; needed only by the code that posts statuses, not by `hugi run`
   app_id: 123456 # the App's id, from its settings page
   private_key_path: ~/.config/hugi/app.pem # absolute, or starting with ~/
 ```
 
-Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
+Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. The `runs` limits apply to the runs directory ([Run records and logs](#run-records-and-logs)). `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
 
 ## Reporting to GitHub
 
@@ -152,7 +174,7 @@ A lane's status is named from its identity, not its workflow path, so promoting 
 
 The name lists the matrix row's values in the order the workflow lists its matrix keys, with one limitation: JavaScript orders integer-like object keys, such as `'2'`, before the others, so such a key's value is listed first whatever its place in the workflow. Two lanes whose names GitHub treats as one context are refused, so names are compared the way GitHub was observed to compare contexts: ignoring case and accents, with `ß` equal to `s` and trailing spaces trimmed. A status name cannot hold an emoji or any other character outside the Basic Multilingual Plane (a 4-byte character in UTF-8), which GitHub refuses, so a declaration with such a name is refused. The name stays stable for a lane. A promoted workflow must list its matrix keys in the same order for the names to match.
 
-A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened and the merge commit is always kept.
+A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened, and the merge commit and the run id are always kept ([Run records and logs](#run-records-and-logs)).
 
 ## Documentation
 

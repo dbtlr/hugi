@@ -9,6 +9,7 @@ test('a minimal configuration gets the defaults', () => {
     allowlist: [],
     pollIntervalSeconds: 60,
     repositories: ['dbtlr/hugi'],
+    runs: { maxAgeDays: 30, maxSizeGb: 5 },
     vm: { cpus: 4, memoryGb: 4 },
   });
 });
@@ -18,14 +19,24 @@ test('a full configuration is read as written', () => {
     allowlist: ['dbtlr', 'a-b-1'],
     poll_interval: 15,
     repositories: ['dbtlr/hugi', 'dbtlr/norn.git-x', 'Org-1/some_repo'],
+    runs: { max_age_days: 7, max_size_gb: 20 },
     vm: { cpus: 16, memory_gb: 64 },
   });
   expect(config).toEqual({
     allowlist: ['dbtlr', 'a-b-1'],
     pollIntervalSeconds: 15,
     repositories: ['dbtlr/hugi', 'dbtlr/norn.git-x', 'Org-1/some_repo'],
+    runs: { maxAgeDays: 7, maxSizeGb: 20 },
     vm: { cpus: 16, memoryGb: 64 },
   });
+});
+
+test('a runs mapping may set one key and default the other', () => {
+  expect(validateConfig({ ...MINIMAL, runs: { max_size_gb: 1 } }).runs).toEqual({
+    maxAgeDays: 30,
+    maxSizeGb: 1,
+  });
+  expect(validateConfig({ ...MINIMAL, runs: {} }).runs).toEqual({ maxAgeDays: 30, maxSizeGb: 5 });
 });
 
 test('an Enterprise Managed User login is admitted', () => {
@@ -43,6 +54,7 @@ test('the result is frozen', () => {
   expect(Object.isFrozen(config.repositories)).toBe(true);
   expect(Object.isFrozen(config.allowlist)).toBe(true);
   expect(Object.isFrozen(config.vm)).toBe(true);
+  expect(Object.isFrozen(config.runs)).toBe(true);
 });
 
 test('a github_app is read, its key path as written', () => {
@@ -181,6 +193,28 @@ const refusals: readonly [string, unknown, string][] = [
     '65 GB of vm memory',
     { ...MINIMAL, vm: { memory_gb: 65 } },
     'vm.memory_gb: must be between 2 and 64',
+  ],
+  ['a runs that is not a mapping', { ...MINIMAL, runs: 4 }, 'runs: must be a mapping'],
+  ['an unknown runs key', { ...MINIMAL, runs: { keep: 3 } }, 'runs.keep: is not a known key'],
+  [
+    'string max_age_days',
+    { ...MINIMAL, runs: { max_age_days: '30' } },
+    'runs.max_age_days: must be an integer',
+  ],
+  [
+    'zero max_age_days',
+    { ...MINIMAL, runs: { max_age_days: 0 } },
+    'runs.max_age_days: must be between 1 and 3650',
+  ],
+  [
+    'fractional max_size_gb',
+    { ...MINIMAL, runs: { max_size_gb: 0.5 } },
+    'runs.max_size_gb: must be an integer',
+  ],
+  [
+    'negative max_size_gb',
+    { ...MINIMAL, runs: { max_size_gb: -1 } },
+    'runs.max_size_gb: must be between 1 and 100000',
   ],
 ];
 

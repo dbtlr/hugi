@@ -76,3 +76,25 @@ test('the path is the flag, then HUGI_CONFIG, then the XDG config home, then ~/.
     '/home/u/.config/hugi/config.yaml',
   );
 });
+
+test('a caller with no --config option supplies its own hint, or none', async () => {
+  const unreadable = failing('EACCES');
+  const hinted = await loadConfig('/c.yaml', unreadable, 'Use the other way.').catch(
+    (error: unknown) => (error instanceof Error ? error.message : ''),
+  );
+  expect(hinted).toMatch(/read failed: EACCES\. Use the other way\.$/u);
+  const bare = await loadConfig('/c.yaml', unreadable, '').catch((error: unknown) =>
+    error instanceof Error ? error.message : '',
+  );
+  expect(bare).toContain('read failed: EACCES.');
+  expect(bare).not.toContain('--config');
+  expect(await refusal('/c.yaml', unreadable)).toContain('Pass --config <path>');
+});
+
+test('an unknown key under runs is refused, naming its path', async () => {
+  const message = await refusal(
+    '/c.yaml',
+    reading('repositories: [a/b]\nallowlist: []\nruns:\n  keep: 3\n'),
+  );
+  expect(message).toContain('runs.keep: is not a known key');
+});
