@@ -2,7 +2,8 @@
 /**
  * Runs plans in real tart VMs. Skipped unless HUGI_VM_TESTS=1 (Linux CI has no tart).
  * The image comes from HUGI_TEST_IMAGE. The pinned-tools case also needs
- * HUGI_GOLDEN_TESTS=1 and a local `hugi-golden` image, which it clones and never changes.
+ * HUGI_GOLDEN_TESTS=1 and a local `hugi-golden` image, which it clones and never changes; so does
+ * the sweep case, the only other one that clones that image.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
@@ -17,16 +18,21 @@ import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan'
 import { openHostSource } from '../source/host-source';
 import type { GuestSource } from '../source/host-source';
 import { systemClock } from './clock';
+import { stepFiles } from './guest-paths';
+import { readFileArgv } from './housekeeping';
 import { runInVm, SERVICE_VM_PREFIX, VM_NAME_PREFIX } from './lifecycle';
 import type { RunRequest } from './run-request';
 import { sweepVms } from './sweep';
 import { createTartCli } from './tart-cli';
+import { assertVmPrefix } from './vm-prefix';
 
 const DEFAULT_IMAGE =
   'ghcr.io/cirruslabs/macos-sequoia-base@sha256:4947ac5ab1b2fdc46ab856132d2ba958f8e45b5f85192c66370dafc028c514dd';
 const GOLDEN_IMAGE = 'hugi-golden';
 const enabled = process.env.HUGI_VM_TESTS === '1';
 const goldenEnabled = enabled && process.env.HUGI_GOLDEN_TESTS === '1';
+/** A prefix only the sweep test uses, so it can never match a VM a running service owns. */
+const SWEEP_TEST_PREFIX = 'hugi-sweeptest-';
 const SLOT_WAIT_MS = 60 * 60_000;
 const SLOT_POLL_MS = 60_000;
 /** Each test may wait the whole slot wait, then run its VM. */
@@ -348,26 +354,27 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
     TEST_TIMEOUT_MS,
   );
 
-  test(
-    'sweeping the service prefix deletes the service VM and leaves a run VM',
+  test.skipIf(!goldenEnabled)(
+    'sweeping a prefix deletes its VM and leaves a run VM',
     async () => {
       const tart = createTartCli(spawn);
-      const suffix = `sweeptest-${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`;
-      const serviceVm = `${SERVICE_VM_PREFIX}${suffix}`;
+      const suffix = crypto.randomUUID().slice(0, 8).replaceAll('-', '');
+      const sweptVm = `${SWEEP_TEST_PREFIX}${suffix}`;
       const runVm = `${VM_NAME_PREFIX}${suffix}`;
-      // The sweep deletes every hugi-svc-* VM, so refuse to run beside a real service's VM.
-      const foreign = listVms().filter((vm) => vm.name.startsWith(SERVICE_VM_PREFIX));
+      // The sweep deletes every VM under its prefix, so refuse to run beside one that is not ours.
+      assertVmPrefix(SWEEP_TEST_PREFIX);
+      const foreign = listVms().filter((vm) => vm.name.startsWith(SWEEP_TEST_PREFIX));
       expect(foreign.map((vm) => vm.name)).toEqual([]);
       try {
-        await tart.clone(GOLDEN_IMAGE, serviceVm);
+        await tart.clone(GOLDEN_IMAGE, sweptVm);
         await tart.clone(GOLDEN_IMAGE, runVm);
-        const result = await sweepVms(tart, SERVICE_VM_PREFIX);
-        expect(result).toEqual({ deleted: [serviceVm], failed: [] });
-        expect(vmRemains(serviceVm)).toBe(false);
+        const result = await sweepVms(tart, SWEEP_TEST_PREFIX);
+        expect(result).toEqual({ deleted: [sweptVm], failed: [] });
+        expect(vmRemains(sweptVm)).toBe(false);
         expect(vmRemains(runVm)).toBe(true);
         expect(await tart.list()).toContain('hugi-golden');
       } finally {
-        for (const vm of [serviceVm, runVm]) {
+        for (const vm of [sweptVm, runVm]) {
           if (vmRemains(vm)) {
             // oxlint-disable-next-line no-await-in-loop -- cleanup, one at a time
             await tart.delete(vm);
@@ -386,20 +393,54 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       const interrupt = new AbortController();
       const deps = realDeps(interrupt.signal, SERVICE_VM_PREFIX);
       const abort = { at: 0 };
-      // Abort a few seconds after the step starts in the guest, as a SIGTERM to the service would.
-      const tart = {
-        ...deps.tart,
-        exec: async (...args: Parameters<typeof deps.tart.exec>) => {
-          if (args[2]?.stdin?.startsWith('# hugi-step 1\n')) {
-            setTimeout(() => {
+      // The host copies a step's log only when the step ends, so read the guest's log directly:
+      // once the step prints its marker, abort a few seconds later, as a SIGTERM would.
+      const guestLog = stepFiles(1).log;
+      const settled = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const watchForMarker = async (): Promise<void> => {
+        while (!settled.signal.aborted && timer === undefined) {
+          let seen = '';
+          try {
+            // oxlint-disable-next-line no-await-in-loop -- one read at a time
+            await deps.tart.exec(deps.vm, readFileArgv(guestLog), {
+              onOutput: (chunk) => {
+                seen += chunk;
+              },
+            });
+          } catch {
+            // The guest may not answer yet; try again.
+          }
+          if (seen.includes('waiting')) {
+            timer = setTimeout(() => {
               abort.at = Date.now();
               interrupt.abort();
             }, 5000);
+          } else {
+            // oxlint-disable-next-line no-await-in-loop -- poll spacing
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
-          return deps.tart.exec(...args);
+        }
+      };
+      let watching: Promise<void> | undefined;
+      const tart = {
+        ...deps.tart,
+        exec: async (...args: Parameters<typeof deps.tart.exec>) => {
+          const result = await deps.tart.exec(...args);
+          if (watching === undefined && args[2]?.stdin?.startsWith('# hugi-step 1\n')) {
+            watching = watchForMarker();
+          }
+          return result;
         },
       };
-      const result = await runInVm(req, { ...deps, tart });
+      let result: Awaited<ReturnType<typeof runInVm>>;
+      try {
+        result = await runInVm(req, { ...deps, tart });
+      } finally {
+        settled.abort();
+        clearTimeout(timer);
+        await watching;
+      }
       const resolvedAfterMs = Date.now() - abort.at;
       console.log(`abort-to-resolve: ${resolvedAfterMs} ms`);
       expect(abort.at).toBeGreaterThan(0);
