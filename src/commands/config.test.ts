@@ -42,7 +42,7 @@ test('a valid file exits 0 and prints the effective configuration', async () => 
   expect(stdout).toContain('vm: 4 cpus, 4 GB memory');
   expect(stdout).toContain('runs: keep 30 days, up to 5 GB');
   expect(stdout).toContain('github_app: not configured');
-  expect(stdout).toContain('path: inherited PATH');
+  expect(stdout).not.toContain('path');
 });
 
 test('a configured github_app prints its id and key path', async () => {
@@ -52,12 +52,12 @@ test('a configured github_app prints its id and key path', async () => {
   expect(stdout).toContain('github_app: 7, key ~/app.pem');
 });
 
-test('a configured path prints its directories in search order', async () => {
-  const { exitCode, stdout } = await hugi(['config', 'check', '--config', '/c.yaml'], {
+test('a configuration that still sets path is refused, naming the key', async () => {
+  const { exitCode, stderr } = await hugi(['config', 'check', '--config', '/c.yaml'], {
     '/c.yaml': WITH_PATH,
   });
-  expect(exitCode).toBe(0);
-  expect(stdout).toContain('path:\n  - /opt/homebrew/bin\n  - /usr/bin\n');
+  expect(exitCode).toBe(1);
+  expect(stderr).toContain('path: is not a known key');
 });
 
 test('an empty allowlist prints as none', async () => {
@@ -85,15 +85,6 @@ test('--format json prints the path and the configuration', async () => {
     },
     path: '/c.yaml',
   });
-});
-
-test('--format json includes the configured search path under config', async () => {
-  const { exitCode, stdout } = await hugi(
-    ['config', 'check', '--config', '/c.yaml', '--format', 'json'],
-    { '/c.yaml': WITH_PATH },
-  );
-  expect(exitCode).toBe(0);
-  expect(JSON.parse(stdout)).toMatchObject({ config: { path: ['/opt/homebrew/bin', '/usr/bin'] } });
 });
 
 test('without --config the file is HUGI_CONFIG, else the XDG default under home', async () => {

@@ -26,7 +26,6 @@ export function renderConfigReport({ config, path }: ConfigReport): string {
     config.githubApp === undefined
       ? 'github_app: not configured'
       : `github_app: ${config.githubApp.appId}, key ${config.githubApp.privateKeyPath}`,
-    config.path === undefined ? 'path: inherited PATH' : `path:${listLines(config.path)}`,
   ].join('\n')}\n`;
 }
 

@@ -26,8 +26,6 @@ export type HugiConfig = {
   readonly runs: { readonly maxAgeDays: number; readonly maxSizeGb: number };
   /** The GitHub App that posts statuses; absent when none is configured (`hugi run` needs none). */
   readonly githubApp?: GitHubAppConfig;
-  /** The directories the service searches for host programs, in file order. */
-  readonly path?: readonly string[];
 };
 
 /** Which GitHub App Hugi authenticates as, and where its private key lives on the host. */
@@ -213,26 +211,6 @@ function readGitHubApp(value: unknown): GitHubAppConfig | undefined {
   return { appId, privateKeyPath: path };
 }
 
-function readPath(value: unknown): readonly string[] {
-  if (!Array.isArray(value)) {
-    refuse('path', `must be a list, not ${describe(value)}`);
-  }
-  if (value.length < 1 || value.length > 64) {
-    refuse('path', `must list 1 to 64 directories, not ${value.length}`);
-  }
-  return Object.freeze(
-    Array.from(value, (entry: unknown, index) => {
-      if (typeof entry !== 'string' || !entry.startsWith('/') || entry.includes(':')) {
-        refuse(
-          `path[${index}]`,
-          `must be an absolute directory without ':', not ${describe(entry)}`,
-        );
-      }
-      return entry;
-    }),
-  );
-}
-
 /** Validate the parsed configuration text; throws a `ConfigError` for the first problem found. */
 export function validateConfig(parsed: unknown): HugiConfig {
   const top = mappingOf(parsed, 'configuration', [
@@ -242,7 +220,6 @@ export function validateConfig(parsed: unknown): HugiConfig {
     'vm',
     'runs',
     'github_app',
-    'path',
   ]);
   if (top.repositories === undefined) {
     refuse('repositories', 'is required: list the repositories to enrol as owner/name');
@@ -263,7 +240,6 @@ export function validateConfig(parsed: unknown): HugiConfig {
   const githubApp = readGitHubApp(top.github_app);
   return Object.freeze({
     ...(githubApp === undefined ? {} : { githubApp: Object.freeze(githubApp) }),
-    ...(Object.hasOwn(top, 'path') ? { path: readPath(top.path) } : {}),
     allowlist: Object.freeze(allowlist),
     pollIntervalSeconds: integerOf(
       top.poll_interval,

@@ -9,21 +9,16 @@ import type { ProbeContext } from '@loomcli/plugins/service';
 
 import { configCommand } from './commands/config';
 import type { ConfigCommandOverrides } from './commands/config';
-import { logsCommand, serviceLogPath } from './commands/logs';
+import { logsCommand } from './commands/logs';
 import { runCommand } from './commands/run';
 import type { RunCommandOverrides } from './commands/run';
 import { serveCommand } from './commands/serve';
-import { loadConfig } from './config/load';
-import { configuredHostEnv, requireHostTools, spawnWithTools } from './service/host-tools';
+import { requireHostTools, serviceEnvironment, spawnWithTools } from './service/host-tools';
 import { serveLockHolder } from './service/lock';
 import { createProbe } from './service/probe';
 import type { ProbeDeps } from './service/probe';
 import { readServiceState } from './service/state';
-import {
-  resolveConfigPath,
-  resolveServeLockPath,
-  resolveServiceStateDir,
-} from './source/locations';
+import { resolveServeLockPath, resolveServiceStateDir } from './source/locations';
 import { VERSION } from './version';
 import { createTartCli } from './vm/tart-cli';
 
@@ -47,24 +42,30 @@ export const SHUTDOWN_BUDGET_MS = 180_000;
 /** The launchd label of the agent `hugi service install` writes. */
 export const SERVICE_LABEL = 'com.dbtlr.hugi';
 
+/** Where launchd sends the agent's stdout and stderr, relative to the home. */
+export const SERVICE_OUTPUT = 'Library/Logs/hugi/serve.log';
+
+/**
+ * How long launchd waits after SIGTERM before it kills the agent. 60 seconds is the most launchd
+ * allows from macOS 26.4, below `SHUTDOWN_BUDGET_MS` on purpose: a run cut short by hand keeps the
+ * whole budget, and a VM a kill leaves under launchd is deleted at the next start.
+ */
+export const SERVICE_STOP_TIMEOUT_MS = 60_000;
+
 /** The host facts `hugi service status` reads its rows with. */
 export type StatusHost = Pick<Host, 'env' | 'home' | 'platform' | 'spawn'>;
 
 /**
  * Where the rows `hugi service status` adds come from: the state `hugi serve` writes, the lock,
- * and tart, found as the service finds it (`configuredHostEnv`).
+ * and tart, found on the `PATH` of the shell running `status`.
  */
 export function statusProbeDeps(host: StatusHost): ProbeDeps {
   return {
     listVms: async () => {
-      const env = await configuredHostEnv(host.env, () =>
-        loadConfig(resolveConfigPath(undefined, host.env, host.home)),
-      );
-      const tools = await requireHostTools(env, ['tart']);
-      return createTartCli(spawnWithTools(host.spawn, tools, env)).list();
+      const tools = requireHostTools(host.env, ['tart']);
+      return createTartCli(spawnWithTools(host.spawn, tools, host.env)).list();
     },
     lockHolder: () => serveLockHolder(resolveServeLockPath(host.home), host.platform),
-    logPath: serviceLogPath(host.env, host.home, host.platform),
     now: () => new Date(),
     readState: () => readServiceState(resolveServiceStateDir(host.env, host.home)),
   };
@@ -79,7 +80,14 @@ export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOv
       format(),
       help(),
       logging({ to: 'file' }),
-      service({ label: SERVICE_LABEL, probe: statusRows, run: ['serve'] }),
+      service({
+        environment: ({ env }) => serviceEnvironment(env),
+        label: SERVICE_LABEL,
+        output: SERVICE_OUTPUT,
+        probe: statusRows,
+        run: ['serve'],
+        stopTimeout: SERVICE_STOP_TIMEOUT_MS,
+      }),
     ],
     shutdown: { timeout: SHUTDOWN_BUDGET_MS },
     version: VERSION,

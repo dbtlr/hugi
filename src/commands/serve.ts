@@ -17,7 +17,7 @@ import type { GitHubReader } from '../github/client';
 import type { Fetch, PullRequestFacts } from '../github/pull-request';
 import { createStatusReporter } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
-import { hostEnv, requireHostTools, spawnWithTools } from '../service/host-tools';
+import { requireHostTools, SERVICE_HOST_TOOLS, spawnWithTools } from '../service/host-tools';
 import { acquireServeLock } from '../service/lock';
 import { runCoordinator } from '../service/loop';
 import type { CoordinatorLog } from '../service/loop';
@@ -47,10 +47,7 @@ import { createTartCli } from '../vm/tart-cli';
 const DESCRIPTION =
   'Run the coordinator: poll GitHub, run each lane that lacks a verdict, and post its status.';
 
-const DETAILS = `hugi serve runs in the foreground until it is stopped; \`hugi service install\` runs it as a launchd user agent. It refuses to start, saying what to fix, when another hugi serve holds the lock, the configuration is refused, github_app or its key is unusable, or tart or git is not on the search path (\`path\` in the configuration). It deletes every hugi-svc-* VM when it starts, runs one lane at a time, and writes its state for \`hugi service status\`. The README's "Running the coordinator" section has the rules.`;
-
-/** The tools the service runs on the host, which `path` must reach. */
-const HOST_TOOLS = ['tart', 'git'] as const;
+const DETAILS = `hugi serve runs in the foreground until it is stopped; \`hugi service install\` runs it as a launchd user agent. It refuses to start, saying what to fix, when another hugi serve holds the lock, the configuration is refused, github_app or its key is unusable, or tart or git is not on its PATH, which \`hugi service install\` copies from the shell that installs it. It deletes every hugi-svc-* VM when it starts, runs one lane at a time, and writes its state for \`hugi service status\`. The README's "Running the coordinator" section has the rules.`;
 
 /** A short random VM id: the `hugi-svc-` prefix plus 8 hex digits names the run's VM. */
 const newVmId = () => crypto.randomUUID().slice(0, 8);
@@ -115,12 +112,15 @@ export type ServeSetup = {
   readonly spawn: Host['spawn'];
 };
 
-/** Check the App key, and find tart and git once on the search path, for the rest of the run. */
+/** Check the App key, and find tart and git once on PATH, for the rest of the run. */
 async function checkSetup(ports: ServePorts, config: HugiConfig): Promise<ServeSetup> {
   const { host } = ports;
   await checkAppKey(config, host);
-  const env = hostEnv(config, host.env);
-  return { env, spawn: spawnWithTools(host.spawn, await requireHostTools(env, HOST_TOOLS), env) };
+  const env = { ...host.env };
+  return {
+    env,
+    spawn: spawnWithTools(host.spawn, requireHostTools(env, SERVICE_HOST_TOOLS), env),
+  };
 }
 
 /** How the service's git reads the cache and the network: each call bounded by its deadline. */

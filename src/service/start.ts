@@ -2,8 +2,8 @@
  * How `hugi serve` starts and runs (README, "Running the coordinator"): take the single-instance
  * lock, load the configuration and check the setup, record the start in the service state, delete
  * the `hugi-svc-*` VMs a crash left, then run the coordinator until it is stopped, keeping the
- * state current from its events. A refused start is recorded in the state, because launchd
- * discards an agent's output; a held lock is the exception, since the state then belongs
+ * state current from its events. A refused start is recorded in the state, where
+ * `hugi service status` shows it; a held lock is the exception, since the state then belongs
  * to the service that holds it. The refusal reaches the service log as the command's failure,
  * which Loom's logging plugin records, so it is not logged here as well. Every collaborator is
  * injected.

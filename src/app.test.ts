@@ -58,23 +58,15 @@ describe('the leftover VMs row of hugi service status', () => {
   let home: string;
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
-    for (const dir of ['configured', 'inherited']) {
-      // oxlint-disable-next-line no-await-in-loop -- two directories
-      await mkdir(join(home, dir));
-      // oxlint-disable-next-line no-await-in-loop -- two files
-      await writeFile(join(home, dir, 'tart'), '#!/bin/sh\n', { mode: 0o755 });
-    }
+    await mkdir(join(home, 'inherited'));
+    await writeFile(join(home, 'inherited', 'tart'), '#!/bin/sh\n', { mode: 0o755 });
   });
   afterEach(async () => {
     await rm(home, { force: true, recursive: true });
   });
 
   /** List the VMs as status does, recording how tart was started. */
-  async function listed(config: string | undefined) {
-    if (config !== undefined) {
-      await mkdir(join(home, '.config', 'hugi'), { recursive: true });
-      await writeFile(join(home, '.config', 'hugi', 'config.yaml'), config);
-    }
+  async function listed() {
     const started: { command: string; path: string | undefined }[] = [];
     const fake = new FakeSpawn(new FakeClock(), () => ({ output: '[{"Name":"hugi-svc-left"}]' }));
     const spawn: Host['spawn'] = (command, args, options) => {
@@ -86,18 +78,12 @@ describe('the leftover VMs row of hugi service status', () => {
     return { names, started };
   }
 
-  test("runs tart from the configuration's path", async () => {
-    const config = `repositories: [dbtlr/hugi]\nallowlist: []\npath: [${join(home, 'configured')}]\n`;
-    const { names, started } = await listed(config);
+  test('runs tart found on the PATH of the shell running status', async () => {
+    const { names, started } = await listed();
     expect(names).toEqual(['hugi-svc-left']);
     expect(started).toEqual([
-      { command: join(home, 'configured', 'tart'), path: join(home, 'configured') },
+      { command: join(home, 'inherited', 'tart'), path: join(home, 'inherited') },
     ]);
-  });
-
-  test('falls back to the inherited PATH when the configuration does not load', async () => {
-    const { started } = await listed(undefined);
-    expect(started.map((each) => each.command)).toEqual([join(home, 'inherited', 'tart')]);
   });
 });
 
