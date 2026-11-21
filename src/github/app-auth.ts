@@ -13,6 +13,7 @@ import type { Host } from '@loomcli/core';
 
 import { ConfigError, isRepositoryName } from '../config/schema';
 import type { GitHubAppConfig, HugiConfig } from '../config/schema';
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { hasAccessControlList, judgePrivacy } from '../source/private-path';
 import { isMapping } from '../yaml/strict';
@@ -57,6 +58,28 @@ export function requireGitHubApp(config: HugiConfig): GitHubAppConfig {
     );
   }
   return config.githubApp;
+}
+
+/**
+ * Throw a `ConfigError` saying what to fix unless the configuration names a GitHub App whose
+ * private key is a usable key file, as `createInstallationTokens` will read it. `hugi serve` checks
+ * this when it starts, so a bad key refuses the start instead of failing every post.
+ */
+export async function checkAppKey(
+  config: HugiConfig,
+  host: Pick<InstallationTokenOptions, 'home' | 'platform' | 'spawn' | 'uid'>,
+): Promise<void> {
+  const app = requireGitHubApp(config);
+  try {
+    await readPrivateKey(
+      expandHome(app.privateKeyPath, host.home),
+      host.uid,
+      host.spawn,
+      host.platform,
+    );
+  } catch (error) {
+    throw new ConfigError(`github_app.private_key_path: ${messageOf(error)}`);
+  }
 }
 
 /** `~/x` becomes `x` under `home`; any other path is returned as written. */
@@ -109,7 +132,7 @@ async function readPrivateKey(
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (error) {
-    if (isMapping(error) && error.code === 'ENOENT') {
+    if (errnoCode(error) === 'ENOENT') {
       throw new Error(
         `The GitHub App private key ${path} does not exist; set github_app.private_key_path to the key file.`,
         { cause: error },

@@ -27,6 +27,8 @@ export const TART_CLONE_DEADLINE_MS = 20 * 60_000;
 export const TART_SET_DEADLINE_MS = 30_000;
 /** `tart stop` forces the VM off after its own 10-second timeout; this leaves it a margin. */
 export const TART_STOP_DEADLINE_MS = 20_000;
+/** `tart list` reads a directory of small config files. */
+export const TART_LIST_DEADLINE_MS = 30_000;
 /** `tart delete` removes a stopped VM's files, which takes seconds. */
 export const TART_DELETE_DEADLINE_MS = 20_000;
 /**

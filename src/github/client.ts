@@ -26,11 +26,16 @@ export class GitHubReadError extends Error {
   readonly repository: string;
   /** The method and path read, such as `GET /repos/owner/name/pulls`. */
   readonly endpoint: string;
+  /** The HTTP status GitHub answered, when it answered one. */
+  readonly status?: number;
 
-  constructor(repository: string, endpoint: string, message: string) {
+  constructor(repository: string, endpoint: string, message: string, status?: number) {
     super(message);
     this.repository = repository;
     this.endpoint = endpoint;
+    if (status !== undefined) {
+      this.status = status;
+    }
   }
 }
 
@@ -128,8 +133,8 @@ class Endpoint {
     this.#name = `GET ${path}`;
   }
 
-  fail(message: string): GitHubReadError {
-    return new GitHubReadError(this.#repository, this.#name, message);
+  fail(message: string, status?: number): GitHubReadError {
+    return new GitHubReadError(this.#repository, this.#name, message, status);
   }
 
   malformed(detail: string): GitHubReadError {
@@ -175,14 +180,16 @@ class Endpoint {
       const wait = /^\d+$/u.test(retryAfter) ? `, retry after ${retryAfter} s` : '';
       return this.fail(
         `GitHub's secondary rate limit refused Hugi's GitHub installation token (status ${status}${wait}) at ${this.#name}; the repository is read again at a later poll.`,
+        status,
       );
     }
     if (status === 429 || (status === 403 && remaining === '0')) {
       return this.fail(
         `The rate limit of Hugi's GitHub installation token is used up (status ${status}) at ${this.#name}; the repository is read again at a later poll.`,
+        status,
       );
     }
-    return this.fail(`GitHub's API answered ${status} for ${this.#name}.`);
+    return this.fail(`GitHub's API answered ${status} for ${this.#name}.`, status);
   }
 
   /** Read one page at `url`; a timeout covers the answer and its body. */

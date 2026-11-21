@@ -11,6 +11,7 @@ import type { Host } from '@loomcli/core';
 import { ConfigError, validateConfig } from '../config/schema';
 import { messageOf } from '../errors';
 import {
+  checkAppKey,
   createInstallationTokens,
   expandHome,
   GitHubAppError,
@@ -431,6 +432,13 @@ describe('the private key file', () => {
   });
 });
 
+const appConfig = (path: string) =>
+  validateConfig({
+    allowlist: [],
+    github_app: { app_id: APP_ID, private_key_path: path },
+    repositories: [REPO],
+  });
+
 describe('the App configuration', () => {
   test('is required for posting, and its absence says how to add it', () => {
     const config = validateConfig({ allowlist: [], repositories: [REPO] });
@@ -446,6 +454,18 @@ describe('the App configuration', () => {
       repositories: [REPO],
     });
     expect(requireGitHubApp(config)).toEqual({ appId: 5, privateKeyPath: '/k.pem' });
+  });
+
+  test('the startup check accepts a usable key and refuses a missing one as a ConfigError', async () => {
+    const host = { home: dir, platform: 'linux', spawn: realSpawn, uid: process.getuid?.() };
+    expect(await checkAppKey(appConfig(keyPath), host)).toBeUndefined();
+    const missing = await checkAppKey(appConfig(join(dir, 'missing.pem')), host).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(missing).toBeInstanceOf(ConfigError);
+    expect(messageOf(missing)).toContain('github_app.private_key_path');
+    expect(messageOf(missing)).toContain('does not exist');
   });
 
   test('a home-relative key path resolves under home', () => {

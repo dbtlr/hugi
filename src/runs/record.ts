@@ -1,16 +1,18 @@
 /**
  * A run's record: `run.json` in the run's directory, beside its step logs. `hugi run` writes it as
- * `running` when the directory is created and rewrites it as `finished` when the run ends; the later
- * service will use the same writer. The run id is the run directory's name, so a record never has
+ * `running` when the directory is created and rewrites it as `finished` when the run ends; the service's
+ * runs use the same writer. The run id is the run directory's name, so a record never has
  * to be looked up by anything else.
  */
-import { randomBytes } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
+import { writeFileAtomically } from '../atomic-write';
+import type { AtomicWriteFiles } from '../atomic-write';
 import { messageOf } from '../errors';
 import { laneStatusName } from '../github/status-name';
 import type { LaneRef } from '../lane/step-plan';
+import { isMapping } from '../yaml/strict';
 
 /** The record's file name inside a run directory. */
 export const RECORD_FILE = 'run.json';
@@ -88,36 +90,17 @@ export function logNameOf(logFile: string | undefined): string | undefined {
   return logFile === undefined ? undefined : basename(logFile);
 }
 
-/** The file operations `writeRunRecord` uses; the seam a test replaces to watch the order of them. */
-export type RecordFiles = {
-  readonly writeFile: (path: string, text: string, options: { mode: number }) => Promise<void>;
-  readonly rename: (from: string, to: string) => Promise<void>;
-  readonly rm: (path: string, options: { force: true }) => Promise<void>;
-};
-
-const REAL_FILES: RecordFiles = { rename, rm, writeFile };
-
-/**
- * Write the record into `runDir` atomically: a temporary file in the same directory, then a
- * rename, so a reader sees the old record or the whole new one and never half of one. Writers
- * running at the same time use different temporary names.
- */
+/** Write the record into `runDir` atomically (`writeFileAtomically`), so a reader never sees half of one. */
 export async function writeRunRecord(
   runDir: string,
   record: RunRecord,
-  files: RecordFiles = REAL_FILES,
+  files?: AtomicWriteFiles,
 ): Promise<void> {
-  const final = join(runDir, RECORD_FILE);
-  const temporary = join(runDir, `.${RECORD_FILE}.${randomBytes(4).toString('hex')}.tmp`);
-  try {
-    await files.writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    await files.rename(temporary, final);
-  } catch (error) {
-    await files.rm(temporary, { force: true });
-    throw error;
-  }
+  await writeFileAtomically(
+    join(runDir, RECORD_FILE),
+    `${JSON.stringify(record, null, 2)}\n`,
+    files,
+  );
 }
 
 const VERDICTS = new Set(['pass', 'fail', 'none']);
@@ -128,9 +111,6 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
 /** A step log's file name, as `stepLogName` writes it: `NN-<slug>.log`, never a path. */
 const STEP_LOG_NAME = /^\d{2,}-[a-z0-9]+(?:-[a-z0-9]+)*\.log$/u;
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isString = (value: unknown): value is string => typeof value === 'string';
 
@@ -145,7 +125,7 @@ export function isIsoTimestamp(value: unknown): value is string {
 }
 
 function isStep(value: unknown): value is RecordedStep {
-  if (!isObject(value)) {
+  if (!isMapping(value)) {
     return false;
   }
   const { continuedOnError, index, log, name, outcome } = value;
@@ -161,24 +141,24 @@ function isStep(value: unknown): value is RecordedStep {
 
 function isLane(value: unknown): value is RecordBase['lane'] {
   return (
-    isObject(value) &&
+    isMapping(value) &&
     isString(value.workflow) &&
     isString(value.job) &&
     isString(value.statusName) &&
-    isObject(value.matrix)
+    isMapping(value.matrix)
   );
 }
 
 function isCommit(value: unknown): value is RecordBase['commit'] {
   return (
-    isObject(value) &&
+    isMapping(value) &&
     isString(value.head) &&
     value.head !== '' &&
     (value.merge === undefined || isString(value.merge))
   );
 }
 
-function isBase(record: Record<string, unknown>): boolean {
+function isBase(record: Readonly<Record<string, unknown>>): boolean {
   return (
     record.version === 1 &&
     isString(record.runId) &&
@@ -191,7 +171,7 @@ function isBase(record: Record<string, unknown>): boolean {
   );
 }
 
-function isFinishedPart(record: Record<string, unknown>): boolean {
+function isFinishedPart(record: Readonly<Record<string, unknown>>): boolean {
   return (
     isIsoTimestamp(record.endedAt) &&
     isString(record.verdict) &&
@@ -204,7 +184,7 @@ function isFinishedPart(record: Record<string, unknown>): boolean {
 }
 
 function isRecord(value: unknown): value is RunRecord {
-  if (!isObject(value) || !isBase(value)) {
+  if (!isMapping(value) || !isBase(value)) {
     return false;
   }
   return value.state === 'running' || (value.state === 'finished' && isFinishedPart(value));

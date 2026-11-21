@@ -1,15 +1,31 @@
 /** The Loom Application for the `hugi` CLI. */
 import { Application } from '@loomcli/core';
-import type { View } from '@loomcli/core';
+import type { Host, View } from '@loomcli/core';
 import { format } from '@loomcli/plugins/format';
 import { help } from '@loomcli/plugins/help';
+import { logging } from '@loomcli/plugins/logging';
+import { service } from '@loomcli/plugins/service';
+import type { ProbeContext } from '@loomcli/plugins/service';
 
 import { configCommand } from './commands/config';
 import type { ConfigCommandOverrides } from './commands/config';
-import { logsCommand } from './commands/logs';
+import { logsCommand, serviceLogPath } from './commands/logs';
 import { runCommand } from './commands/run';
 import type { RunCommandOverrides } from './commands/run';
+import { serveCommand } from './commands/serve';
+import { loadConfig } from './config/load';
+import { configuredHostEnv, requireHostTools, spawnWithTools } from './service/host-tools';
+import { serveLockHolder } from './service/lock';
+import { createProbe } from './service/probe';
+import type { ProbeDeps } from './service/probe';
+import { readServiceState } from './service/state';
+import {
+  resolveConfigPath,
+  resolveServeLockPath,
+  resolveServiceStateDir,
+} from './source/locations';
 import { VERSION } from './version';
+import { createTartCli } from './vm/tart-cli';
 
 /** What the bare `hugi` prints; `--version` replaces it with the version. */
 const USAGE = 'Run "hugi --help" to see the usage.';
@@ -28,10 +44,43 @@ const textView: View<{ text: string }> = { render: (data) => `${data.text}\n` };
  */
 export const SHUTDOWN_BUDGET_MS = 180_000;
 
+/** The launchd label of the agent `hugi service install` writes. */
+export const SERVICE_LABEL = 'com.dbtlr.hugi';
+
+/** The host facts `hugi service status` reads its rows with. */
+export type StatusHost = Pick<Host, 'env' | 'home' | 'platform' | 'spawn'>;
+
+/**
+ * Where the rows `hugi service status` adds come from: the state `hugi serve` writes, the lock,
+ * and tart, found as the service finds it (`configuredHostEnv`).
+ */
+export function statusProbeDeps(host: StatusHost): ProbeDeps {
+  return {
+    listVms: async () => {
+      const env = await configuredHostEnv(host.env, () =>
+        loadConfig(resolveConfigPath(undefined, host.env, host.home)),
+      );
+      const tools = await requireHostTools(env, ['tart']);
+      return createTartCli(spawnWithTools(host.spawn, tools, env)).list();
+    },
+    lockHolder: () => serveLockHolder(resolveServeLockPath(host.home), host.platform),
+    logPath: serviceLogPath(host.env, host.home, host.platform),
+    now: () => new Date(),
+    readState: () => readServiceState(resolveServiceStateDir(host.env, host.home)),
+  };
+}
+
+const statusRows = (context: ProbeContext) => createProbe(statusProbeDeps(context.host))(context);
+
 export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOverrides = {}) {
   return new Application('hugi', {
     description: 'Run macOS CI lanes in throwaway VMs and report the verdicts to GitHub.',
-    plugins: [format(), help()],
+    plugins: [
+      format(),
+      help(),
+      logging({ to: 'file' }),
+      service({ label: SERVICE_LABEL, probe: statusRows, run: ['serve'] }),
+    ],
     shutdown: { timeout: SHUTDOWN_BUDGET_MS },
     version: VERSION,
   })
@@ -39,6 +88,7 @@ export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOv
     .result<{ text: string }>({ views: { text: textView } })
     .views({ text: textView }, { default: 'text' })
     .command(runCommand(run))
+    .command(serveCommand())
     .command(logsCommand())
     .command(configCommand(config))
     .action(async ({ options, out }) => {

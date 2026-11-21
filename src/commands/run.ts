@@ -17,7 +17,7 @@ import {
 import { parseRepository, RepositorySpecError } from '../source/repository-spec';
 import type { RepositorySpec } from '../source/repository-spec';
 import type { ActionResolution } from '../toolchain/resolver';
-import { createTartCli, runInVm, systemClock } from '../vm';
+import { createTartCli, GOLDEN_IMAGE, runInVm, systemClock } from '../vm';
 import {
   parseLaneArgument,
   parseMatrix,
@@ -155,7 +155,7 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
       type: 'string',
     })
     .option('image', {
-      default: 'hugi-golden',
+      default: GOLDEN_IMAGE,
       description: 'The tart image to clone for the run.',
       type: 'string',
     })

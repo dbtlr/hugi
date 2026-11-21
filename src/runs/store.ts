@@ -2,6 +2,7 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { RECORD_FILE, readRunRecord, RunRecordError } from './record';
 import type { RunRecord } from './record';
@@ -51,7 +52,7 @@ export async function inspectRunDirectory(dir: string, id: string): Promise<RunC
   try {
     info = await lstat(path);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+    if (errnoCode(error) === 'ENOENT') {
       return { kind: 'missing' };
     }
     return {

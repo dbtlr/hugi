@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,7 @@ import { mockProcess } from '@loomcli/testing';
 import { createApp } from '../app';
 import { writeRunRecord } from '../runs/record';
 import { sampleRecord, sampleRunningRecord } from '../runs/testing';
+import { readTailLines, serviceLogPath, TAIL_CHUNK_BYTES, TAIL_MAX_BYTES } from './logs';
 
 const ID = '2026-11-19T100000Z-aaaaaaaaa-abc123';
 
@@ -219,4 +220,215 @@ test('a step log that is not a regular file is not read', async () => {
   await mkdir(join(runsDir, ID, '01-build.log'));
   const { stdout } = await hugi(ID);
   expect(stdout).toContain('not a regular file');
+});
+
+// `hugi logs --service`: the service log, under a home of its own.
+let serviceHome: string;
+let serviceLog: string;
+beforeEach(async () => {
+  serviceHome = await mkdtemp(join(tmpdir(), 'hugi-service-logs-'));
+  serviceLog = join(serviceHome, 'Library', 'Logs', 'hugi', 'hugi.jsonl');
+  await mkdir(join(serviceHome, 'Library', 'Logs', 'hugi'), { recursive: true });
+});
+afterEach(async () => {
+  await rm(serviceHome, { force: true, recursive: true });
+});
+
+async function hugiService(...argv: string[]) {
+  const mock = mockProcess({
+    argv: ['logs', ...argv],
+    env: { HOME: serviceHome },
+    home: serviceHome,
+    platform: 'darwin',
+    stdin: '',
+  });
+  const exitCode = await createApp().run({ process: mock });
+  return { exitCode, stderr: mock.stderr.text, stdout: mock.stdout.text };
+}
+
+const serviceRecord = (index: number, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    level: 'info',
+    message: `event ${index}`,
+    time: `2026-11-19T10:00:${String(index % 60).padStart(2, '0')}.000Z`,
+    ...extra,
+  });
+
+const writeServiceLog = (lines: readonly string[]) =>
+  writeFile(serviceLog, `${lines.join('\n')}\n`);
+
+test('the service log path follows the platform, from Loom’s directory rules', () => {
+  expect(serviceLogPath({}, '/Users/u', 'darwin')).toBe('/Users/u/Library/Logs/hugi/hugi.jsonl');
+  expect(serviceLogPath({ XDG_STATE_HOME: '/state' }, '/home/u', 'linux')).toBe(
+    '/state/hugi/hugi.jsonl',
+  );
+});
+
+test('prints the last 50 records as time, level and message, one line each', async () => {
+  await writeServiceLog(Array.from({ length: 60 }, (_, index) => serviceRecord(index)));
+  const { exitCode, stdout } = await hugiService('--service');
+  expect(exitCode).toBe(0);
+  const lines = stdout.trimEnd().split('\n');
+  expect(lines).toHaveLength(50);
+  expect(lines[0]).toBe('2026-11-19T10:00:10.000Z info event 10');
+  expect(lines.at(-1)).toBe('2026-11-19T10:00:59.000Z info event 59');
+});
+
+test('--lines picks the count', async () => {
+  await writeServiceLog(Array.from({ length: 10 }, (_, index) => serviceRecord(index)));
+  const { stdout } = await hugiService('--service', '--lines', '3');
+  expect(stdout.trimEnd().split('\n')).toHaveLength(3);
+  expect(stdout).toContain('event 9');
+  expect(stdout).not.toContain('event 6');
+});
+
+test('other fields follow the message, compactly', async () => {
+  await writeServiceLog([
+    serviceRecord(1, {
+      fields: { note: 'two words', repository: 'dbtlr/hugi', waiting: 2 },
+      run: 'abc',
+    }),
+  ]);
+  const { stdout } = await hugiService('--service');
+  expect(stdout.trimEnd()).toBe(
+    '2026-11-19T10:00:01.000Z info event 1 note="two words" repository=dbtlr/hugi waiting=2 run=abc',
+  );
+});
+
+test('a line that is not JSON prints raw, and a JSON value that is not a record does too', async () => {
+  await writeServiceLog([serviceRecord(1), 'half a li', '42']);
+  const { stdout } = await hugiService('--service');
+  expect(stdout.trimEnd().split('\n')).toEqual([
+    '2026-11-19T10:00:01.000Z info event 1',
+    'half a li',
+    '42',
+  ]);
+});
+
+test('--format json prints an array of the records, with raw lines as {raw}', async () => {
+  await writeServiceLog([serviceRecord(1), 'half a li']);
+  const { exitCode, stdout } = await hugiService('--service', '--format', 'json');
+  expect(exitCode).toBe(0);
+  expect(JSON.parse(stdout)).toEqual([JSON.parse(serviceRecord(1)), { raw: 'half a li' }]);
+});
+
+test('a missing log fails with exit 1 naming the path', async () => {
+  const { exitCode, stderr } = await hugiService('--service');
+  expect(exitCode).toBe(1);
+  expect(stderr).toContain(`No service log exists yet at ${serviceLog}`);
+});
+
+test('an empty log prints nothing and succeeds', async () => {
+  await writeFile(serviceLog, '');
+  const { exitCode, stdout } = await hugiService('--service');
+  expect(exitCode).toBe(0);
+  expect(stdout).toBe('');
+});
+
+test('only the tail of a large log is read, and a partial first line is dropped', async () => {
+  const line = serviceRecord(1, { fields: { pad: 'x'.repeat(900) } });
+  await writeServiceLog(Array.from({ length: 3000 }, () => line));
+  await writeFile(serviceLog, `${await Bun.file(serviceLog).text()}${serviceRecord(7)}\n`);
+  const { stdout } = await hugiService('--service', '--lines', '2');
+  const lines = stdout.trimEnd().split('\n');
+  expect(lines).toHaveLength(2);
+  expect(lines[1]).toBe('2026-11-19T10:00:07.000Z info event 7');
+  expect(lines[0]).toStartWith('2026-11-19T10:00:01.000Z info event 1 pad=');
+});
+
+test('the reader stops at its bound from the end, leaving out a record that begins before it', async () => {
+  // A few long records: the 50 lines asked for lie far beyond the bound.
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(TAIL_MAX_BYTES + 1024 * 1024) } });
+  await writeServiceLog([long, long, serviceRecord(7)]);
+  expect(await readTailLines(serviceLog, 50)).toEqual([serviceRecord(7)]);
+});
+
+/** An opener that counts the bytes the tail reader reads through it. */
+function countingOpener() {
+  const counted = { bytesRead: 0 };
+  const openFile = async (path: string) => {
+    const handle = await open(path, 'r');
+    return {
+      close: () => handle.close(),
+      read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const read = await handle.read(buffer, offset, length, position);
+        counted.bytesRead += read.bytesRead;
+        return read;
+      },
+      stat: () => handle.stat(),
+    };
+  };
+  return { counted, openFile };
+}
+
+test('the reader reads no more than its bound, whatever the file holds', async () => {
+  const long = serviceRecord(1, { fields: { pad: 'x'.repeat(TAIL_MAX_BYTES + 1024 * 1024) } });
+  await writeServiceLog([long, serviceRecord(7)]);
+  const { counted, openFile } = countingOpener();
+  await readTailLines(serviceLog, 50, openFile);
+  expect(counted.bytesRead).toBeGreaterThan(0);
+  expect(counted.bytesRead).toBeLessThanOrEqual(TAIL_MAX_BYTES);
+});
+
+test('a read shorter than asked keeps only the bytes read, never zero-filled bytes', async () => {
+  // The file shrank after stat: it reports 64 bytes but holds 8.
+  const content = Buffer.from('one\ntwo\n');
+  const openFile = async () => ({
+    close: async () => {},
+    read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+      const piece = content.subarray(position, position + length);
+      piece.copy(buffer, offset);
+      return { bytesRead: piece.length };
+    },
+    stat: async () => ({ size: 64 }),
+  });
+  expect(await readTailLines('ignored', 5, openFile)).toEqual(['one', 'two']);
+});
+
+test('the reader stops at the chunk that holds the lines asked for', async () => {
+  // 2 MiB of short records: the last chunk alone holds the five asked for.
+  const records = Array.from({ length: 30_000 }, (_, index) => `${'r'.repeat(64)} ${index}`);
+  await writeFile(serviceLog, `${records.join('\n')}\n`);
+  const { counted, openFile } = countingOpener();
+  expect(await readTailLines(serviceLog, 5, openFile)).toEqual(records.slice(-5));
+  expect(counted.bytesRead).toBe(TAIL_CHUNK_BYTES);
+});
+
+test('a chunk that ends with exactly the newlines asked for is followed by one more', async () => {
+  // Three lines of 0.6 chunks: the last chunk begins inside the second line and holds two newlines.
+  const length = Math.floor(TAIL_CHUNK_BYTES * 0.6);
+  const [first, second, third] = ['a'.repeat(length), 'b'.repeat(length), 'c'.repeat(length)];
+  await writeFile(serviceLog, `${first}\n${second}\n${third}\n`);
+  expect(await readTailLines(serviceLog, 2)).toEqual([second, third]);
+});
+
+test('a multi-byte character the chunk boundary falls inside is decoded whole', async () => {
+  // The last chunk begins after the first of the check mark's three bytes.
+  const line = `\u2713${'c'.repeat(TAIL_CHUNK_BYTES - 3)}`;
+  await writeFile(serviceLog, `a\n${line}\n`);
+  expect(Buffer.byteLength(`a\n${line}\n`) - TAIL_CHUNK_BYTES).toBe(3);
+  expect(await readTailLines(serviceLog, 1)).toEqual([line]);
+});
+
+test('a multi-byte character is not split at a chunk boundary', async () => {
+  await writeServiceLog(
+    Array.from({ length: 4000 }, () => serviceRecord(1, { message: 'héllo ✓ 日本' })),
+  );
+  const { stdout } = await hugiService('--service', '--lines', '1000');
+  expect(stdout).not.toContain('�');
+});
+
+test.each([
+  ['no run and no --service', [], 'logs <run>'],
+  ['a run with --service', ['some-run', '--service'], '--service'],
+  ['--lines without --service', ['some-run', '--lines', '5'], '--lines'],
+  ['--all with --service', ['--service', '--all'], '--all'],
+  ['--lines of 0', ['--service', '--lines', '0'], '1 to 10000'],
+  ['--lines of 10001', ['--service', '--lines', '10001'], '1 to 10000'],
+  ['--lines that is not a number', ['--service', '--lines', 'many'], '1 to 10000'],
+  ['--lines that is fractional', ['--service', '--lines', '2.5'], '1 to 10000'],
+])('%s is a usage error with exit 2', async (_name, argv, message) => {
+  const { exitCode, stderr } = await hugiService(...argv);
+  expect(exitCode).toBe(2);
+  expect(stderr).toContain(message);
 });

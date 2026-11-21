@@ -8,6 +8,9 @@
  */
 import type { EventContext, StepPlan } from '../lane/step-plan';
 
+/** The tart image a run clones unless told otherwise, by `hugi run` and by the service. */
+export const GOLDEN_IMAGE = 'hugi-golden';
+
 /** Where the guest gets the source. Neither form carries a credential (ADR-0002). */
 export type SourceLocation =
   /** A public repository, fetched inside the guest over HTTPS. */

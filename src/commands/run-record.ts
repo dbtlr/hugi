@@ -9,6 +9,7 @@ import { basename } from 'node:path';
 import { loadConfig } from '../config/load';
 import { DEFAULTS } from '../config/schema';
 import type { HugiConfig } from '../config/schema';
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
 import { logNameOf, recordedLane, writeRunRecord } from '../runs/record';
 import type { FinishedRecord, RunRecord, RunningRecord } from '../runs/record';
@@ -116,7 +117,7 @@ async function missing(path: string): Promise<boolean> {
     await access(path);
     return false;
   } catch (error) {
-    return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+    return errnoCode(error) === 'ENOENT';
   }
 }
 

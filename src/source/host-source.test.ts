@@ -7,6 +7,7 @@ import { processHandle } from '@loomcli/core';
 
 import { messageOf } from '../errors';
 import type { PullRequestFacts } from '../github/pull-request';
+import { FakeClock, FakeSpawn } from '../vm/fake-tart';
 import {
   AmbiguousRefError,
   NoCurrentMergeError,
@@ -109,6 +110,40 @@ afterAll(async () => {
 
 const open = (commit: string) =>
   openHostSource({ kind: 'local', path: repo }, commit, hostOptions(join(root, 'cache')));
+
+function optionsWithHungGit(matches: (args: readonly string[]) => boolean): HostSourceOptions {
+  const host = hostOptions(join(root, 'cache'));
+  const hung = new FakeSpawn(new FakeClock(), () => ({ hangs: true }));
+  return {
+    ...host,
+    deadlineMs: 250,
+    spawn: (command, args, options) =>
+      matches(args) ? hung.spawn(command, args, options) : host.spawn(command, args, options),
+  };
+}
+
+test('the host source applies its deadline to repository reads', async () => {
+  const options = optionsWithHungGit((args) => args.includes('--absolute-git-dir'));
+  const failure = await failureOf(openHostSource({ kind: 'local', path: repo }, 'main', options));
+  expect(failure).toBeInstanceOf(SourceError);
+  expect(failure).toMatchObject({
+    message: expect.stringContaining('git timed out after 0.25 seconds'),
+  });
+}, 1500);
+
+test.each(['init', 'fetch'])(
+  'the host source applies its deadline to snapshot %s',
+  async (command) => {
+    const options = optionsWithHungGit((args) => args.includes(command));
+    const source = await openHostSource({ kind: 'local', path: repo }, 'main', options);
+    const failure = await failureOf(source.guestSource());
+    expect(failure).toBeInstanceOf(SourceError);
+    expect(failure).toMatchObject({
+      message: expect.stringMatching(/git timed out after 0\.25 seconds/u),
+    });
+  },
+  1500,
+);
 
 test('a branch resolves to the full sha of its tip', async () => {
   expect((await open('main')).sha).toBe(second);

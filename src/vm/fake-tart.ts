@@ -151,6 +151,10 @@ export type FakeGuest = {
   probeFailures?: number;
   vmExitsOnBoot?: number;
   steps: Record<number, StepBehavior>;
+  /** Local VMs that exist before the test starts; clones and deletes change the set. */
+  vms?: string[];
+  /** `list` throws with this message. */
+  listError?: string;
   cloneError?: string;
   deleteErrors?: number;
   wedged?: Wedged;
@@ -182,12 +186,14 @@ export class FakeTart implements Tart {
   private readonly killed = new Set<string>();
   private deleteFailures: number;
   private deleteCalls = 0;
+  private readonly vms: Set<string>;
 
   constructor(
     private readonly clock: FakeClock,
     readonly guest: FakeGuest = { steps: {} },
   ) {
     this.deleteFailures = guest.deleteErrors ?? 0;
+    this.vms = new Set(guest.vms);
   }
 
   async clone(image: string, vm: string, _options?: CallOptions): Promise<void> {
@@ -195,6 +201,15 @@ export class FakeTart implements Tart {
     if (this.guest.cloneError) {
       throw new Error(this.guest.cloneError);
     }
+    this.vms.add(vm);
+  }
+
+  async list(): Promise<string[]> {
+    this.events.push('list');
+    if (this.guest.listError) {
+      throw new Error(this.guest.listError);
+    }
+    return [...this.vms];
   }
 
   async setResources(
@@ -400,6 +415,7 @@ export class FakeTart implements Tart {
       this.deleteFailures -= 1;
       throw new Error('vm is busy');
     }
+    this.vms.delete(vm);
   }
 
   /** The stdin of the launcher that ran step `index`. */

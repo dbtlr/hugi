@@ -1,8 +1,8 @@
 /**
- * Teardown: stop the VM if it was started, then delete it, so no run leaves a `hugi-run-*` VM
- * behind (ADR-0003). It has a fixed time budget and always reaches `tart delete`: stopping may use
+ * Teardown: stop the VM if it was started, then delete it (ADR-0003). Deletion is best effort: a
+ * `hugi-run-*` (or `hugi-svc-*`) VM can outlive a delete that fails, and that is reported as a typed
+ * `leaked` outcome naming the VM. It has a fixed time budget and always reaches `tart delete`: stopping may use
  * only the part of the budget before the delete's reserve, so a hung stop cannot starve the delete.
- * A delete that still fails is reported as a typed `leaked` outcome naming the VM.
  */
 import { resolvesWithin, withDeadline } from './deadline';
 import type { Clock, Tart, VmProcess } from './tart';
