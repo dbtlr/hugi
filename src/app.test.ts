@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,8 +7,7 @@ import type { Host } from '@loomcli/core';
 import { mockProcess } from '@loomcli/testing';
 
 import pkg from '../package.json' with { type: 'json' };
-import { createApp, SERVICE_SETTINGS, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
-import { HostToolsError } from './service/host-tools';
+import { createApp, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
 import { acquireServeLock } from './service/lock';
 import { createProbe } from './service/probe';
 import { writeServiceState } from './service/state';
@@ -55,37 +54,69 @@ test('the teardown budget holds a full stop and two full delete attempts, escala
   expect(twoDeletes).toBeLessThanOrEqual(DELETE_RESERVE_MS);
 });
 
-/** The service settings' environment for an install run with this `PATH`. */
-const environmentFor = (PATH: string) => SERVICE_SETTINGS.environment({ env: { PATH } });
+/** The string or integer the plist gives `key`, or undefined when it has none. */
+function plistValue(plist: string, key: string): string | undefined {
+  return new RegExp(`<key>${key}</key>\\s*<(?:string|integer)>([^<]*)<`, 'u').exec(plist)?.[1];
+}
 
 describe('the launchd unit hugi service install writes (README, Installing the service)', () => {
+  let home: string;
   let bin: string;
   beforeEach(async () => {
-    bin = await mkdtemp(join(tmpdir(), 'hugi-unit-'));
+    home = await mkdtemp(join(tmpdir(), 'hugi-unit-'));
+    bin = join(home, 'bin');
+    await mkdir(bin);
     for (const tool of ['tart', 'git']) {
       // oxlint-disable-next-line no-await-in-loop -- two files
       await writeFile(join(bin, tool), '#!/bin/sh\n', { mode: 0o755 });
     }
   });
   afterEach(async () => {
-    await rm(bin, { force: true, recursive: true });
+    await rm(home, { force: true, recursive: true });
   });
 
-  test('runs hugi serve as com.dbtlr.hugi, its output in serve.log, stopped within 60 seconds', () => {
-    expect(SERVICE_SETTINGS).toMatchObject({
-      label: 'com.dbtlr.hugi',
-      output: 'Library/Logs/hugi/serve.log',
-      run: ['serve'],
-      stopTimeout: 60_000,
+  /** Run a built `hugi service install` with this `PATH`; launchctl answers as for a new agent. */
+  async function install(PATH: string) {
+    const launchctl: string[] = [];
+    const mock = mockProcess({
+      argv: ['service', 'install'],
+      env: { HOME: home, PATH },
+      platform: 'darwin',
+      programs: {
+        launchctl: ({ args }) => {
+          launchctl.push(args.join(' '));
+          return { code: args[0] === 'print' ? 113 : 0 };
+        },
+      },
+      release: { build: 'distributed' },
+      stdin: '',
     });
+    const exitCode = await createApp().run({ process: mock });
+    const plist = await readFile(
+      join(home, 'Library', 'LaunchAgents', 'com.dbtlr.hugi.plist'),
+      'utf8',
+    ).catch(() => undefined);
+    return { exitCode, launchctl, plist, stderr: mock.stderr.text };
+  }
+
+  test('runs hugi serve with the absolute PATH directories, its output in serve.log, a 60 s stop', async () => {
+    const { exitCode, plist = '' } = await install(`relative/bin:${bin}::/usr/bin`);
+    expect(exitCode).toBe(0);
+    expect(plistValue(plist, 'Label')).toBe('com.dbtlr.hugi');
+    expect(plist).toContain('<string>serve</string>\n  </array>');
+    expect(plistValue(plist, 'PATH')).toBe(`${bin}:/usr/bin`);
+    const output = join(home, 'Library', 'Logs', 'hugi', 'serve.log');
+    expect(plistValue(plist, 'StandardOutPath')).toBe(output);
+    expect(plistValue(plist, 'StandardErrorPath')).toBe(output);
+    expect(plistValue(plist, 'ExitTimeOut')).toBe('60');
   });
 
-  test("carries the installing shell's PATH when it finds tart and git", () => {
-    expect(environmentFor(`${bin}:/usr/bin`)).toEqual({ PATH: `${bin}:/usr/bin` });
-  });
-
-  test('refuses the install when the installing PATH does not find tart', () => {
-    expect(() => environmentFor('/nonexistent-hugi-bin')).toThrow(HostToolsError);
+  test('refuses, writing no unit and starting nothing, when the PATH does not find tart', async () => {
+    const { exitCode, launchctl, plist, stderr } = await install('/usr/bin:/bin');
+    expect(exitCode).toBe(1);
+    expect(plist).toBeUndefined();
+    expect(launchctl).toEqual([]);
+    expect(stderr).toContain('Run hugi service install from a shell whose PATH finds them');
   });
 });
 

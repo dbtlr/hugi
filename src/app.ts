@@ -74,7 +74,7 @@ export function statusProbeDeps(host: StatusHost): ProbeDeps {
 const statusRows = (context: ProbeContext) => createProbe(statusProbeDeps(context.host))(context);
 
 /** The launchd agent `hugi service install` writes (README, "Installing the service"). */
-export const SERVICE_SETTINGS = {
+const SERVICE_SETTINGS = {
   environment: ({ env }: Pick<Host, 'env'>) => serviceEnvironment(env),
   label: SERVICE_LABEL,
   output: SERVICE_OUTPUT,

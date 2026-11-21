@@ -482,7 +482,8 @@ export class FakeSpawn {
       if (call.endedAt !== undefined) {
         return;
       }
-      if (behavior.output) {
+      // An abandoned child's pipes are released, so its later output reaches no one.
+      if (behavior.output && call.abandoned === undefined) {
         sink?.write(behavior.output);
       }
       call.endedAt = this.clock.now();
