@@ -40,6 +40,7 @@ test('a hung git call that ignores SIGTERM is killed after the grace period', as
   await settle();
   expect(fake.calls[0]?.signals).toEqual(['SIGTERM', 'SIGKILL']);
   expect(await call).toMatchObject({ ok: false, stderr: 'git timed out after 10 seconds.' });
+  expect(fake.calls[0]?.abandoned).toBeUndefined();
 });
 
 test('a git call resolves after SIGKILL even if Loom has not reported its exit', async () => {
