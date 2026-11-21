@@ -8,32 +8,15 @@ import type { Host } from '@loomcli/core';
 
 import {
   findExecutable,
-  hostEnv,
   HostToolsError,
   requireHostTools,
+  serviceEnvironment,
   spawnWithTools,
 } from './host-tools';
 
-test('hostEnv replaces PATH with the configured directories in order', () => {
-  const inherited = { HOME: '/home/hugi', PATH: '/old/bin' };
-  expect(hostEnv({ path: ['/opt/homebrew/bin', '/usr/bin'] }, inherited)).toEqual({
-    HOME: '/home/hugi',
-    PATH: '/opt/homebrew/bin:/usr/bin',
-  });
-  expect(inherited.PATH).toBe('/old/bin');
-});
-
-test('hostEnv copies the inherited environment when path is absent', () => {
-  const inherited = { HOME: '/home/hugi', PATH: '/usr/bin:/bin' };
-  const env = hostEnv({}, inherited);
-  expect(env).toEqual(inherited);
-  expect(env).not.toBe(inherited);
-  expect(hostEnv({}, { HOME: '/home/hugi' })).toEqual({ HOME: '/home/hugi' });
-});
-
 test('findExecutable returns the first executable and stops searching', async () => {
   const visited: string[] = [];
-  const match = await findExecutable('git', '/missing:/first:/later', (candidate) => {
+  const match = findExecutable('git', '/missing:/first:/later', (candidate) => {
     visited.push(candidate);
     return candidate !== '/missing/git';
   });
@@ -42,18 +25,18 @@ test('findExecutable returns the first executable and stops searching', async ()
 });
 
 test('findExecutable returns undefined when PATH has no match or is unset', async () => {
-  expect(await findExecutable('git', '/nowhere:/also-nowhere', () => false)).toBeUndefined();
-  expect(await findExecutable('git', undefined, () => true)).toBeUndefined();
+  expect(findExecutable('git', '/nowhere:/also-nowhere', () => false)).toBeUndefined();
+  expect(findExecutable('git', undefined, () => true)).toBeUndefined();
 });
 
 test('findExecutable returns an absolute path for relative and empty PATH entries', async () => {
-  expect(await findExecutable('git', 'tools:/elsewhere', () => true)).toBe(resolve('tools/git'));
-  expect(await findExecutable('git', ':/elsewhere', () => true)).toBe(resolve('git'));
+  expect(findExecutable('git', 'tools:/elsewhere', () => true)).toBe(resolve('tools/git'));
+  expect(findExecutable('git', ':/elsewhere', () => true)).toBe(resolve('git'));
 });
 
 test('the production lookup accepts executable files and refuses directories', async () => {
-  expect(await findExecutable('sh', '/bin')).toBe('/bin/sh');
-  expect(await findExecutable('bin', '/usr')).toBeUndefined();
+  expect(findExecutable('sh', '/bin')).toBe('/bin/sh');
+  expect(findExecutable('bin', '/usr')).toBeUndefined();
 });
 
 // Root passes the execute check whatever the mode, so the test means nothing as root.
@@ -68,7 +51,7 @@ unlessRoot('the production lookup skips a file this user cannot execute', async 
     await chmod(join(root, 'first', 'tool'), 0o001); // only "other" may execute it, so this user may not
     await writeFile(join(root, 'later', 'tool'), '#!/bin/sh\n');
     await chmod(join(root, 'later', 'tool'), 0o755);
-    expect(await findExecutable('tool', `${join(root, 'first')}:${join(root, 'later')}`)).toBe(
+    expect(findExecutable('tool', `${join(root, 'first')}:${join(root, 'later')}`)).toBe(
       join(root, 'later', 'tool'),
     );
   } finally {
@@ -78,23 +61,75 @@ unlessRoot('the production lookup skips a file this user cannot execute', async 
 
 test('requireHostTools returns the resolved paths when both tools are present', async () => {
   const installed = new Set(['/first/tart', '/second/git']);
-  const tools = await requireHostTools({ PATH: '/first:/second' }, ['tart', 'git'], (candidate) =>
+  const tools = requireHostTools({ PATH: '/first:/second' }, ['tart', 'git'], (candidate) =>
     installed.has(candidate),
   );
   expect(tools).toEqual({ git: '/second/git', tart: '/first/tart' });
 });
 
 test('requireHostTools names every missing tool, the searched PATH and the fix', async () => {
-  const failure = await requireHostTools(
-    { PATH: '/first:/second' },
-    ['tart', 'git'],
-    () => false,
-  ).catch((error: unknown) => error);
+  const failure = failureOf(() =>
+    requireHostTools({ PATH: '/first:/second' }, ['tart', 'git'], () => false),
+  );
   expect(failure).toBeInstanceOf(FatalError);
   expect(HostToolsError.exitCode).toBe(1);
   expect(failure).toMatchObject({
-    message: expect.stringMatching(/tart.*git.*PATH.*\/first:\/second.*set `path`.*directories/iu),
+    message: expect.stringMatching(
+      /tart.*git.*PATH.*\/first:\/second.*Put the directories that hold them on PATH\./iu,
+    ),
   });
+});
+
+/** The error `act` throws, or undefined when it returns. */
+function failureOf(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+test('serviceEnvironment gives the unit the installing PATH when it finds tart and git', () => {
+  const installed = new Set(['/opt/homebrew/bin/tart', '/usr/bin/git']);
+  const env = { HOME: '/Users/me', PATH: '/opt/homebrew/bin:/usr/bin' };
+  expect(serviceEnvironment(env, (candidate) => installed.has(candidate))).toEqual({
+    PATH: '/opt/homebrew/bin:/usr/bin',
+  });
+});
+
+test('serviceEnvironment refuses the install when the installing PATH lacks tart or git', () => {
+  const installed = new Set(['/usr/bin/git']);
+  const failure = failureOf(() =>
+    serviceEnvironment({ PATH: '/usr/bin:/bin' }, (candidate) => installed.has(candidate)),
+  );
+  expect(failure).toBeInstanceOf(HostToolsError);
+  expect(failure).toMatchObject({
+    message: expect.stringMatching(/tools tart on PATH "\/usr\/bin:\/bin".*service install/su),
+  });
+});
+
+test('serviceEnvironment copies only the absolute PATH entries, which launchd reads alike', () => {
+  const installed = new Set(['/opt/homebrew/bin/tart', '/usr/bin/git']);
+  const env = { PATH: 'bin:/opt/homebrew/bin::.:/usr/bin:' };
+  expect(serviceEnvironment(env, (candidate) => installed.has(candidate))).toEqual({
+    PATH: '/opt/homebrew/bin:/usr/bin',
+  });
+});
+
+test('serviceEnvironment refuses the install when only a relative PATH entry finds tart', () => {
+  const installed = new Set([resolve('bin/tart'), '/usr/bin/git']);
+  const failure = failureOf(() =>
+    serviceEnvironment({ PATH: 'bin:/usr/bin' }, (candidate) => installed.has(candidate)),
+  );
+  expect(failure).toBeInstanceOf(HostToolsError);
+  expect(failure).toMatchObject({
+    message: expect.stringMatching(/tools tart on PATH "\/usr\/bin"/u),
+  });
+});
+
+test('serviceEnvironment refuses the install when PATH is unset', () => {
+  expect(failureOf(() => serviceEnvironment({}, () => true))).toBeInstanceOf(HostToolsError);
 });
 
 test('spawnWithTools runs a resolved tool by its path, with the service environment', () => {
@@ -102,6 +137,7 @@ test('spawnWithTools runs a resolved tool by its path, with the service environm
   const spawn: Host['spawn'] = (command, _args, options) => {
     calls.push({ command, env: options?.env });
     return {
+      abandon: () => undefined,
       exited: Promise.resolve({ error: new Error('unused'), kind: 'unstarted' }),
       kill: () => undefined,
     };

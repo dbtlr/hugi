@@ -25,7 +25,6 @@ function input(overrides: Partial<ProbeInput> = {}): ProbeInput {
   return {
     listVms: async () => [],
     lockHolder: 42,
-    logPath: '/logs/hugi.jsonl',
     now: NOW,
     state,
     ...overrides,
@@ -39,18 +38,17 @@ const listVms = async () => ['hugi-svc-run1', 'hugi-svc-old', 'hugi-run-x', 'gol
 const byName = async (overrides: Partial<ProbeInput> = {}) =>
   Object.fromEntries((await serviceRows(input(overrides))).map((row) => [row.name, row.value]));
 
-test('the rows come in the README order', async () => {
+test('the rows come in the README order, leaving the log to Loom', async () => {
   expect((await serviceRows(input())).map((row) => row.name)).toEqual([
     'run',
     'queue',
     'last poll',
     'start',
     'leftover VMs',
-    'log',
   ]);
 });
 
-test('a running service shows its run, queue, poll, start and log', async () => {
+test('a running service shows its run, queue, poll and start', async () => {
   const rows = await byName();
   expect(rows.run).toBe(
     'hugi / test (macos-15), dbtlr/hugi @ abcdef012345, started 2026-11-19T10:05:48.000Z, 4m12s elapsed',
@@ -59,7 +57,6 @@ test('a running service shows its run, queue, poll, start and log', async () => 
   expect(rows['last poll']).toBe('2026-11-19T10:07:00.000Z (3m ago), ok');
   expect(rows.start).toBe('started 2026-11-19T10:00:00.000Z (10m ago)');
   expect(rows['leftover VMs']).toBe('none');
-  expect(rows.log).toBe('/logs/hugi.jsonl');
 });
 
 test('no run in flight is idle; failed reads are counted', async () => {
@@ -94,7 +91,6 @@ test('unless the process that wrote it holds the lock, every row read from the s
     expect(rows[name]).toEndWith('(stale: the hugi serve that wrote it no longer runs)');
   }
   expect(rows['leftover VMs']).not.toContain('stale');
-  expect(rows.log).toBe('/logs/hugi.jsonl');
 });
 
 test('a missing state says there is no state yet', async () => {
@@ -159,7 +155,6 @@ const probeWith = (lockHolder: () => Promise<number | undefined>) =>
   createProbe({
     listVms,
     lockHolder,
-    logPath: '/logs/hugi.jsonl',
     now: () => NOW,
     readState: async () => state,
   });

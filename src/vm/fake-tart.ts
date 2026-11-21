@@ -452,6 +452,8 @@ export type SpawnedCommand = {
   /** Virtual time of the spawn and of the process's exit (undefined while it runs). */
   readonly startedAt: number;
   endedAt?: number;
+  /** Set once the caller abandoned the process, which exits no sooner for it. */
+  abandoned?: true;
 };
 
 /** A fake `host.spawn`: each command behaves as `script` says, on the fake clock. */
@@ -480,7 +482,8 @@ export class FakeSpawn {
       if (call.endedAt !== undefined) {
         return;
       }
-      if (behavior.output) {
+      // An abandoned child's pipes are released, so its later output reaches no one.
+      if (behavior.output && call.abandoned === undefined) {
         sink?.write(behavior.output);
       }
       call.endedAt = this.clock.now();
@@ -492,6 +495,13 @@ export class FakeSpawn {
       void Promise.resolve().then(() => end(behavior.exitCode ?? 0));
     }
     const child: Child = {
+      // As Loom's contract says: settle at once, with no output yet, unless the exit came first.
+      abandon: () => {
+        call.abandoned = true;
+        if (call.endedAt === undefined) {
+          finish({ kind: 'abandoned', stderr: noOutput, stdout: noOutput });
+        }
+      },
       exited,
       kill: (signal = 'SIGTERM') => {
         call.signals.push(signal);
@@ -508,6 +518,8 @@ export class FakeSpawn {
     return child;
   };
 }
+
+const noOutput = { bytes: new Uint8Array(), text: '' };
 
 const exitOf = (code: number, text: string): ChildExit => ({
   code,

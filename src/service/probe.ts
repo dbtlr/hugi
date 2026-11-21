@@ -22,7 +22,6 @@ export type ProbeInput = {
   readonly now: Date;
   /** The names of the VMs tart lists; may throw. */
   readonly listVms: () => Promise<readonly string[]>;
-  readonly logPath: string;
 };
 
 /** A time as the clock reads it in the past, in one unit: `5s ago`, `3m ago`, `2h ago`, `3d ago`. */
@@ -125,11 +124,7 @@ async function leftoverVms(input: ProbeInput): Promise<string> {
 
 /** The rows `hugi service status` shows, in the README's order. */
 export async function serviceRows(input: ProbeInput): Promise<readonly ServiceDetail[]> {
-  return [
-    ...stateRows(input),
-    { name: 'leftover VMs', value: await leftoverVms(input) },
-    { name: 'log', value: input.logPath },
-  ];
+  return [...stateRows(input), { name: 'leftover VMs', value: await leftoverVms(input) }];
 }
 
 export type ProbeDeps = {
@@ -137,7 +132,6 @@ export type ProbeDeps = {
   /** The pid of the live `hugi serve` that holds the lock (`serveLockHolder`). */
   readonly lockHolder: () => Promise<number | undefined>;
   readonly listVms: () => Promise<readonly string[]>;
-  readonly logPath: string;
   readonly now: () => Date;
 };
 
@@ -153,7 +147,6 @@ export function createProbe(
     serviceRows({
       listVms: deps.listVms,
       lockHolder: await deps.lockHolder(),
-      logPath: deps.logPath,
       now: deps.now(),
       state: await deps.readState(),
     });

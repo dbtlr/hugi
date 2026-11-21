@@ -40,6 +40,7 @@ test('a hung git call that ignores SIGTERM is killed after the grace period', as
   await settle();
   expect(fake.calls[0]?.signals).toEqual(['SIGTERM', 'SIGKILL']);
   expect(await call).toMatchObject({ ok: false, stderr: 'git timed out after 10 seconds.' });
+  expect(fake.calls[0]?.abandoned).toBeUndefined();
 });
 
 test('a git call resolves after SIGKILL even if Loom has not reported its exit', async () => {
@@ -56,6 +57,7 @@ test('a git call resolves after SIGKILL even if Loom has not reported its exit',
   clock.advance(1000);
   expect(await call).toMatchObject({ ok: false, stderr: 'git timed out after 10 seconds.' });
   expect(fake.calls[0]?.endedAt).toBeUndefined();
+  expect(fake.calls[0]?.abandoned).toBe(true);
 });
 
 test('without a deadline git waits for its ordinary exit and output', async () => {
@@ -63,4 +65,27 @@ test('without a deadline git waits for its ordinary exit and output', async () =
   clock.advance(1_200_000);
   expect(await call).toEqual({ ok: true, stderr: '', stdout: 'done\n' });
   expect(fake.calls[0]?.signals).toEqual([]);
+});
+
+test('a git call that ends without an exit code fails and keeps its output', async () => {
+  const git = createGit({
+    cwd: '/',
+    env: {},
+    lazyFetch: false,
+    spawn: () => ({
+      abandon: () => undefined,
+      exited: Promise.resolve({
+        kind: 'abandoned',
+        stderr: { bytes: new Uint8Array(), text: 'remote: half\n' },
+        stdout: { bytes: new Uint8Array(), text: 'partial\n' },
+      }),
+      kill: () => undefined,
+    }),
+    transport: 'https',
+  });
+  expect(await git(undefined, ['fetch'])).toEqual({
+    ok: false,
+    stderr: 'remote: half\n',
+    stdout: 'partial\n',
+  });
 });

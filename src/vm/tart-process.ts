@@ -144,7 +144,12 @@ async function supervise(
     return { ended: 'terminated', exit: afterTerm };
   }
   child.kill('SIGKILL');
-  return { ended: 'killed', exit: await resolvesWithin(clock, child.exited, TART_KILL_WAIT_MS) };
+  const killed = await resolvesWithin(clock, child.exited, TART_KILL_WAIT_MS);
+  if (killed === undefined) {
+    // Release the host's hold on a process that outlived SIGKILL, so the service does not keep it.
+    child.abandon();
+  }
+  return { ended: 'killed', exit: killed };
 }
 
 const codeOf = (exit: ChildExit | undefined, fallback: number): number =>
@@ -164,12 +169,14 @@ function outcomeOf(supervised: Supervised, cause: EndCause, output: string): Tar
   if (exit.kind === 'unstarted') {
     return { error: exit.error, kind: 'unstarted' };
   }
+  // Hugi abandons a child only once SIGKILL has failed, so an exit without a code is a kill's.
+  const exitCode = codeOf(exit, KILLED_EXIT_CODE);
   if (supervised.ended === 'exited') {
-    return { exitCode: exit.code, kind: 'completed', output };
+    return { exitCode, kind: 'completed', output };
   }
   return cause === 'deadline'
-    ? { cause, exitCode: exit.code, kind: 'timed-out', output }
-    : { cause, exitCode: exit.code, kind: 'aborted', output };
+    ? { cause, exitCode, kind: 'timed-out', output }
+    : { cause, exitCode, kind: 'aborted', output };
 }
 
 /**

@@ -32,6 +32,7 @@ const realSpawn: Host['spawn'] = (command, args, options) =>
 /** A `spawn` whose `ls` prints `stdout` and exits `code`, whatever it was asked. */
 function fakeLs(stdout: string, code = 0): Host['spawn'] {
   return () => ({
+    abandon: () => undefined,
     exited: Promise.resolve({
       code,
       kind: 'exited',
@@ -41,6 +42,20 @@ function fakeLs(stdout: string, code = 0): Host['spawn'] {
     kill: () => undefined,
   });
 }
+
+/** A `spawn` whose `ls` settles without an exit code, as an abandoned child does. */
+const abandonedLs: Host['spawn'] = () => ({
+  abandon: () => undefined,
+  exited: Promise.resolve({
+    kind: 'abandoned',
+    stderr: { bytes: new Uint8Array(), text: '' },
+    stdout: {
+      bytes: new Uint8Array(),
+      text: '-rw-------  1 me  staff  0 app.pem\n 0: group:x allow read\n',
+    },
+  }),
+  kill: () => undefined,
+});
 
 const neverRun: Host['spawn'] = () => {
   throw new Error('ls must not run');
@@ -358,6 +373,13 @@ describe('the private key file', () => {
       tokens(fakeGitHub().fetch, { platform: 'darwin', spawn: fakeLs('', 1) })(REPO)(),
     );
     expect(error.message).toContain('ACL');
+  });
+
+  test('refuses a key whose ACL probe ended without an exit code', async () => {
+    const error = await failureOf(
+      tokens(fakeGitHub().fetch, { platform: 'darwin', spawn: abandonedLs })(REPO)(),
+    );
+    expect(error.message).toContain('/bin/ls to look for an ACL ended without an exit code');
   });
 
   test('does not look for an ACL off macOS', async () => {

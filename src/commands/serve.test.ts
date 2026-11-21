@@ -50,7 +50,6 @@ beforeEach(async () => {
   config = {
     allowlist: [],
     githubApp: { appId: 1, privateKeyPath: keyPath },
-    path: [bin],
     pollIntervalSeconds: DEFAULTS.pollIntervalSeconds,
     repositories: ['dbtlr/hugi'],
     runs: { maxAgeDays: DEFAULTS.maxAgeDays, maxSizeGb: DEFAULTS.maxSizeGb },
@@ -79,7 +78,7 @@ function portsOf(script: Script = () => ({}), overrides: Partial<ServePorts> = {
     fetch: () => Promise.reject(new Error('no GitHub in this test')),
     host: {
       cwd: scratch,
-      env: { PATH: '/nowhere' },
+      env: { PATH: bin },
       home: join(scratch, 'home'),
       platform: 'linux',
       spawn: (command, args, options) => {
@@ -114,7 +113,7 @@ const tartScript: Script = (_command, args) =>
   args[0] === 'list' ? { output: VM_LIST } : { exitCode: 0 };
 
 describe('the setup check', () => {
-  test('finds tart and git on `path` once, and the sweep runs that tart', async () => {
+  test('finds tart and git on PATH once, and the sweep runs that tart', async () => {
     const { ports, spawned } = portsOf(tartScript);
     const deps = serveDeps(ports);
     const setup = await deps.checkSetup(config);
@@ -122,12 +121,14 @@ describe('the setup check', () => {
     expect(spawned[0]).toBe(`${join(bin, 'tart')} list --source local --format json`);
   });
 
-  test('refuses a search path without tart or git', async () => {
+  test('refuses a PATH without tart or git', async () => {
     const { ports } = portsOf();
-    const refusal = await rejectionOf(
-      serveDeps(ports).checkSetup({ ...config, path: ['/nowhere'] }),
-    );
+    const host = { ...ports.host, env: { PATH: '/nowhere' } };
+    const refusal = await rejectionOf(serveDeps({ ...ports, host }).checkSetup(config));
     expect(refusal.message).toContain('tart, git');
+    expect(refusal.message).toContain(
+      'For the service, run hugi service install again from a shell whose PATH finds them.',
+    );
   });
 });
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,27 +54,124 @@ test('the teardown budget holds a full stop and two full delete attempts, escala
   expect(twoDeletes).toBeLessThanOrEqual(DELETE_RESERVE_MS);
 });
 
-describe('the leftover VMs row of hugi service status', () => {
+const XML_ENTITIES: Readonly<Record<string, string>> = {
+  '&amp;': '&',
+  '&apos;': "'",
+  '&gt;': '>',
+  '&lt;': '<',
+  '&quot;': '"',
+};
+
+/** The string or integer the plist gives `key`, unescaped, or undefined when it has none. */
+function plistValue(plist: string, key: string): string | undefined {
+  return new RegExp(`<key>${key}</key>\\s*<(?:string|integer)>([^<]*)<`, 'u')
+    .exec(plist)?.[1]
+    ?.replaceAll(/&(?:amp|apos|gt|lt|quot);/gu, (entity) => XML_ENTITIES[entity] ?? entity);
+}
+
+describe('the launchd unit hugi service install writes (README, Installing the service)', () => {
   let home: string;
+  let bin: string;
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
-    for (const dir of ['configured', 'inherited']) {
-      // oxlint-disable-next-line no-await-in-loop -- two directories
-      await mkdir(join(home, dir));
+    home = await mkdtemp(join(tmpdir(), 'hugi-unit-'));
+    bin = join(home, 'bin');
+    await mkdir(bin);
+    for (const tool of ['tart', 'git']) {
       // oxlint-disable-next-line no-await-in-loop -- two files
-      await writeFile(join(home, dir, 'tart'), '#!/bin/sh\n', { mode: 0o755 });
+      await writeFile(join(bin, tool), '#!/bin/sh\n', { mode: 0o755 });
     }
   });
   afterEach(async () => {
     await rm(home, { force: true, recursive: true });
   });
 
+  /**
+   * Run a built `hugi service <child>` with this `PATH`. launchctl answers `print` with `printed`,
+   * or as for an agent not yet loaded.
+   */
+  async function service(child: string, PATH: string, printed?: string) {
+    const launchctl: string[] = [];
+    const mock = mockProcess({
+      argv: ['service', child],
+      env: { HOME: home, PATH },
+      platform: 'darwin',
+      programs: {
+        launchctl: ({ args }) => {
+          launchctl.push(args.join(' '));
+          if (args[0] !== 'print') {
+            return { code: 0 };
+          }
+          return printed === undefined ? { code: 113 } : { code: 0, stdout: printed };
+        },
+      },
+      release: { build: 'distributed' },
+      stdin: '',
+    });
+    const exitCode = await createApp().run({ process: mock });
+    const plist = await readFile(
+      join(home, 'Library', 'LaunchAgents', 'com.dbtlr.hugi.plist'),
+      'utf8',
+    ).catch(() => undefined);
+    return { exitCode, launchctl, plist, stderr: mock.stderr.text, stdout: mock.stdout.text };
+  }
+  const install = (PATH: string) => service('install', PATH);
+
+  test('runs hugi serve with the absolute PATH directories, its output in serve.log, a 60 s stop', async () => {
+    const { exitCode, plist = '' } = await install(`relative/bin:${bin}::/usr/bin`);
+    expect(exitCode).toBe(0);
+    expect(plistValue(plist, 'Label')).toBe('com.dbtlr.hugi');
+    expect(plist).toContain('<string>serve</string>\n  </array>');
+    expect(plistValue(plist, 'PATH')).toBe(`${bin}:/usr/bin`);
+    const output = join(home, 'Library', 'Logs', 'hugi', 'serve.log');
+    expect(plistValue(plist, 'StandardOutPath')).toBe(output);
+    expect(plistValue(plist, 'StandardErrorPath')).toBe(output);
+    expect(plistValue(plist, 'ExitTimeOut')).toBe('60');
+  });
+
+  test('refuses, writing no unit and starting nothing, when the PATH does not find tart', async () => {
+    const empty = join(home, 'empty');
+    await mkdir(empty);
+    const { exitCode, launchctl, plist, stderr } = await install(empty);
+    expect(exitCode).toBe(1);
+    expect(plist).toBeUndefined();
+    expect(launchctl).toEqual([]);
+    expect(stderr).toContain('Run hugi service install from a shell whose PATH finds them');
+  });
+
+  test("status adds Hugi's own rows to Loom's for the installed agent", async () => {
+    await install(bin);
+    const { exitCode, stdout } = await service('status', bin, 'state = running\npid = 42\n');
+    expect(exitCode).toBe(0);
+    const rows = stdout
+      .split('\n')
+      .filter((line) => line.startsWith('  '))
+      .map((line) => line.trim().split(/\s{2,}/u)[0]);
+    expect(rows).toEqual([
+      'unit',
+      'output',
+      'log',
+      'run',
+      'queue',
+      'last poll',
+      'start',
+      'leftover VMs',
+    ]);
+  });
+});
+
+describe('the leftover VMs row of hugi service status', () => {
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'hugi-status-'));
+    await mkdir(join(home, 'inherited'));
+    await writeFile(join(home, 'inherited', 'tart'), '#!/bin/sh\n', { mode: 0o755 });
+  });
+  afterEach(async () => {
+    await rm(home, { force: true, recursive: true });
+  });
+
   /** List the VMs as status does, recording how tart was started. */
-  async function listed(config: string | undefined) {
-    if (config !== undefined) {
-      await mkdir(join(home, '.config', 'hugi'), { recursive: true });
-      await writeFile(join(home, '.config', 'hugi', 'config.yaml'), config);
-    }
+  async function listed() {
     const started: { command: string; path: string | undefined }[] = [];
     const fake = new FakeSpawn(new FakeClock(), () => ({ output: '[{"Name":"hugi-svc-left"}]' }));
     const spawn: Host['spawn'] = (command, args, options) => {
@@ -86,18 +183,12 @@ describe('the leftover VMs row of hugi service status', () => {
     return { names, started };
   }
 
-  test("runs tart from the configuration's path", async () => {
-    const config = `repositories: [dbtlr/hugi]\nallowlist: []\npath: [${join(home, 'configured')}]\n`;
-    const { names, started } = await listed(config);
+  test('runs tart found on the PATH of the shell running status', async () => {
+    const { names, started } = await listed();
     expect(names).toEqual(['hugi-svc-left']);
     expect(started).toEqual([
-      { command: join(home, 'configured', 'tart'), path: join(home, 'configured') },
+      { command: join(home, 'inherited', 'tart'), path: join(home, 'inherited') },
     ]);
-  });
-
-  test('falls back to the inherited PATH when the configuration does not load', async () => {
-    const { started } = await listed(undefined);
-    expect(started.map((each) => each.command)).toEqual([join(home, 'inherited', 'tart')]);
   });
 });
 

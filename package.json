@@ -18,15 +18,15 @@
     "build": "loom build --out dist/hugi"
   },
   "dependencies": {
-    "@loomcli/core": "0.17.0",
-    "@loomcli/plugins": "0.17.0",
+    "@loomcli/core": "0.20.0",
+    "@loomcli/plugins": "0.20.0",
     "yaml": "2.9.1"
   },
   "devDependencies": {
     "@dbtlr/tooling": "0.6.0",
-    "@loomcli/eslint-plugin": "0.17.0",
-    "@loomcli/loom": "0.17.0",
-    "@loomcli/testing": "0.17.0",
+    "@loomcli/eslint-plugin": "0.20.0",
+    "@loomcli/loom": "0.20.0",
+    "@loomcli/testing": "0.20.0",
     "@types/bun": "^1.4.4",
     "@types/node": "26.6.5",
     "oxlint": "1.89.0",
