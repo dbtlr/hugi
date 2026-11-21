@@ -54,9 +54,19 @@ test('the teardown budget holds a full stop and two full delete attempts, escala
   expect(twoDeletes).toBeLessThanOrEqual(DELETE_RESERVE_MS);
 });
 
-/** The string or integer the plist gives `key`, or undefined when it has none. */
+const XML_ENTITIES: Readonly<Record<string, string>> = {
+  '&amp;': '&',
+  '&apos;': "'",
+  '&gt;': '>',
+  '&lt;': '<',
+  '&quot;': '"',
+};
+
+/** The string or integer the plist gives `key`, unescaped, or undefined when it has none. */
 function plistValue(plist: string, key: string): string | undefined {
-  return new RegExp(`<key>${key}</key>\\s*<(?:string|integer)>([^<]*)<`, 'u').exec(plist)?.[1];
+  return new RegExp(`<key>${key}</key>\\s*<(?:string|integer)>([^<]*)<`, 'u')
+    .exec(plist)?.[1]
+    ?.replaceAll(/&(?:amp|apos|gt|lt|quot);/gu, (entity) => XML_ENTITIES[entity] ?? entity);
 }
 
 describe('the launchd unit hugi service install writes (README, Installing the service)', () => {
@@ -75,17 +85,23 @@ describe('the launchd unit hugi service install writes (README, Installing the s
     await rm(home, { force: true, recursive: true });
   });
 
-  /** Run a built `hugi service install` with this `PATH`; launchctl answers as for a new agent. */
-  async function install(PATH: string) {
+  /**
+   * Run a built `hugi service <child>` with this `PATH`. launchctl answers `print` with `printed`,
+   * or as for an agent not yet loaded.
+   */
+  async function service(child: string, PATH: string, printed?: string) {
     const launchctl: string[] = [];
     const mock = mockProcess({
-      argv: ['service', 'install'],
+      argv: ['service', child],
       env: { HOME: home, PATH },
       platform: 'darwin',
       programs: {
         launchctl: ({ args }) => {
           launchctl.push(args.join(' '));
-          return { code: args[0] === 'print' ? 113 : 0 };
+          if (args[0] !== 'print') {
+            return { code: 0 };
+          }
+          return printed === undefined ? { code: 113 } : { code: 0, stdout: printed };
         },
       },
       release: { build: 'distributed' },
@@ -96,8 +112,9 @@ describe('the launchd unit hugi service install writes (README, Installing the s
       join(home, 'Library', 'LaunchAgents', 'com.dbtlr.hugi.plist'),
       'utf8',
     ).catch(() => undefined);
-    return { exitCode, launchctl, plist, stderr: mock.stderr.text };
+    return { exitCode, launchctl, plist, stderr: mock.stderr.text, stdout: mock.stdout.text };
   }
+  const install = (PATH: string) => service('install', PATH);
 
   test('runs hugi serve with the absolute PATH directories, its output in serve.log, a 60 s stop', async () => {
     const { exitCode, plist = '' } = await install(`relative/bin:${bin}::/usr/bin`);
@@ -112,11 +129,33 @@ describe('the launchd unit hugi service install writes (README, Installing the s
   });
 
   test('refuses, writing no unit and starting nothing, when the PATH does not find tart', async () => {
-    const { exitCode, launchctl, plist, stderr } = await install('/usr/bin:/bin');
+    const empty = join(home, 'empty');
+    await mkdir(empty);
+    const { exitCode, launchctl, plist, stderr } = await install(empty);
     expect(exitCode).toBe(1);
     expect(plist).toBeUndefined();
     expect(launchctl).toEqual([]);
     expect(stderr).toContain('Run hugi service install from a shell whose PATH finds them');
+  });
+
+  test("status adds Hugi's own rows to Loom's for the installed agent", async () => {
+    await install(bin);
+    const { exitCode, stdout } = await service('status', bin, 'state = running\npid = 42\n');
+    expect(exitCode).toBe(0);
+    const rows = stdout
+      .split('\n')
+      .filter((line) => line.startsWith('  '))
+      .map((line) => line.trim().split(/\s{2,}/u)[0]);
+    expect(rows).toEqual([
+      'unit',
+      'output',
+      'log',
+      'run',
+      'queue',
+      'last poll',
+      'start',
+      'leftover VMs',
+    ]);
   });
 });
 
