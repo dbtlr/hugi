@@ -51,6 +51,7 @@ test('a hung tart delete that ignores SIGTERM is killed after the grace period',
   );
   expect(outcome).toMatchObject({ cause: 'deadline', kind: 'killed' });
   expect(fake.calls[0]!.signals).toEqual(['SIGTERM', 'SIGKILL']);
+  expect(fake.calls[0]!.abandoned).toBeUndefined();
   const took = fake.calls[0]!.endedAt! - fake.calls[0]!.startedAt;
   expect(took).toBeGreaterThanOrEqual(DEADLINE_MS + TART_TERM_GRACE_MS);
   expect(took).toBeLessThanOrEqual(DEADLINE_MS + TART_TERM_GRACE_MS + STEP_MS);
@@ -90,6 +91,7 @@ test('a process that survives SIGKILL no longer holds the caller', async () => {
   );
   expect(outcome.kind).toBe('killed');
   expect(fake.calls[0]!.endedAt).toBeUndefined();
+  expect(fake.calls[0]!.abandoned).toBe(true);
   expect(clock.now()).toBeLessThanOrEqual(
     DEADLINE_MS + TART_TERM_GRACE_MS + TART_KILL_WAIT_MS + STEP_MS,
   );

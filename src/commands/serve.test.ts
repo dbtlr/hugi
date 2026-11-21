@@ -126,6 +126,9 @@ describe('the setup check', () => {
     const host = { ...ports.host, env: { PATH: '/nowhere' } };
     const refusal = await rejectionOf(serveDeps({ ...ports, host }).checkSetup(config));
     expect(refusal.message).toContain('tart, git');
+    expect(refusal.message).toContain(
+      'For the service, run hugi service install again from a shell whose PATH finds them.',
+    );
   });
 });
 

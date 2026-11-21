@@ -56,6 +56,7 @@ test('a git call resolves after SIGKILL even if Loom has not reported its exit',
   clock.advance(1000);
   expect(await call).toMatchObject({ ok: false, stderr: 'git timed out after 10 seconds.' });
   expect(fake.calls[0]?.endedAt).toBeUndefined();
+  expect(fake.calls[0]?.abandoned).toBe(true);
 });
 
 test('without a deadline git waits for its ordinary exit and output', async () => {

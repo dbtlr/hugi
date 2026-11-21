@@ -119,7 +119,12 @@ async function terminateGit(child: Child, clock: Clock): Promise<ChildExit | und
     return terminated;
   }
   child.kill('SIGKILL');
-  return resolvesWithin(clock, child.exited, GIT_KILL_WAIT_MS);
+  const killed = await resolvesWithin(clock, child.exited, GIT_KILL_WAIT_MS);
+  if (killed === undefined) {
+    // A helper git started can hold its pipes open past the kill; let the host stop waiting on it.
+    child.abandon();
+  }
+  return killed;
 }
 
 async function boundedOutcome(child: Child, clock: Clock, deadlineMs: number): Promise<GitOutcome> {

@@ -88,7 +88,7 @@ test('a held lock refuses the start and leaves the state alone', async () => {
 });
 
 test('a refused setup is written to the state and releases the lock', async () => {
-  const refusal = new Error('tart is not on the search path.');
+  const refusal = new Error('tart is not on PATH.');
   const { deps, seen } = harness({
     checkSetup: async () => {
       throw refusal;

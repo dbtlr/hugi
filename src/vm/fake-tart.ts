@@ -452,6 +452,8 @@ export type SpawnedCommand = {
   /** Virtual time of the spawn and of the process's exit (undefined while it runs). */
   readonly startedAt: number;
   endedAt?: number;
+  /** Set once the caller abandoned the process, which exits no sooner for it. */
+  abandoned?: true;
 };
 
 /** A fake `host.spawn`: each command behaves as `script` says, on the fake clock. */
@@ -494,8 +496,8 @@ export class FakeSpawn {
     const child: Child = {
       // As Loom's contract says: settle at once, with no output yet, unless the exit came first.
       abandon: () => {
+        call.abandoned = true;
         if (call.endedAt === undefined) {
-          call.endedAt = this.clock.now();
           finish({ kind: 'abandoned', stderr: noOutput, stdout: noOutput });
         }
       },

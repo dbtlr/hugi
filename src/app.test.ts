@@ -7,7 +7,8 @@ import type { Host } from '@loomcli/core';
 import { mockProcess } from '@loomcli/testing';
 
 import pkg from '../package.json' with { type: 'json' };
-import { createApp, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
+import { createApp, SERVICE_SETTINGS, SHUTDOWN_BUDGET_MS, statusProbeDeps } from './app';
+import { HostToolsError } from './service/host-tools';
 import { acquireServeLock } from './service/lock';
 import { createProbe } from './service/probe';
 import { writeServiceState } from './service/state';
@@ -52,6 +53,40 @@ test('the teardown budget holds a full stop and two full delete attempts, escala
   const twoDeletes =
     2 * (TART_DELETE_DEADLINE_MS + TART_ESCALATION_MS) + DEFAULT_TUNING.deleteRetryMs;
   expect(twoDeletes).toBeLessThanOrEqual(DELETE_RESERVE_MS);
+});
+
+/** The service settings' environment for an install run with this `PATH`. */
+const environmentFor = (PATH: string) => SERVICE_SETTINGS.environment({ env: { PATH } });
+
+describe('the launchd unit hugi service install writes (README, Installing the service)', () => {
+  let bin: string;
+  beforeEach(async () => {
+    bin = await mkdtemp(join(tmpdir(), 'hugi-unit-'));
+    for (const tool of ['tart', 'git']) {
+      // oxlint-disable-next-line no-await-in-loop -- two files
+      await writeFile(join(bin, tool), '#!/bin/sh\n', { mode: 0o755 });
+    }
+  });
+  afterEach(async () => {
+    await rm(bin, { force: true, recursive: true });
+  });
+
+  test('runs hugi serve as com.dbtlr.hugi, its output in serve.log, stopped within 60 seconds', () => {
+    expect(SERVICE_SETTINGS).toMatchObject({
+      label: 'com.dbtlr.hugi',
+      output: 'Library/Logs/hugi/serve.log',
+      run: ['serve'],
+      stopTimeout: 60_000,
+    });
+  });
+
+  test("carries the installing shell's PATH when it finds tart and git", () => {
+    expect(environmentFor(`${bin}:/usr/bin`)).toEqual({ PATH: `${bin}:/usr/bin` });
+  });
+
+  test('refuses the install when the installing PATH does not find tart', () => {
+    expect(() => environmentFor('/nonexistent-hugi-bin')).toThrow(HostToolsError);
+  });
 });
 
 describe('the leftover VMs row of hugi service status', () => {

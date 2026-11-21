@@ -74,9 +74,10 @@ test('requireHostTools names every missing tool, the searched PATH and the fix',
   expect(failure).toBeInstanceOf(FatalError);
   expect(HostToolsError.exitCode).toBe(1);
   expect(failure).toMatchObject({
-    message: expect.stringMatching(/tart.*git.*PATH.*\/first:\/second/iu),
+    message: expect.stringMatching(
+      /tart.*git.*PATH.*\/first:\/second.*Put the directories that hold them on PATH\./iu,
+    ),
   });
-  expect(failure).not.toMatchObject({ message: expect.stringContaining('`path`') });
 });
 
 /** The error `act` throws, or undefined when it returns. */
@@ -105,6 +106,25 @@ test('serviceEnvironment refuses the install when the installing PATH lacks tart
   expect(failure).toBeInstanceOf(HostToolsError);
   expect(failure).toMatchObject({
     message: expect.stringMatching(/tools tart on PATH "\/usr\/bin:\/bin".*service install/su),
+  });
+});
+
+test('serviceEnvironment copies only the absolute PATH entries, which launchd reads alike', () => {
+  const installed = new Set(['/opt/homebrew/bin/tart', '/usr/bin/git']);
+  const env = { PATH: 'bin:/opt/homebrew/bin::.:/usr/bin:' };
+  expect(serviceEnvironment(env, (candidate) => installed.has(candidate))).toEqual({
+    PATH: '/opt/homebrew/bin:/usr/bin',
+  });
+});
+
+test('serviceEnvironment refuses the install when only a relative PATH entry finds tart', () => {
+  const installed = new Set([resolve('bin/tart'), '/usr/bin/git']);
+  const failure = failureOf(() =>
+    serviceEnvironment({ PATH: 'bin:/usr/bin' }, (candidate) => installed.has(candidate)),
+  );
+  expect(failure).toBeInstanceOf(HostToolsError);
+  expect(failure).toMatchObject({
+    message: expect.stringMatching(/tools tart on PATH "\/usr\/bin"/u),
   });
 });
 

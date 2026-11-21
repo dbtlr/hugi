@@ -83,19 +83,26 @@ export const SERVICE_HOST_TOOLS = ['tart', 'git'] as const;
 /**
  * The variables `hugi service install` writes into the launchd unit: the installing shell's
  * `PATH`, so the agent finds tart and git where that shell does instead of on launchd's bare
- * `PATH`. Throws, so install writes nothing, when that `PATH` does not find them both.
+ * `PATH`. Only its absolute directories are kept, because the agent would resolve a relative or
+ * empty entry against the home, not the directory install ran in. Throws, so install writes
+ * nothing, when the kept directories do not find them both.
  */
 export function serviceEnvironment(
   env: Host['env'],
   isExecutable: IsExecutable = isExecutableFile,
 ): Readonly<Record<string, string>> {
+  const PATH = (env.PATH ?? '')
+    .split(':')
+    .filter((directory) => isAbsolute(directory))
+    .join(':');
   requireHostTools(
-    env,
+    // An empty PATH would search the working directory, so it searches nothing here.
+    PATH === '' ? {} : { PATH },
     SERVICE_HOST_TOOLS,
     isExecutable,
-    'Run hugi service install from a shell whose PATH finds them.',
+    'Run hugi service install from a shell whose PATH finds them in absolute directories.',
   );
-  return { PATH: env.PATH ?? '' };
+  return { PATH };
 }
 
 /**

@@ -5,7 +5,7 @@ import { format } from '@loomcli/plugins/format';
 import { help } from '@loomcli/plugins/help';
 import { logging } from '@loomcli/plugins/logging';
 import { service } from '@loomcli/plugins/service';
-import type { ProbeContext } from '@loomcli/plugins/service';
+import type { ProbeContext, ServiceSettings } from '@loomcli/plugins/service';
 
 import { configCommand } from './commands/config';
 import type { ConfigCommandOverrides } from './commands/config';
@@ -73,22 +73,20 @@ export function statusProbeDeps(host: StatusHost): ProbeDeps {
 
 const statusRows = (context: ProbeContext) => createProbe(statusProbeDeps(context.host))(context);
 
+/** The launchd agent `hugi service install` writes (README, "Installing the service"). */
+export const SERVICE_SETTINGS = {
+  environment: ({ env }: Pick<Host, 'env'>) => serviceEnvironment(env),
+  label: SERVICE_LABEL,
+  output: SERVICE_OUTPUT,
+  probe: statusRows,
+  run: ['serve'],
+  stopTimeout: SERVICE_STOP_TIMEOUT_MS,
+} satisfies ServiceSettings;
+
 export function createApp(run: RunCommandOverrides = {}, config: ConfigCommandOverrides = {}) {
   return new Application('hugi', {
     description: 'Run macOS CI lanes in throwaway VMs and report the verdicts to GitHub.',
-    plugins: [
-      format(),
-      help(),
-      logging({ to: 'file' }),
-      service({
-        environment: ({ env }) => serviceEnvironment(env),
-        label: SERVICE_LABEL,
-        output: SERVICE_OUTPUT,
-        probe: statusRows,
-        run: ['serve'],
-        stopTimeout: SERVICE_STOP_TIMEOUT_MS,
-      }),
-    ],
+    plugins: [format(), help(), logging({ to: 'file' }), service(SERVICE_SETTINGS)],
     shutdown: { timeout: SHUTDOWN_BUDGET_MS },
     version: VERSION,
   })

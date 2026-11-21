@@ -119,7 +119,16 @@ async function checkSetup(ports: ServePorts, config: HugiConfig): Promise<ServeS
   const env = { ...host.env };
   return {
     env,
-    spawn: spawnWithTools(host.spawn, requireHostTools(env, SERVICE_HOST_TOOLS), env),
+    spawn: spawnWithTools(
+      host.spawn,
+      requireHostTools(
+        env,
+        SERVICE_HOST_TOOLS,
+        undefined,
+        'For the service, run hugi service install again from a shell whose PATH finds them.',
+      ),
+      env,
+    ),
   };
 }
 
