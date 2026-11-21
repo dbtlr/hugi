@@ -1,0 +1,8 @@
+name: Hugi smoke
+on:
+  pull_request:
+jobs:
+  smoke:
+    runs-on: macos-latest
+    steps:
+      - run: sw_vers && echo "hugi smoke lane"

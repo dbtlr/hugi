@@ -1,0 +1,3 @@
+lanes:
+  - workflow: .github/hugi/smoke.yml
+    jobs: [smoke]
