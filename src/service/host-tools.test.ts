@@ -102,6 +102,7 @@ test('spawnWithTools runs a resolved tool by its path, with the service environm
   const spawn: Host['spawn'] = (command, _args, options) => {
     calls.push({ command, env: options?.env });
     return {
+      abandon: () => undefined,
       exited: Promise.resolve({ error: new Error('unused'), kind: 'unstarted' }),
       kill: () => undefined,
     };

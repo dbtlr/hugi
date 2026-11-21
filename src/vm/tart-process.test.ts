@@ -8,6 +8,7 @@ import { runTart, startTart, TART_KILL_WAIT_MS, TART_TERM_GRACE_MS } from './tar
 
 const DEADLINE_MS = 10_000;
 const neverStarts: Parameters<typeof runTart>[0] = () => ({
+  abandon: () => undefined,
   exited: Promise.resolve<ChildExit>({ error: new Error('no such program'), kind: 'unstarted' }),
   kill: () => undefined,
 });
@@ -111,4 +112,24 @@ test('a long-lived process has no deadline, and terminate escalates to SIGKILL',
   const outcome = await finish(clock, call.outcome);
   expect(outcome).toMatchObject({ kind: 'killed' });
   expect(fake.calls[0]!.signals).toEqual(['SIGTERM', 'SIGKILL']);
+});
+
+/** A spawn whose child settles without an exit code, as an abandoned child does. */
+const abandoned: Parameters<typeof runTart>[0] = () => ({
+  abandon: () => undefined,
+  exited: Promise.resolve<ChildExit>({
+    kind: 'abandoned',
+    stderr: { bytes: new Uint8Array(), text: '' },
+    stdout: { bytes: new Uint8Array(), text: '' },
+  }),
+  kill: () => undefined,
+});
+
+test('a tart call that ends without an exit code reports the kill exit code', async () => {
+  const clock = new FakeClock();
+  const outcome = await finish(
+    clock,
+    runTart(abandoned, clock, ['list'], { deadlineMs: DEADLINE_MS }),
+  );
+  expect(outcome).toEqual({ exitCode: 137, kind: 'completed', output: '' });
 });

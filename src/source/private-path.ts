@@ -65,6 +65,9 @@ export async function hasAccessControlList(
   if (exit.kind === 'unstarted') {
     throw new Error(`cannot start /bin/ls to look for an ACL: ${exit.error.message}`);
   }
+  if (exit.kind === 'abandoned') {
+    throw new Error('/bin/ls to look for an ACL ended without an exit code');
+  }
   if (exit.code !== 0) {
     throw new Error(`/bin/ls to look for an ACL exited ${exit.code}: ${exit.stderr.text.trim()}`);
   }

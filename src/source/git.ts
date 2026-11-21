@@ -104,7 +104,11 @@ function outcomeOf(exit: ChildExit): GitOutcome {
   if (exit.kind === 'unstarted') {
     return { ok: false, stderr: exit.error.message, stdout: '' };
   }
-  return { ok: exit.code === 0, stderr: exit.stderr.text, stdout: exit.stdout.text };
+  return {
+    ok: exit.kind === 'exited' && exit.code === 0,
+    stderr: exit.stderr.text,
+    stdout: exit.stdout.text,
+  };
 }
 
 /** Give git a chance to exit gracefully and bound the wait even if its pipes stay open. */

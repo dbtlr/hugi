@@ -492,6 +492,13 @@ export class FakeSpawn {
       void Promise.resolve().then(() => end(behavior.exitCode ?? 0));
     }
     const child: Child = {
+      // As Loom's contract says: settle at once, with no output yet, unless the exit came first.
+      abandon: () => {
+        if (call.endedAt === undefined) {
+          call.endedAt = this.clock.now();
+          finish({ kind: 'abandoned', stderr: noOutput, stdout: noOutput });
+        }
+      },
       exited,
       kill: (signal = 'SIGTERM') => {
         call.signals.push(signal);
@@ -508,6 +515,8 @@ export class FakeSpawn {
     return child;
   };
 }
+
+const noOutput = { bytes: new Uint8Array(), text: '' };
 
 const exitOf = (code: number, text: string): ChildExit => ({
   code,

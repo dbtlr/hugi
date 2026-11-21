@@ -164,12 +164,14 @@ function outcomeOf(supervised: Supervised, cause: EndCause, output: string): Tar
   if (exit.kind === 'unstarted') {
     return { error: exit.error, kind: 'unstarted' };
   }
+  // Hugi never abandons a child, so an exit without a code is read as a kill's.
+  const exitCode = codeOf(exit, KILLED_EXIT_CODE);
   if (supervised.ended === 'exited') {
-    return { exitCode: exit.code, kind: 'completed', output };
+    return { exitCode, kind: 'completed', output };
   }
   return cause === 'deadline'
-    ? { cause, exitCode: exit.code, kind: 'timed-out', output }
-    : { cause, exitCode: exit.code, kind: 'aborted', output };
+    ? { cause, exitCode, kind: 'timed-out', output }
+    : { cause, exitCode, kind: 'aborted', output };
 }
 
 /**

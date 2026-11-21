@@ -64,3 +64,26 @@ test('without a deadline git waits for its ordinary exit and output', async () =
   expect(await call).toEqual({ ok: true, stderr: '', stdout: 'done\n' });
   expect(fake.calls[0]?.signals).toEqual([]);
 });
+
+test('a git call that ends without an exit code fails and keeps its output', async () => {
+  const git = createGit({
+    cwd: '/',
+    env: {},
+    lazyFetch: false,
+    spawn: () => ({
+      abandon: () => undefined,
+      exited: Promise.resolve({
+        kind: 'abandoned',
+        stderr: { bytes: new Uint8Array(), text: 'remote: half\n' },
+        stdout: { bytes: new Uint8Array(), text: 'partial\n' },
+      }),
+      kill: () => undefined,
+    }),
+    transport: 'https',
+  });
+  expect(await git(undefined, ['fetch'])).toEqual({
+    ok: false,
+    stderr: 'remote: half\n',
+    stdout: 'partial\n',
+  });
+});
