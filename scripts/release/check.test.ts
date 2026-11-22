@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 
 import { checksums, releaseVersion, signedArm64MachO } from './check';
 
@@ -6,11 +7,11 @@ import { checksums, releaseVersion, signedArm64MachO } from './check';
 const ABC = new TextEncoder().encode('abc');
 const ABC_SHA256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 
-test('SHA256SUMS that is the one line the installer reads, for this binary, passes', () => {
+test('SHA256SUMS that is the one release line for this binary passes', () => {
   expect(checksums(`${ABC_SHA256}  hugi-darwin-arm64\n`, ABC)).toEqual({ ok: true });
 });
 
-test('SHA256SUMS the installer would not find the binary in is refused', () => {
+test('SHA256SUMS that is anything other than the one release line is refused', () => {
   for (const sums of [
     `${ABC_SHA256}  dist/hugi-darwin-arm64\n`,
     `${ABC_SHA256} hugi-darwin-arm64\n`,
@@ -62,12 +63,196 @@ function machO(cputype: number, commands: { cmd: number; size: number }[]): Uint
   return bytes;
 }
 
-test('an arm64 Mach-O with a code signature load command passes', () => {
-  const binary = machO(CPU_TYPE_ARM64, [
+// Code-signing values from the xnu kernel's cs_blobs.h. The signature at LC_CODE_SIGNATURE's dataoff
+// is a big-endian SuperBlob (magic, length, count, then {type, offset} entries) whose slot 0 is a
+// CodeDirectory holding one hash per page of the file up to codeLimit.
+const CSMAGIC_EMBEDDED_SIGNATURE = 4_208_856_256; // 0xfade0cc0
+const CSMAGIC_CODEDIRECTORY = 4_208_856_066; // 0xfade0c02
+const CS_HASHTYPE_SHA256 = 2;
+const CS_HASHTYPE_SHA1 = 1;
+const PAGE_SIZE_LOG2 = 12;
+const PAGE = 2 ** PAGE_SIZE_LOG2;
+// The CodeDirectory fields this check reads end at byte 44 (pageSize, then a spare word).
+const CODE_DIRECTORY_HEADER = 44;
+
+/**
+ * An arm64 Mach-O of two full pages and a short third, ad-hoc signed the way the linker does it,
+ * with page hashes computed here by node:crypto. Returns where the signature parts sit so a test
+ * can damage one.
+ */
+function signedMachO(): { bytes: Uint8Array; codeDirectory: number; dataoff: number } {
+  const header = machO(CPU_TYPE_ARM64, [
     { cmd: LC_SEGMENT_64, size: 72 },
     { cmd: LC_CODE_SIGNATURE, size: 16 },
   ]);
-  expect(signedArm64MachO(binary)).toEqual({ ok: true });
+  const dataoff = 2 * PAGE + 300;
+  const pages = Math.ceil(dataoff / PAGE);
+  const codeDirectoryLength = CODE_DIRECTORY_HEADER + pages * 32;
+  const superBlobLength = 20 + codeDirectoryLength;
+  const datasize = Math.ceil(superBlobLength / 16) * 16;
+  const bytes = new Uint8Array(dataoff + datasize);
+  for (let index = header.length; index < dataoff; index += 1) {
+    bytes[index] = (index * 31) % 256;
+  }
+  bytes.set(header);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(32 + 72 + 8, dataoff, true);
+  view.setUint32(32 + 72 + 12, datasize, true);
+
+  for (const [index, word] of [CSMAGIC_EMBEDDED_SIGNATURE, superBlobLength, 1, 0, 20].entries()) {
+    view.setUint32(dataoff + index * 4, word);
+  }
+  const codeDirectory = dataoff + 20;
+  for (const [index, word] of [
+    CSMAGIC_CODEDIRECTORY,
+    codeDirectoryLength,
+    0x2_01_00, // version
+    0x2, // flags: adhoc
+    CODE_DIRECTORY_HEADER, // hashOffset
+    0, // identOffset
+    0, // nSpecialSlots
+    pages, // nCodeSlots
+    dataoff, // codeLimit
+  ].entries()) {
+    view.setUint32(codeDirectory + index * 4, word);
+  }
+  bytes.set([32, CS_HASHTYPE_SHA256, 0, PAGE_SIZE_LOG2], codeDirectory + 36);
+  for (let page = 0; page < pages; page += 1) {
+    const hash = createHash('sha256')
+      .update(bytes.subarray(page * PAGE, Math.min((page + 1) * PAGE, dataoff)))
+      .digest();
+    bytes.set(hash, codeDirectory + CODE_DIRECTORY_HEADER + page * 32);
+  }
+  return { bytes, codeDirectory, dataoff };
+}
+
+/** Inverts one byte of a fixture, as a single corrupted byte in a download would. */
+function flip(bytes: Uint8Array, index: number): void {
+  bytes[index] = (bytes[index] ?? 0) ^ 255;
+}
+
+test('an arm64 Mach-O whose code pages match their signed hashes passes', () => {
+  expect(signedArm64MachO(signedMachO().bytes)).toEqual({ ok: true });
+});
+
+test('a flipped byte in a signed page is refused, naming the page', () => {
+  const { bytes } = signedMachO();
+  flip(bytes, PAGE + 7);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'Page 1 (bytes 4096-8191) does not match its signed hash, so macOS will not run it.',
+  });
+});
+
+test('a flipped byte in the short last page is refused', () => {
+  const { bytes, dataoff } = signedMachO();
+  flip(bytes, dataoff - 1);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: `Page 2 (bytes 8192-${dataoff - 1}) does not match its signed hash, so macOS will not run it.`,
+  });
+});
+
+test('a binary cut short of its code signature is refused', () => {
+  const { bytes, dataoff } = signedMachO();
+  const cut = bytes.slice(0, dataoff + 8);
+  expect(signedArm64MachO(cut)).toEqual({
+    ok: false,
+    reason: `The binary is truncated: its code signature runs to byte ${bytes.length}, past the file's ${cut.length} bytes.`,
+  });
+});
+
+test('a code signature that is not a SuperBlob is refused', () => {
+  const { bytes, dataoff } = signedMachO();
+  new DataView(bytes.buffer).setUint32(dataoff, CSMAGIC_CODEDIRECTORY);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature is malformed: it is not an embedded-signature SuperBlob.',
+  });
+});
+
+test('a SuperBlob whose CodeDirectory slot holds something else is refused', () => {
+  const { bytes, codeDirectory } = signedMachO();
+  new DataView(bytes.buffer).setUint32(codeDirectory, CSMAGIC_EMBEDDED_SIGNATURE);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason:
+      'The code signature is malformed: its CodeDirectory slot does not hold a CodeDirectory.',
+  });
+});
+
+test('a SuperBlob with no CodeDirectory slot is refused', () => {
+  const { bytes, dataoff } = signedMachO();
+  new DataView(bytes.buffer).setUint32(dataoff + 12, 0x1_00_00); // the CMS signature slot
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature has no CodeDirectory.',
+  });
+});
+
+test('a code signature that hashes with something other than SHA-256 is refused', () => {
+  const { bytes, codeDirectory } = signedMachO();
+  bytes[codeDirectory + 37] = CS_HASHTYPE_SHA1;
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature hashes with type 1, not SHA-256 (2).',
+  });
+  const short = signedMachO();
+  short.bytes[short.codeDirectory + 36] = 20;
+  expect(signedArm64MachO(short.bytes)).toEqual({
+    ok: false,
+    reason: "The code signature's hashes are 20 bytes, not SHA-256's 32.",
+  });
+});
+
+test('a code signature that does not cover the file up to the signature is refused', () => {
+  const { bytes, dataoff, codeDirectory } = signedMachO();
+  new DataView(bytes.buffer).setUint32(codeDirectory + 32, dataoff - PAGE);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: `The code signature covers ${dataoff - PAGE} bytes, but the signature starts at byte ${dataoff}.`,
+  });
+});
+
+test('a code signature with fewer page hashes than signed pages is refused', () => {
+  const { bytes, codeDirectory } = signedMachO();
+  new DataView(bytes.buffer).setUint32(codeDirectory + 28, 1);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature has 1 page hashes, but its 8492 signed bytes are 3 pages.',
+  });
+});
+
+test('signature offsets that point outside their blobs are refused rather than read', () => {
+  const pastSuperBlob = signedMachO();
+  new DataView(pastSuperBlob.bytes.buffer).setUint32(pastSuperBlob.dataoff + 16, 4096);
+  expect(signedArm64MachO(pastSuperBlob.bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature is malformed: its CodeDirectory runs past the SuperBlob.',
+  });
+  const superBlobPastSignature = signedMachO();
+  new DataView(superBlobPastSignature.bytes.buffer).setUint32(
+    superBlobPastSignature.dataoff + 4,
+    4_294_967_295, // 0xffffffff
+  );
+  expect(signedArm64MachO(superBlobPastSignature.bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature is malformed: its SuperBlob runs past the signature.',
+  });
+  const hashesPastCodeDirectory = signedMachO();
+  new DataView(hashesPastCodeDirectory.bytes.buffer).setUint32(
+    hashesPastCodeDirectory.codeDirectory + 16,
+    4_294_967_040, // 0xffffff00
+  );
+  expect(signedArm64MachO(hashesPastCodeDirectory.bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature is malformed: its page hashes run past its CodeDirectory.',
+  });
+  const shortLoadCommand = machO(CPU_TYPE_ARM64, [{ cmd: LC_CODE_SIGNATURE, size: 8 }]);
+  expect(signedArm64MachO(shortLoadCommand)).toEqual({
+    ok: false,
+    reason: 'The binary is malformed: its code signature load command is too small to locate it.',
+  });
 });
 
 test('an arm64 Mach-O without a code signature is refused, since macOS will not run it', () => {
