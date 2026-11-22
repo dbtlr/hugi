@@ -86,8 +86,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # One publish at a time across all tags, queued rather than cancelled, so each run's
+    # forward-only check sees every release published before it.
     concurrency:
-      group: release-${{ github.ref_name }}
+      group: release-publish
+      queue: max
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
