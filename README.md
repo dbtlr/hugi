@@ -227,6 +227,23 @@ A read that fails at a poll (a repository, a branch head, a pull request) skips 
 
 On SIGTERM or Ctrl-C the service stops taking work, interrupts the run in flight, deletes its VM, and exits. Run by hand, it waits up to three minutes for that, as an interrupted `hugi run` does. Under launchd it has less: the agent asks launchd to wait 60 seconds after SIGTERM before it kills the service, the most launchd allows from macOS 26.4. A run cut short can need up to 167 seconds to finish deleting its VM, so a kill can still leave the VM behind; the next start deletes it. Stop the service while `hugi service status` shows the run as `idle` before you `uninstall` it, and `tart delete` any VM the `leftover VMs` row lists after a stop. The interrupted run records no verdict, so its lane runs again after the restart. A run killed before it finished keeps its `running` record; retention treats it as stale once it is older than `runs.max_age_days`.
 
+### Installing a release
+
+A release is a GitHub release of this repository, tagged `vX.Y.Z` with the version in `package.json`. It carries two files: `hugi-darwin-arm64`, the binary for Apple silicon, and `SHA256SUMS`, which holds the binary's SHA-256 in the format `sha256sum` writes. The binary is built on Linux for the `bun-darwin-arm64` target and is ad-hoc signed; no other platform is released. Pushing the tag publishes the release (`.github/workflows/release.yml`), which refuses a tag that differs from `package.json`'s version.
+
+`install.sh` installs one release on the Mac that runs the service:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dbtlr/hugi/v0.1.0/install.sh | HUGI_VERSION=v0.1.0 sh
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `HUGI_VERSION` | Required. The release tag, `vX.Y.Z`. |
+| `HUGI_INSTALL_DIR` | The directory to install `hugi` into; `~/.local/bin` when unset. Created if missing. |
+
+The script refuses a machine that is not macOS on arm64. It downloads the binary and `SHA256SUMS` from the release over HTTPS, checks the binary against its line in `SHA256SUMS`, and checks that the binary's `--version` prints `X.Y.Z`. Only then does it move the binary over `hugi` in the install directory, in one rename, so a running service keeps the binary it started with. Any failure exits nonzero and leaves an existing `hugi` untouched. The script never starts, stops, or installs the service. After installing, run `hugi service install` from a shell whose `PATH` finds tart and git ([Installing the service](#installing-the-service)): it unloads a running agent and starts it again on the new binary, so run it while `hugi service status` shows the run as `idle`. Hugi has no self-update; to update, run the script again with the new tag, then `hugi service install`.
+
 ### Installing the service
 
 `hugi service install` installs `hugi serve` as a launchd user agent and starts it; launchd restarts it whenever it exits. Run it from the built binary (`bun run build`, then `dist/hugi service install`): Loom refuses to install a development run, and the agent runs the binary from the path it was installed from, so reinstall after moving it. `hugi service start`, `stop`, `restart` and `uninstall` do what they say. Restart the service after you change the configuration; `hugi serve` reads it once, when it starts.
