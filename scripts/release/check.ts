@@ -164,6 +164,8 @@ function pagesMatch(
   dataoff: number,
 ): Check<object> {
   const hashOffset = view.getUint32(directory + 16);
+  const identOffset = view.getUint32(directory + 20);
+  const nSpecialSlots = view.getUint32(directory + 24);
   const nCodeSlots = view.getUint32(directory + 28);
   const codeLimit = view.getUint32(directory + 32);
   const hashSize = view.getUint8(directory + 36);
@@ -198,6 +200,17 @@ function pagesMatch(
   }
   if (hashOffset + nCodeSlots * hashSize > directoryLength) {
     return malformed('its page hashes run past its CodeDirectory');
+  }
+  // macOS reads the identifier and the special-slot hashes (stored just before hashOffset) too.
+  const identifierEnd =
+    identOffset < CODE_DIRECTORY_HEADER
+      ? -1
+      : binary.subarray(directory + identOffset, directory + directoryLength).indexOf(0);
+  if (identOffset >= directoryLength || identifierEnd < 0) {
+    return malformed('its identifier is not a string inside its CodeDirectory');
+  }
+  if (hashOffset < CODE_DIRECTORY_HEADER + nSpecialSlots * hashSize) {
+    return malformed('its special-slot hashes overlap its CodeDirectory header');
   }
   for (let index = 0; index < pages; index += 1) {
     const start = index * page;

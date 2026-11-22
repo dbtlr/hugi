@@ -87,7 +87,10 @@ function signedMachO(): { bytes: Uint8Array; codeDirectory: number; dataoff: num
   ]);
   const dataoff = 2 * PAGE + 300;
   const pages = Math.ceil(dataoff / PAGE);
-  const codeDirectoryLength = CODE_DIRECTORY_HEADER + pages * 32;
+  // The identifier string follows the header, NUL-terminated, and the page hashes follow it.
+  const identifier = new TextEncoder().encode('hugi\0');
+  const hashOffset = CODE_DIRECTORY_HEADER + identifier.length;
+  const codeDirectoryLength = hashOffset + pages * 32;
   const superBlobLength = 20 + codeDirectoryLength;
   const datasize = Math.ceil(superBlobLength / 16) * 16;
   const bytes = new Uint8Array(dataoff + datasize);
@@ -108,8 +111,8 @@ function signedMachO(): { bytes: Uint8Array; codeDirectory: number; dataoff: num
     codeDirectoryLength,
     0x2_01_00, // version
     0x2, // flags: adhoc
-    CODE_DIRECTORY_HEADER, // hashOffset
-    0, // identOffset
+    hashOffset,
+    CODE_DIRECTORY_HEADER, // identOffset
     0, // nSpecialSlots
     pages, // nCodeSlots
     dataoff, // codeLimit
@@ -117,11 +120,12 @@ function signedMachO(): { bytes: Uint8Array; codeDirectory: number; dataoff: num
     view.setUint32(codeDirectory + index * 4, word);
   }
   bytes.set([32, CS_HASHTYPE_SHA256, 0, PAGE_SIZE_LOG2], codeDirectory + 36);
+  bytes.set(identifier, codeDirectory + CODE_DIRECTORY_HEADER);
   for (let page = 0; page < pages; page += 1) {
     const hash = createHash('sha256')
       .update(bytes.subarray(page * PAGE, Math.min((page + 1) * PAGE, dataoff)))
       .digest();
-    bytes.set(hash, codeDirectory + CODE_DIRECTORY_HEADER + page * 32);
+    bytes.set(hash, codeDirectory + hashOffset + page * 32);
   }
   return { bytes, codeDirectory, dataoff };
 }
@@ -220,6 +224,35 @@ test('a code signature with fewer page hashes than signed pages is refused', () 
   expect(signedArm64MachO(bytes)).toEqual({
     ok: false,
     reason: 'The code signature has 1 page hashes, but its 8492 signed bytes are 3 pages.',
+  });
+});
+
+test('a CodeDirectory whose identifier is outside it or unterminated is refused', () => {
+  const pastDirectory = signedMachO();
+  new DataView(pastDirectory.bytes.buffer).setUint32(pastDirectory.codeDirectory + 20, 65_536);
+  expect(signedArm64MachO(pastDirectory.bytes)).toEqual({
+    ok: false,
+    reason:
+      'The code signature is malformed: its identifier is not a string inside its CodeDirectory.',
+  });
+  const insideHeader = signedMachO();
+  new DataView(insideHeader.bytes.buffer).setUint32(insideHeader.codeDirectory + 20, 8);
+  expect(signedArm64MachO(insideHeader.bytes).ok).toBe(false);
+  const unterminated = signedMachO();
+  const view = new DataView(unterminated.bytes.buffer);
+  const length = view.getUint32(unterminated.codeDirectory + 4);
+  view.setUint32(unterminated.codeDirectory + 20, length - 1);
+  unterminated.bytes[unterminated.codeDirectory + length - 1] = 65;
+  expect(signedArm64MachO(unterminated.bytes).ok).toBe(false);
+});
+
+test('special-slot hashes that would sit inside the CodeDirectory header are refused', () => {
+  const { bytes, codeDirectory } = signedMachO();
+  new DataView(bytes.buffer).setUint32(codeDirectory + 24, 2);
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason:
+      'The code signature is malformed: its special-slot hashes overlap its CodeDirectory header.',
   });
 });
 
