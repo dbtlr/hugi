@@ -72,8 +72,9 @@ const CS_HASHTYPE_SHA256 = 2;
 const CS_HASHTYPE_SHA1 = 1;
 const PAGE_SIZE_LOG2 = 12;
 const PAGE = 2 ** PAGE_SIZE_LOG2;
-// The CodeDirectory fields this check reads end at byte 44 (pageSize, then a spare word).
-const CODE_DIRECTORY_HEADER = 44;
+// Bun writes CodeDirectory version 0x20400, whose fixed fields end at byte 88 (execSegFlags).
+const CODE_DIRECTORY_VERSION = 132_096; // 0x20400
+const CODE_DIRECTORY_HEADER = 88;
 
 /**
  * An arm64 Mach-O of two full pages and a short third, ad-hoc signed the way the linker does it,
@@ -109,7 +110,7 @@ function signedMachO(): { bytes: Uint8Array; codeDirectory: number; dataoff: num
   for (const [index, word] of [
     CSMAGIC_CODEDIRECTORY,
     codeDirectoryLength,
-    0x2_01_00, // version
+    CODE_DIRECTORY_VERSION,
     0x2, // flags: adhoc
     hashOffset,
     CODE_DIRECTORY_HEADER, // identOffset
@@ -238,6 +239,18 @@ test('a CodeDirectory whose identifier is outside it or unterminated is refused'
   const insideHeader = signedMachO();
   new DataView(insideHeader.bytes.buffer).setUint32(insideHeader.codeDirectory + 20, 8);
   expect(signedArm64MachO(insideHeader.bytes).ok).toBe(false);
+  // Past the earliest header's 44 bytes but inside version 0x20400's 88.
+  const insideVersionedHeader = signedMachO();
+  new DataView(insideVersionedHeader.bytes.buffer).setUint32(
+    insideVersionedHeader.codeDirectory + 20,
+    44,
+  );
+  insideVersionedHeader.bytes[insideVersionedHeader.codeDirectory + 47] = 0;
+  expect(signedArm64MachO(insideVersionedHeader.bytes)).toEqual({
+    ok: false,
+    reason:
+      'The code signature is malformed: its identifier is not a string inside its CodeDirectory.',
+  });
   const unterminated = signedMachO();
   const view = new DataView(unterminated.bytes.buffer);
   const length = view.getUint32(unterminated.codeDirectory + 4);
@@ -247,12 +260,25 @@ test('a CodeDirectory whose identifier is outside it or unterminated is refused'
 });
 
 test('special-slot hashes that would sit inside the CodeDirectory header are refused', () => {
+  // One special slot puts its hash at byte 61: past the earliest header, inside 0x20400's 88.
+  const one = signedMachO();
+  new DataView(one.bytes.buffer).setUint32(one.codeDirectory + 24, 1);
+  expect(signedArm64MachO(one.bytes).ok).toBe(false);
   const { bytes, codeDirectory } = signedMachO();
   new DataView(bytes.buffer).setUint32(codeDirectory + 24, 2);
   expect(signedArm64MachO(bytes)).toEqual({
     ok: false,
     reason:
       'The code signature is malformed: its special-slot hashes overlap its CodeDirectory header.',
+  });
+});
+
+test('a CodeDirectory version this check does not know is refused', () => {
+  const { bytes, codeDirectory } = signedMachO();
+  new DataView(bytes.buffer).setUint32(codeDirectory + 8, 132_864); // 0x20700
+  expect(signedArm64MachO(bytes)).toEqual({
+    ok: false,
+    reason: 'The code signature has CodeDirectory version 0x20700, which this check does not know.',
   });
 });
 

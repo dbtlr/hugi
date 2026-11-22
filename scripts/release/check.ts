@@ -24,8 +24,26 @@ const SHA256_BYTES = 32;
 // A SuperBlob is magic, length, count, then count {type, offset} entries.
 const SUPER_BLOB_HEADER = 12;
 const BLOB_INDEX = 8;
-// The CodeDirectory fields read here end with pageSize and a spare word at byte 44.
+// The earliest CodeDirectory's fixed fields end with pageSize and a spare word at byte 44.
 const CODE_DIRECTORY_HEADER = 44;
+// Each later version appends fixed fields (xnu's cs_blobs.h, CS_CodeDirectory). Bun writes 0x20400.
+const CODE_DIRECTORY_HEADERS: [version: number, end: number][] = [
+  [132_608, 108], // 0x20600: linkage fields
+  [132_352, 96], // 0x20500: runtime, preEncryptOffset
+  [132_096, 88], // 0x20400: execSegBase, execSegLimit, execSegFlags
+  [131_840, 64], // 0x20300: spare3, codeLimit64
+  [131_584, 52], // 0x20200: teamOffset
+  [131_328, 48], // 0x20100: scatterOffset
+];
+const CODE_DIRECTORY_NEWEST = 132_863; // 0x206ff
+
+/** Where a CodeDirectory's fixed fields end for its version, or undefined for a newer version. */
+function codeDirectoryHeader(version: number): number | undefined {
+  if (version > CODE_DIRECTORY_NEWEST) {
+    return undefined;
+  }
+  return CODE_DIRECTORY_HEADERS.find(([since]) => version >= since)?.[1] ?? CODE_DIRECTORY_HEADER;
+}
 
 type Refusal = { ok: false; reason: string };
 
@@ -163,6 +181,7 @@ function pagesMatch(
   directoryLength: number,
   dataoff: number,
 ): Check<object> {
+  const version = view.getUint32(directory + 8);
   const hashOffset = view.getUint32(directory + 16);
   const identOffset = view.getUint32(directory + 20);
   const nSpecialSlots = view.getUint32(directory + 24);
@@ -171,6 +190,16 @@ function pagesMatch(
   const hashSize = view.getUint8(directory + 36);
   const hashType = view.getUint8(directory + 37);
   const pageSizeLog2 = view.getUint8(directory + 39);
+  const header = codeDirectoryHeader(version);
+  if (header === undefined) {
+    return {
+      ok: false,
+      reason: `The code signature has CodeDirectory version 0x${version.toString(16)}, which this check does not know.`,
+    };
+  }
+  if (directoryLength < header) {
+    return malformed("its CodeDirectory is shorter than its version's fixed fields");
+  }
   if (hashType !== CS_HASHTYPE_SHA256) {
     return {
       ok: false,
@@ -203,13 +232,13 @@ function pagesMatch(
   }
   // macOS reads the identifier and the special-slot hashes (stored just before hashOffset) too.
   const identifierEnd =
-    identOffset < CODE_DIRECTORY_HEADER
+    identOffset < header
       ? -1
       : binary.subarray(directory + identOffset, directory + directoryLength).indexOf(0);
   if (identOffset >= directoryLength || identifierEnd < 0) {
     return malformed('its identifier is not a string inside its CodeDirectory');
   }
-  if (hashOffset < CODE_DIRECTORY_HEADER + nSpecialSlots * hashSize) {
+  if (hashOffset < header + nSpecialSlots * hashSize) {
     return malformed('its special-slot hashes overlap its CodeDirectory header');
   }
   for (let index = 0; index < pages; index += 1) {
