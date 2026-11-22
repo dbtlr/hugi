@@ -1,0 +1,38 @@
+name: Release
+
+# A vX.Y.Z tag publishes a release in the shape Loom's install.sh reads (README, "Installing a
+# release"), following Loom's release recipe. Bun cross-compiles the darwin binary on Linux.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4 # keep in step with mise.toml
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun x loom build --release --target bun-darwin-arm64 --out dist/hugi-darwin-arm64
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: sha256sum hugi-* > SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/hugi-* dist/SHA256SUMS --title "$TAG" --generate-notes
