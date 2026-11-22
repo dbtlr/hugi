@@ -1,6 +1,6 @@
 {
   "name": "hugi",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Runs macOS CI lanes in throwaway VMs and reports the verdicts to GitHub.",
   "license": "MIT",
@@ -12,7 +12,7 @@
   "scripts": {
     "hugi": "bun run src/main.ts",
     "check": "vp check",
-    "test": "bun test src",
+    "test": "bun test src scripts",
     "test:vm": "HUGI_VM_TESTS=1 bun test src/vm",
     "test:vm:golden": "HUGI_VM_TESTS=1 HUGI_GOLDEN_TESTS=1 bun test src/vm",
     "build": "loom build --out dist/hugi"

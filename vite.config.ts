@@ -19,7 +19,7 @@ export default defineConfig({
     toolingPlugin({
       fmt: { ignores: ['dist/**', 'spike/**'] },
       lint: { ignores: ['dist/**', 'spike/**'], rules: { 'one-var': 'off' } },
-      node: { files: ['src/**'] },
+      node: { files: ['src/**', 'scripts/**'] },
     }),
   ],
 });

@@ -1,0 +1,113 @@
+name: Release
+
+# A vX.Y.Z tag publishes a release in the shape Loom's install.sh reads: hugi-darwin-arm64 and a
+# one-line SHA256SUMS (README, "Installing a release"). The binary is cross-compiled on Linux, so
+# no step waits on a hosted macOS runner. Pull requests that touch the release path run the build
+# and its checks without publishing.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'bun.lock'
+      - 'install.sh'
+      - 'package.json'
+      - 'scripts/release/**'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build hugi-darwin-arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4 # keep in step with mise.toml
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check
+        run: bun run check
+
+      - name: Test
+        run: bun run test
+
+      - name: Compile
+        run: bun x loom build --release --target bun-darwin-arm64 --out dist/hugi-darwin-arm64
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: sha256sum hugi-darwin-arm64 > SHA256SUMS
+
+      # Refuses an unsigned or non-arm64 binary, a SHA256SUMS the installer cannot read, and, on a
+      # tag, a tag that is not v<digits>.<digits>.<digits> or differs from package.json's version.
+      - name: Check the release
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bun scripts/release/main.ts dist ${TAG:+"$TAG"}
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: |
+            dist/hugi-darwin-arm64
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+
+      # A published release is never replaced. A draft is what a failed run left, so it goes.
+      - name: Refuse a published release, replace a leftover draft
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::error::The release $TAG is already published; cut a new patch release instead."
+              exit 1
+            fi
+            gh release delete "$TAG" --yes
+          fi
+
+      - name: Create the draft release
+        run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes dist/hugi-darwin-arm64 dist/SHA256SUMS
+
+      # Publish only what reads back intact.
+      - name: Verify the uploaded files
+        run: |
+          set -euo pipefail
+          mkdir uploaded
+          gh release download "$TAG" --dir uploaded
+          (cd uploaded && sha256sum --check --strict SHA256SUMS)
+          cmp dist/SHA256SUMS uploaded/SHA256SUMS
+          test "$(ls uploaded | sort | tr '\n' ' ')" = "SHA256SUMS hugi-darwin-arm64 "
+
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --latest
