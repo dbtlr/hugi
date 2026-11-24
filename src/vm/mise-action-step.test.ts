@@ -477,6 +477,17 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(later).not.toContain('FOO');
   });
 
+  test("a mise --version that fails is ordinary, as the action's own test of mise fails on GitHub", async () => {
+    const h = harness({ exitCodes: { probe: 3 }, probe: '' });
+    const result = await h.run(requestOf({ step: { continueOnError: true } }));
+    expect(result.reason).toBe('passed');
+    expect(result.steps[2]).toMatchObject({
+      continuedOnError: true,
+      error: 'mise --version exited with code 3',
+      outcome: 'failure',
+    });
+  });
+
   test('continue-on-error lets an ordinary failure pass, as on GitHub', async () => {
     const h = harness({ exitCodes: { install: 1 } });
     const result = await h.run(requestOf({ step: { continueOnError: true } }));
@@ -523,6 +534,13 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       {},
       ['probe'],
       'mise env --paths',
+    ],
+    [
+      "a probe command of Hugi's own that fails after mise --version",
+      { exitCodes: { probe: 1 } },
+      {},
+      ['probe'],
+      "the probe of the guest's mise",
     ],
     [
       'workflow tools bins mise cannot find',
@@ -662,16 +680,28 @@ describe.skipIf(mise === null || jq === null)(
       rmSync(root, { force: true, recursive: true });
     });
 
-    /** Run a captured guest script on the host, with the guest's directories moved under `root`. */
-    function onHost(script: string): void {
+    /**
+     * Run a captured guest script on the host, with the guest's directories moved under `root`
+     * and the programs of `stubs` ahead of the real ones; its exit code must be `exitCode`.
+     */
+    function onHost(script: string, { exitCode = 0, stubs = '' } = {}): void {
       const text = script
         .replaceAll('/Users/admin/hugi', hugi())
-        .replace('export PATH="', `export PATH="${dirname(mise!)}:${dirname(jq!)}:/bin:`);
+        .replace('export PATH="', `export PATH="${stubs}:${dirname(mise!)}:${dirname(jq!)}:/bin:`);
       const ran = Bun.spawnSync(['bash', '-s'], {
         env: { HOME: join(root, 'home'), PATH: '/usr/bin:/bin' },
         stdin: new TextEncoder().encode(text),
       });
-      expect(ran.exitCode, ran.stdout.toString()).toBe(0);
+      expect(ran.exitCode, ran.stdout.toString()).toBe(exitCode);
+    }
+
+    /** A directory holding a `name` program that runs `body` (sh). */
+    function stub(name: string, body: string): string {
+      const dir = join(root, `stub-${name}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+      chmodSync(join(dir, name), 0o755);
+      return dir;
     }
 
     const output = (name: string) => readFileSync(join(hugi(), 'control/step-02', name), 'utf8');
@@ -685,6 +715,14 @@ describe.skipIf(mise === null || jq === null)(
         supports: { envJson: true, envPaths: true, installLocked: true },
         version: version!.replace(/^v/, ''),
       });
+    });
+
+    test('the probe file stays empty only when mise --version itself fails', async () => {
+      const script = (await scriptsOf({}))('probe');
+      onHost(script, { exitCode: 3, stubs: stub('mise', 'exit 3') });
+      expect(output('mise-probe.json')).toBe('');
+      onHost(script, { exitCode: 4, stubs: stub('jq', 'exit 4') });
+      expect(output('mise-probe.json')).not.toBe('');
     });
 
     test('the listing loads only the workspace config, not the one above it or the global one', async () => {

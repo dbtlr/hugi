@@ -182,26 +182,39 @@ function addPath(step: Step, directory: string): void {
 const checksOverlap = (settings: MiseActionSettings): boolean =>
   settings.addShimsToPath || (settings.env && settings.exportPath);
 
-/** The guest's mise version, data directory and capabilities. */
+/**
+ * The guest's mise version, data directory and capabilities. Only `mise --version` failing is
+ * ordinary, as the action's own test of mise; the probe's file is empty exactly until it passes,
+ * so a failure after it, of a command of Hugi's own, is Hugi's own.
+ */
 async function probeMise(step: Step): Promise<Probe | Verdict> {
+  const output = shellQuote(step.files.probe);
   const exitCode = await runScript(step, 'probe', GUEST_RUNNER_PATHS.temp, [
+    `: > ${output}`,
     'version="$(mise --version)"',
+    `printf '%s\\n' "$version" > ${output}`,
     `if [ -n "\${MISE_DATA_DIR:-}" ]; then data="$MISE_DATA_DIR"`,
     `elif [ -n "\${XDG_DATA_HOME:-}" ]; then data="$XDG_DATA_HOME/mise"`,
     'else data="$HOME/.local/share/mise"; fi',
     // The action's own test for `--locked`, on the help text, which is held whole before grep.
     'supports() { local help; help="$(NO_COLOR=1 mise "$1" --help 2>&1 || true)"',
     String.raw`  if grep -Eq -- "(^|[[:space:]])$2([[:space:],]|\$)" <<< "$help"; then echo true; else echo false; fi; }`,
-    'jq -n --arg version "$version" --arg dataDir "$data" \\',
+    'probed="$(jq -n --arg version "$version" --arg dataDir "$data" \\',
     '  --argjson envJson "$(supports env --json)" --argjson envPaths "$(supports env --paths)" \\',
     '  --argjson installLocked "$(supports install --locked)" \\',
-    `  '{version: $version, dataDir: $dataDir, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}' \\`,
-    `  > ${shellQuote(step.files.probe)}`,
+    `  '{version: $version, dataDir: $dataDir, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}')"`,
+    `printf '%s\\n' "$probed" > ${output}`,
   ]);
-  if (exitCode !== 0) {
+  if (exitCode === 0) {
+    return parseProbe(await step.tools.readFile(step.files.probe));
+  }
+  if ((await step.tools.readFile(step.files.probe)) === '') {
     return failed(`mise --version exited with code ${exitCode}`, exitCode);
   }
-  return parseProbe(await step.tools.readFile(step.files.probe));
+  return hugisOwn(
+    step,
+    `the probe of the guest's mise (its data directory and capabilities) exited with code ${exitCode}`,
+  );
 }
 
 /**
