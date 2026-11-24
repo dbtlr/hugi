@@ -186,9 +186,7 @@ function logOf(log: StepLogView | undefined): SafeHtml {
     return html`<p class="note">This step wrote no output.</p>`;
   }
   const cut = log.cut
-    ? html`<p class="note">
-        This log is longer than 1 MiB, so only its last 1 MiB is shown, from the first whole line.
-      </p>`
+    ? html`<p class="note">This log is longer than 1 MiB, so only its last 1 MiB is shown.</p>`
     : '';
   return html`<div class="log-scroll">
       <pre class="log"><code>${log.text}</code></pre>
