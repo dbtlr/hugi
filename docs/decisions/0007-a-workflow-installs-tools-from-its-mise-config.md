@@ -106,6 +106,7 @@ The step needs no special case for these. Before the plan's `actions/checkout` s
 These limits are accepted:
 
 - The guest's mise is the golden image's, unless `version` names it exactly. Without `version`, GitHub's runner downloads the newest mise release that is older than `minimum_release_age`, so the two can differ in how they resolve or install a tool.
+- The step runs the first `mise` on the step's `PATH`, where the action puts the binary it fetched first. A `mise` that an earlier step put on `PATH` runs in its place, and the `version` check trusts the version that it reports.
 - Hugi reproduces v5.3.0. The moving `v5` tag, a later v5 release, or a SHA pin can name a release whose behaviour differs.
 - The shims directory holds shims for the image's installed tools as well as the config's, and steps after the action read the repository's config. So a command that neither the workflow nor the config pins, run as a shim, resolves through the repository's config and the image's global config, where GitHub's runner has no shim and runs its own program or none. A subdirectory's config that pins such a tool reaches it the same way. The same holds for a later step's own `mise run`, `mise exec`, or `mise env`, which still read the image's global config.
 - With `install: false`, or with `install_args` naming a subset, a tool that the config requests and the image already holds is active under Hugi and missing on GitHub's runner.
