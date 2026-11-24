@@ -1,6 +1,6 @@
 {
   "name": "hugi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Runs macOS CI lanes in throwaway VMs and reports the verdicts to GitHub.",
   "license": "MIT",

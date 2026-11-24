@@ -262,10 +262,10 @@ A release is a GitHub release of this repository, tagged `v<version>` with the v
 [`install.sh`](install.sh) is Loom's installer, rendered by `loom init --only install` and not edited by hand; `install.sh --help` prints its usage. It downloads the binary over HTTPS, checks it against `SHA256SUMS`, and moves it into place in one rename. On the Mac that runs the service:
 
 ```sh
-script=$(curl -fsSL https://raw.githubusercontent.com/dbtlr/hugi/v0.1.0/install.sh) && printf '%s\n' "$script" | sh -s -- 0.1.0
+script=$(curl -fsSL https://raw.githubusercontent.com/dbtlr/hugi/v0.2.0/install.sh) && printf '%s\n' "$script" | sh -s -- 0.2.0
 ```
 
-Fetching the script before running it makes a failed fetch fail the command, where `curl … | sh` would exit 0 having installed nothing. Without a version, the script installs the latest release. `--dir` installs into another absolute directory than `~/.local/bin`, and `--unmanaged` installs a side copy, which is how to try a release before it replaces the live binary: `sh install.sh --unmanaged --dir "$PWD/try" 0.1.0 && ./try/hugi --version`.
+Fetching the script before running it makes a failed fetch fail the command, where `curl … | sh` would exit 0 having installed nothing. Without a version, the script installs the latest release. `--dir` installs into another absolute directory than `~/.local/bin`, and `--unmanaged` installs a side copy, which is how to try a release before it replaces the live binary: `sh install.sh --unmanaged --dir "$PWD/try" 0.2.0 && ./try/hugi --version`.
 
 The script never touches the service. A running service keeps the binary it started with until it next exits, when launchd starts the new one under the old unit. After installing, run the installed binary's `service install` with a `PATH` that finds tart and git, because `install` copies that `PATH` into the agent ([Installing the service](#installing-the-service)); a non-interactive caller sets it explicitly: `PATH=/opt/homebrew/bin:/usr/bin:/bin ~/.local/bin/hugi service install`. It restarts the agent on the new binary, interrupting a run in flight, whose lane runs again after the restart. Hugi has no self-update: to update, or to roll back a release that does not run, install the version you want and run `service install` again.
 
