@@ -172,18 +172,22 @@ export type FakeMiseAction = {
   readonly overlap?: string;
   /** `mise env --json`; the default is `{}`. */
   readonly environment?: string;
-  /** `mise env --paths`; the default is none. */
+  /** `mise env --paths`, which the overlap check captures for the export; the default is none. */
   readonly paths?: string;
   readonly exitCodes?: Partial<Record<MiseActionPhase, number>>;
   /** This script runs until its signal aborts, like a hung install. */
   readonly hangs?: MiseActionPhase;
 };
 
-/** The install check's default answer: each place its script searches holds no regular file. */
+/**
+ * The install check's default answer: each place its script searches holds no regular file. The
+ * places are the loop's `shellQuote`d words, which write an apostrophe as `'\''`.
+ */
 function emptyLockPlaces(script: string): string {
   const places = /^for place in (.*); do/mu.exec(script)?.[1] ?? '';
-  return [...places.matchAll(/'([^']*)'/gu)]
-    .map(([, path]) => `${JSON.stringify({ files: [], path })}\n`)
+  return [...places.matchAll(/(?:'[^']*'|\\')+/gu)]
+    .map(([word]) => word.replaceAll(String.raw`'\''`, "'").slice(1, -1))
+    .map((path) => `${JSON.stringify({ files: [], path })}\n`)
     .join('');
 }
 
@@ -383,10 +387,7 @@ export class FakeTart implements Tart {
     options.onOutput?.(`mise action ${phase}\n`);
     const writes: Partial<Record<MiseActionPhase, [string, string][]>> = {
       bins: [[files.workflowBins, fake.workflowBins ?? '/wf/node\n']],
-      env: [
-        [files.environment, fake.environment ?? '{}'],
-        [files.paths, fake.paths ?? ''],
-      ],
+      env: [[files.environment, fake.environment ?? '{}']],
       'install-check': [[files.install, fake.installCheck ?? emptyLockPlaces(options.stdin ?? '')]],
       listing: [
         [
@@ -395,7 +396,10 @@ export class FakeTart implements Tart {
             `${JSON.stringify({ kind: 'workspace', real: GUEST_RUNNER_PATHS.workspace })}\n`,
         ],
       ],
-      overlap: [[files.overlap, fake.overlap ?? '']],
+      overlap: [
+        [files.overlap, fake.overlap ?? ''],
+        [files.paths, fake.paths ?? ''],
+      ],
       probe: [[files.probe, fake.probe ?? JSON.stringify(FAKE_MISE_PROBE)]],
       requests: [[files.configRequests, fake.configRequests ?? '{}']],
       version: [[files.version, fake.version ?? '2026.11.12 macos-arm64 (2026-11-21)\n']],

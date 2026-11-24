@@ -106,6 +106,19 @@ function hugisOwn(step: Step, error: string): Verdict {
   return failed(error);
 }
 
+/**
+ * Run one of Hugi's own checks. Until it returns, the step's end is Hugi's own: a deadline or an
+ * interrupt that cuts it short leaves it unfinished, and continue-on-error cannot cover that.
+ */
+async function ownCheck<T>(step: Step, check: () => Promise<T>): Promise<T> {
+  try {
+    return await check();
+  } catch (error) {
+    step.hugisOwn = true;
+    throw error;
+  }
+}
+
 const workingDirectory = (settings: MiseActionSettings): string =>
   settings.workingDirectory === undefined
     ? GUEST_RUNNER_PATHS.workspace
@@ -361,6 +374,12 @@ async function checkConfig(step: Step): Promise<Verdict | undefined> {
   return conflicts.length === 0 ? undefined : hugisOwn(step, conflicts.join('\n'));
 }
 
+/**
+ * The file names a listing passed to jq, each behind `./` so no name that starts with `-` reads as
+ * a jq option: jq parses options after `--args`, and its `--` differs between releases.
+ */
+const UNPREFIXED = '($ARGS.positional | map(ltrimstr("./")))';
+
 /** Lists the regular files of each place the lock file search looks, and the monorepo answer. */
 function installCheckLines(step: Step, places: readonly string[]): string[] {
   const output = shellQuote(step.files.install);
@@ -368,9 +387,9 @@ function installCheckLines(step: Step, places: readonly string[]): string[] {
     'shopt -s dotglob',
     'regular_files() { local names=() file',
     '  if [ -d "$1" ]; then for file in "$1"/*; do',
-    `    if [ -f "$file" ] && [ ! -L "$file" ]; then names+=("\${file##*/}"); fi`,
+    `    if [ -f "$file" ] && [ ! -L "$file" ]; then names+=("./\${file##*/}"); fi`,
     '  done; fi',
-    `  jq -nc --arg path "$1" '{path: $path, files: $ARGS.positional}' --args "\${names[@]}"; }`,
+    `  jq -nc --arg path "$1" '{path: $path, files: ${UNPREFIXED}}' --args "\${names[@]}"; }`,
     `: > ${output}`,
     `for place in ${places.map(shellQuote).join(' ')}; do regular_files "$place" >> ${output}; done`,
     ...(step.input.settings.monorepo
@@ -384,11 +403,8 @@ function installCheckLines(step: Step, places: readonly string[]): string[] {
   ];
 }
 
-/**
- * Step 8: `mise install`, `--locked` when a lock file lies between the working directory and the
- * workspace root, then the `install_args` tool names. Its exit code, or the failure that stops it.
- */
-async function install(step: Step): Promise<number | Verdict> {
+/** Whether a lock file lies between the working directory and the workspace root. Hugi's own. */
+async function findLockFile(step: Step): Promise<boolean | Verdict> {
   const { settings } = step.input;
   const directory = workingDirectory(settings);
   const places = lockFilePlaces(settings.workingDirectory);
@@ -411,12 +427,24 @@ async function install(step: Step): Promise<number | Verdict> {
       'the mise config sets monorepo.config_roots, and Hugi does not reproduce a monorepo install',
     );
   }
-  const locked = hasLockFile(places, found);
+  return hasLockFile(places, found);
+}
+
+/**
+ * Step 8: `mise install`, `--locked` when a lock file lies between the working directory and the
+ * workspace root, then the `install_args` tool names. Its exit code, or the failure that stops it.
+ */
+async function install(step: Step): Promise<number | Verdict> {
+  const { settings } = step.input;
+  const locked = await ownCheck(step, () => findLockFile(step));
+  if (typeof locked !== 'boolean') {
+    return locked;
+  }
   if (locked) {
     step.tools.log.write('Detected a mise lock file, running `mise install --locked`\n');
   }
   const command = ['mise install', ...(locked ? ['--locked'] : [])];
-  return runScript(step, 'install', directory, [
+  return runScript(step, 'install', workingDirectory(settings), [
     [...command, ...settings.installArgs.map(shellQuote)].join(' '),
   ]);
 }
@@ -424,7 +452,8 @@ async function install(step: Step): Promise<number | Verdict> {
 /**
  * Lists the executables of each directory `mise env --paths` names and of each workflow tool bin,
  * resolved, one JSON document per line. A directory that does not exist holds none; one that
- * exists and cannot be read fails the script.
+ * exists and cannot be read fails the script. The `mise env --paths` it lists is kept for the
+ * export, so the export adds only the directories the check inspected.
  */
 function overlapLines(step: Step, workflowBins: readonly string[]): string[] {
   return [
@@ -434,15 +463,15 @@ function overlapLines(step: Step, workflowBins: readonly string[]): string[] {
     '  if [ -d "$real" ]; then',
     '    if [ ! -r "$real" ] || [ ! -x "$real" ]; then echo "hugi: cannot list $2" >&2; return 1; fi',
     '    for file in "$real"/*; do',
-    `      if [ -f "$file" ] && [ -x "$file" ]; then names+=("\${file##*/}"); fi`,
+    `      if [ -f "$file" ] && [ -x "$file" ]; then names+=("./\${file##*/}"); fi`,
     '    done',
     '  fi',
-    `  jq -nc --arg role "$1" --arg dir "$2" --arg real "$real" '{role: $role, dir: $dir, real: $real, executables: $ARGS.positional}' --args "\${names[@]}"; }`,
-    'paths="$(mise env --paths)"',
+    `  jq -nc --arg role "$1" --arg dir "$2" --arg real "$real" '{role: $role, dir: $dir, real: $real, executables: ${UNPREFIXED}}' --args "\${names[@]}"; }`,
+    `mise env --paths > ${shellQuote(step.files.paths)}`,
     '{',
     '  while IFS= read -r dir; do',
     '    if [ -n "$dir" ]; then executables config "$dir"; fi',
-    '  done <<< "$paths"',
+    `  done < ${shellQuote(step.files.paths)}`,
     `  for dir in ${workflowBins.map(shellQuote).join(' ')}; do executables workflow "$dir"; done`,
     `} > ${shellQuote(step.files.overlap)}`,
   ];
@@ -472,12 +501,14 @@ async function checkOverlap(
   return conflicts.length === 0 ? undefined : hugisOwn(step, conflicts.join('\n'));
 }
 
-/** Step 11: `mise env --json` to `GITHUB_ENV`, without `PATH`, and `mise env --paths` to `GITHUB_PATH`. */
+/**
+ * Step 11: `mise env --json` to `GITHUB_ENV`, without `PATH`, and to `GITHUB_PATH` the
+ * `mise env --paths` the overlap check captured and inspected, which always runs before it.
+ */
 async function exportEnvironment(step: Step): Promise<Verdict | undefined> {
   const { settings } = step.input;
   const exitCode = await runScript(step, 'env', workingDirectory(settings), [
     `mise env --json > ${shellQuote(step.files.environment)}`,
-    ...(settings.exportPath ? [`mise env --paths > ${shellQuote(step.files.paths)}`] : []),
   ]);
   if (exitCode !== 0) {
     return failed(`mise env exited with code ${exitCode}`, exitCode);
@@ -510,20 +541,20 @@ async function runAction(step: Step): Promise<Verdict> {
   if (settings.miseEnv !== undefined) {
     exportVariable(step, 'MISE_ENV', settings.miseEnv);
   }
-  const probe = await probeMise(step);
+  const probe = await ownCheck(step, () => probeMise(step));
   if ('ok' in probe) {
     return probe;
   }
-  const unfit = (await checkVersion(step)) ?? checkCapabilities(step, probe);
+  const unfit = (await ownCheck(step, () => checkVersion(step))) ?? checkCapabilities(step, probe);
   if (unfit) {
     return unfit;
   }
-  const workflowBins = await findWorkflowBins(step);
+  const workflowBins = await ownCheck(step, () => findWorkflowBins(step));
   if (!Array.isArray(workflowBins)) {
     return workflowBins;
   }
   writeDefaultsAndShims(step, probe.dataDir, workflowBins);
-  const early = (await prepare(step)) ?? (await checkConfig(step));
+  const early = (await prepare(step)) ?? (await ownCheck(step, () => checkConfig(step)));
   if (early) {
     return early;
   }
@@ -531,7 +562,9 @@ async function runAction(step: Step): Promise<Verdict> {
   if (typeof installed !== 'number') {
     return installed;
   }
-  const overlap = checksOverlap(settings) ? await checkOverlap(step, workflowBins) : undefined;
+  const overlap = checksOverlap(settings)
+    ? await ownCheck(step, () => checkOverlap(step, workflowBins))
+    : undefined;
   if (overlap) {
     return overlap;
   }

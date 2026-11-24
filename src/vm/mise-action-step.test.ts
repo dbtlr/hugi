@@ -20,6 +20,7 @@ import type { FakeGuest, FakeMiseAction, MiseActionPhase } from './fake-tart';
 import { runInVm } from './lifecycle';
 import {
   hasLockFile,
+  managedPaths,
   lockFilePlaces,
   miseVersion,
   overlapConflicts,
@@ -560,6 +561,62 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(passed.reason).toBe('passed');
   });
 
+  test.each<MiseActionPhase>([
+    'probe',
+    'version',
+    'bins',
+    'listing',
+    'requests',
+    'install-check',
+    'overlap',
+  ])(
+    "a timeout-minutes that passes during Hugi's own %s fails the lane even under continue-on-error",
+    async (phase) => {
+      const h = harness({ hangs: phase });
+      const result = await h.run(
+        requestOf({
+          settings: { version: '2026.11.12' },
+          step: { continueOnError: true, timeoutMinutes: 1 },
+        }),
+      );
+      expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+      expect(result.steps[2]).toMatchObject({ outcome: 'timeout' });
+      expect(result.steps[2]).not.toHaveProperty('continuedOnError');
+      expect(h.phases().at(-1)).toBe(phase);
+    },
+  );
+
+  test.each<MiseActionPhase>(['prepare', 'install', 'ls', 'env'])(
+    "a timeout-minutes that passes during the action's own %s is tolerated under continue-on-error",
+    async (phase) => {
+      const h = harness({ hangs: phase });
+      const result = await h.run(requestOf({ step: { continueOnError: true, timeoutMinutes: 1 } }));
+      expect(result.reason).toBe('passed');
+      expect(result.steps[2]).toMatchObject({ continuedOnError: true, outcome: 'timeout' });
+      expect(h.phases().at(-1)).toBe(phase);
+    },
+  );
+
+  test('exports the PATH entries the overlap check inspected, from its one mise env --paths', async () => {
+    const h = harness({ paths: '/cfg/bin\n' });
+    await h.run(requestOf());
+    expect(h.script('overlap')).toContain(
+      "mise env --paths > '/Users/admin/hugi/control/step-02/mise-paths.txt'",
+    );
+    expect(h.script('env')).not.toContain('--paths');
+    expect(h.tart.launcherFor(3)).toContain('export PATH="/cfg/bin:/wf/node:');
+  });
+
+  test.each(['pkg/app', "team's/pkg"])(
+    'the fake lists every place the lock file search names, for a working directory %s',
+    async (workingDirectory) => {
+      const h = harness();
+      const result = await h.run(requestOf({ settings: { workingDirectory } }));
+      expect(result.reason).toBe('passed');
+      expect(h.script('install')).toMatch(/^mise install$/m);
+    },
+  );
+
   test('runs mise ls in the working directory, as the action does', async () => {
     const h = harness();
     await h.run(requestOf({ settings: { workingDirectory: 'pkg' } }));
@@ -760,8 +817,38 @@ async function scriptsOf(
 const mise = Bun.which('mise');
 const jq = Bun.which('jq');
 
-describe.skipIf(mise === null || jq === null)(
-  "the step's guest scripts, run on the host with real bash, jq and mise",
+/**
+ * Why the real-shell suite cannot run on this host, if it cannot: mise or jq is missing, or the
+ * host's mise lacks a flag the step needs, by the probe's own test of the help text.
+ */
+function realShellGap(): string | undefined {
+  if (mise === null || jq === null) {
+    return 'mise or jq is not on PATH';
+  }
+  const home = mkdtempSync(join(tmpdir(), 'hugi-mise-help-'));
+  try {
+    const missing = [
+      ['env', '--json'],
+      ['env', '--paths'],
+      ['install', '--locked'],
+    ].filter(([command = '', flag = '']) => {
+      const help = Bun.spawnSync([mise, command, '--help'], {
+        env: { HOME: home, NO_COLOR: '1', PATH: '/usr/bin:/bin' },
+      });
+      const text = `${help.stdout.toString()}${help.stderr.toString()}`;
+      return !new RegExp(`(^|\\s)${flag}([\\s,]|$)`, 'mu').test(text);
+    });
+    return missing.length === 0
+      ? undefined
+      : `the host's mise lacks ${missing.map((words) => `mise ${words.join(' ')}`).join(', ')}`;
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+}
+const gap = realShellGap();
+
+describe.skipIf(gap !== undefined)(
+  `the step's guest scripts, run on the host with real bash, jq and mise${gap === undefined ? '' : ` (skipped: ${gap})`}`,
   () => {
     let root = '';
     const hugi = () => join(root, 'hugi');
@@ -907,6 +994,43 @@ describe.skipIf(mise === null || jq === null)(
       expect(conflicts[0]).toStartWith('node: ');
       expect(conflicts[0]).toContain(join(workspace(), 'bin'));
       expect(conflicts[0]).toContain(join(hugi(), 'wf/other'));
+    });
+
+    test('the overlap listing inspects the PATH entries it captures for the export', async () => {
+      onHost((await scriptsOf({}, {}, ['node@22']))('overlap'));
+      const inspected = [
+        ...output('mise-overlap.txt').matchAll(/^\{"role":"config","dir":"([^"]*)"/gmu),
+      ].map(([, dir]) => dir);
+      expect(inspected).toContain(join(workspace(), 'bin'));
+      expect(inspected).toEqual(managedPaths(output('mise-paths.txt')));
+    });
+
+    test('a file named like a jq option does not break the lock file search', async () => {
+      mkdirSync(join(workspace(), 'solo'));
+      writeFileSync(join(workspace(), 'solo/-notes'), '');
+      const installed = async () => {
+        onHost((await scriptsOf({ workingDirectory: 'solo' }))('install-check'));
+        const h = harness({
+          installCheck: output('mise-install.txt').replaceAll(hugi(), '/Users/admin/hugi'),
+        });
+        await h.run(requestOf({ settings: { workingDirectory: 'solo' } }));
+        return h.script('install');
+      };
+      expect(await installed()).toMatch(/^mise install$/m);
+      expect(output('mise-install.txt')).toContain('"-notes"');
+      writeFileSync(join(workspace(), 'solo/mise.lock'), '');
+      expect(await installed()).toMatch(/^mise install --locked$/m);
+    });
+
+    test('an executable named like a jq option does not break the overlap check', async () => {
+      for (const dir of [join(workspace(), 'bin'), join(hugi(), 'wf/other')]) {
+        writeFileSync(join(dir, '-status'), '#!/bin/sh\n');
+        chmodSync(join(dir, '-status'), 0o755);
+      }
+      const workflowBins = '/Users/admin/hugi/wf/other\n';
+      onHost((await scriptsOf({}, { workflowBins }, ['node@22']))('overlap'));
+      const conflicts = overlapConflicts(output('mise-overlap.txt'));
+      expect(conflicts.map((conflict) => conflict.split(':')[0])).toEqual(['-status', 'node']);
     });
   },
 );
