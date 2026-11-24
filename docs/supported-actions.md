@@ -2,11 +2,11 @@
 
 `resolveToolchains(plan, readRepoFile)` in `src/toolchain/resolver.ts` resolves a whole step plan before the VM runner receives any tools. The file-reading port reads repository files at the same commit as the workflow and returns `undefined` for missing files. Resolution never reads the host's working copy or executes an action.
 
-The result contains deduplicated mise specs in `tools`, an entry for each action in `actions`, and repository toolchain notes in `notes`. Each action entry retains its step index, name, and `uses` reference. It contains either one or more tool specs with any mapping notes, or a no-op reason. The caller can pass `tools` directly to `RunRequest.tools`. These are the lane's workflow tools. The VM runner installs them in an "Install tools" step and computes the tool environment from them, so each step finds them on `PATH` without mise's shims and keeps their `MISE_<TOOL>_VERSION` variables. A lane with `tools: mise` also installs what the repository's mise config requests and fails when that disagrees with these pins ([ADR-0006](decisions/0006-a-lane-chooses-where-its-tools-come-from.md)). `hugi run` shows each action step in its report as the tools it resolved to or its no-op reason, followed by the notes.
+The result contains deduplicated mise specs in `tools`, an entry for each action in `actions`, and repository toolchain notes in `notes`. Each action entry retains its step index, name, and `uses` reference. It contains either one or more tool specs with any mapping notes, a no-op reason, or, for `jdx/mise-action`, the settings the step runs with. The caller can pass `tools` directly to `RunRequest.tools`. These are the lane's workflow tools. The VM runner installs them in an "Install tools" step and computes the tool environment from them, so each step finds them on `PATH` without mise's shims and keeps their `MISE_<TOOL>_VERSION` variables. After a `jdx/mise-action` step, later steps can also reach tools through the shims ([ADR-0007](decisions/0007-a-workflow-installs-tools-from-its-mise-config.md)). A lane with `tools: mise` also installs what the repository's mise config requests and fails when that disagrees with these pins ([ADR-0006](decisions/0006-a-lane-chooses-where-its-tools-come-from.md)). `hugi run` shows each action step in its report as the tools it resolved to or its no-op reason, followed by the notes. The checkout and a `jdx/mise-action` step run in the guest, so the report shows their results instead.
 
 ## Action mappings
 
-Actions match by `owner/repo`, case-insensitively, with any nonempty ref containing no whitespace or `@`. Tags, branches, and SHA pins are accepted as written. The resolver does not require or validate SHA pins. YAML comments are already removed by the lane reader. A reference passed directly to the resolver with a trailing comment fails. Local actions, Docker actions, and action subdirectories are unsupported.
+Actions match by `owner/repo`, case-insensitively, with any nonempty ref containing no whitespace or `@`, except `jdx/mise-action`, whose ref must name major version 5 (below). Tags, branches, and SHA pins are accepted as written. The resolver does not require or validate SHA pins. YAML comments are already removed by the lane reader. A reference passed directly to the resolver with a trailing comment fails. Local actions, Docker actions, and action subdirectories are unsupported.
 
 Every accepted input is listed below. Any other input fails the entire resolution, including inputs on no-op actions.
 
@@ -18,12 +18,43 @@ Every accepted input is listed below. Any other input fails the entire resolutio
 | `pnpm/action-setup` | `version` | `pnpm@<version>`. Resolution reads root `package.json` through the port. Without `version`, it uses the pnpm `devEngines.packageManager` version when present, as the action does, without checking `packageManager`; else the `packageManager` pin. If the action's `version` and `packageManager` both specify a version, they must agree. A missing or invalid pin fails. |
 | `Swatinem/rust-cache` | None | No-op. The golden image holds warm Rust caches. |
 | `actions/upload-artifact` | `name`, `path`, `if-no-files-found` | No-op. `path` is required, as the action requires it. Hugi publishes no artifacts, following [ADR-0002: verification only](decisions/0002-verification-only.md). `if-no-files-found` must be `warn`, `ignore`, or `error`, as GitHub requires; any other value fails. With `error`, the no-op reason records that the artifact path existence check is skipped. |
+| `jdx/mise-action` | See [below](#jdxmise-action) | No workflow tools. The step runs in the guest at its own place, doing what the action does: it installs the tools the repository's mise config requests and exports mise's environment to later steps ([ADR-0007](decisions/0007-a-workflow-installs-tools-from-its-mise-config.md)). A lane with `tools: mise` that uses it fails. |
 
 **Known gap:** Hugi does not check that the uploaded `path` exists. A lane whose build produces no output passes in Hugi where GitHub's `if-no-files-found: error` setting would fail the step.
 
 **Known gap:** Hugi does not check that `cache-dependency-path` names a lockfile. With `cache` set, a path that matches no file fails the step on GitHub and passes in Hugi.
 
 `node-version-file` is unsupported because the fixture lanes use `node-version`. Action inputs that install packages, run commands, select a different checkout, or provide credentials are outside these mappings.
+
+### jdx/mise-action
+
+The ref must be the moving tag `v5`, a release tag `v5.<minor>.<patch>` from `v5.3.0` on, or a 40-character commit SHA; any other ref fails resolution. Hugi reproduces v5.3.0 and cannot tell which release a SHA or the moving tag names, so it treats them as v5.3.0.
+
+The inputs are those of v5.3.0. [ADR-0007](decisions/0007-a-workflow-installs-tools-from-its-mise-config.md) describes what the step does with them. A boolean input accepts `true`, `True`, `TRUE`, `false`, `False`, or `FALSE`, the values GitHub's runner accepts. Hugi refuses any other value, even for an input the action would not read.
+
+| Inputs | Handling |
+| --- | --- |
+| `install`, `env`, `export_path`, `add_shims_to_path`, `reshim`, `experimental`, `monorepo` | Booleans, honoured as the action honours them. With `monorepo` true, a config that sets `monorepo.config_roots` fails the step, because Hugi does not reproduce a monorepo install. |
+| `install_args` | Honoured. It must be tool names separated by spaces, such as `nushell pnpm`, each without `@` or a leading `-`. A version, a flag, a tab, a line break, a quote, or a backslash fails resolution. The action splits the value on spaces only and strips double quotes, so a tab, a line break, or a double quote would split differently there. It keeps a single quote and a backslash as written, and Hugi refuses them because no tool name contains them. |
+| `working_directory` | Honoured. It must be a relative path without parent traversal, inside the workspace. A leading `./` is accepted. |
+| `log_level`, `mise_env` | Honoured: exported as `MISE_LOG_LEVEL` and `MISE_ENV`, as the action exports them. |
+| `version` | Checked: the guest's mise must report this version, with any leading `v` dropped, or the step fails and names both versions. A `mise --version` that fails for this check fails the step too. Both failures fail the lane even under `continue-on-error`. |
+| `cache`, `cache_save`, `cache_save_post`, `cache_key`, `cache_key_prefix` | No-op. The golden image holds mise's installs. Boolean inputs follow the rule above. |
+| `cache_max_age_days` | No-op. It must be a non-negative integer, as the action requires, or resolution fails. |
+| `cache_restore_retry_budget`, `cache_save_retry_budget` | No-op. Each must be a duration the action accepts, such as `60s`, `2m`, or `0s`, or resolution fails, as the action fails before it runs. |
+| `minimum_release_age` | No-op. It must be a relative duration made of whole numbers with the units `y`, `mo`, `w`, `d`, `h`, `m`, or `s`, such as `24h` or `1d12h`, or a whole number of seconds. Hugi refuses other values, including the ISO dates the action also accepts. |
+| `auto_update`, `fetch_from_github` | No-op. They choose how GitHub's runner downloads mise. Hugi uses the golden image's mise, so the two can differ unless `version` pins it. |
+| `mise_toml`, `tool_versions`, `mise_dir`, `install_dir`, `plugins`, `bootstrap_skip`, `bootstrap_args`, `sha256` | Refused unless empty. They write config files from the workflow, move mise's directories, install plugins or run bootstrap tasks, which are arbitrary code, or verify a mise binary that Hugi does not download. |
+| `bootstrap`, `wings_enabled` | Refused unless `false`, in a form the boolean rule accepts. |
+| `github_token`, `persist_github_token` | `github_token` is refused when set. `persist_github_token` is refused unless it is `false`. Both carry credentials into the VM ([ADR-0002](decisions/0002-verification-only.md)). |
+
+Any other input fails resolution. The lane reader already refuses `steps.<id>.outputs` expressions, so the action's `versions` and `cache-hit` outputs need no handling.
+
+**Known gap:** Hugi's mise is the golden image's unless `version` pins it, and GitHub's runner downloads the newest release older than `minimum_release_age`.
+
+**Known gap:** Hugi does not read `cache_key`. A value that is not a valid Handlebars template fails the action on GitHub when `cache` is true, and passes in Hugi.
+
+**Known gap:** Hugi passes no GitHub token, so a tool install that calls GitHub's API can meet a rate limit under Hugi that it does not meet on GitHub.
 
 ## Versions and repository files
 

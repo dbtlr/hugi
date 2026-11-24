@@ -7,6 +7,7 @@
  * attempt fails, the runner warns with the VM's name and still returns the result.
  */
 import type { EventContext, StepPlan } from '../lane/step-plan';
+import type { MiseActionResolution } from '../toolchain/types';
 
 /** The tart image a run clones unless told otherwise, by `hugi run` and by the service. */
 export const GOLDEN_IMAGE = 'hugi-golden';
@@ -34,6 +35,11 @@ export type RunRequest = {
    * the tools the repository's mise config requests, which must agree with `tools`.
    */
   readonly toolSource: 'workflow' | 'mise';
+  /**
+   * The plan's `jdx/mise-action` steps as resolution read them; each runs in the guest at its own
+   * place (ADR-0007). Absent when the plan has none.
+   */
+  readonly miseActions?: readonly MiseActionResolution[];
   /** Host directory that receives the per-step logs. */
   readonly logDir: string;
 };

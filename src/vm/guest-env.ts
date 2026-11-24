@@ -137,6 +137,30 @@ function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
   return { env: parsed };
 }
 
+/** Names GitHub's runner refuses from `GITHUB_ENV`, in any case (actions/runner `_setEnvBlockList`). */
+const GITHUB_ENV_BLOCKED = ['NODE_OPTIONS'];
+
+/**
+ * What a step's `GITHUB_ENV` writes carry to later steps: all but the names GitHub's runner
+ * refuses, with the error it logs for each refused write.
+ */
+export function carriedGithubEnv(written: Environment): {
+  readonly env: Environment;
+  readonly refused: readonly string[];
+} {
+  const env: Record<string, string> = {};
+  const refused: string[] = [];
+  for (const [name, value] of Object.entries(written)) {
+    const blocked = GITHUB_ENV_BLOCKED.find((candidate) => candidate === name.toUpperCase());
+    if (blocked === undefined) {
+      env[name] = value;
+    } else {
+      refused.push(`Can't store ${blocked} output parameter using '$GITHUB_ENV' command.`);
+    }
+  }
+  return { env, refused };
+}
+
 /** Parse a `GITHUB_PATH` file into directories, highest priority first (the last one added wins). */
 export function parsePathFile(content: string): readonly string[] {
   return content

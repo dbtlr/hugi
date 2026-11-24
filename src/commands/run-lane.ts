@@ -14,7 +14,11 @@ import type { GuestSource, HostSource } from '../source/host-source';
 import { repositoryLabel } from '../source/repository-spec';
 import type { GitHubRepositorySpec, RepositorySpec } from '../source/repository-spec';
 import { resolveToolchains, ToolchainResolutionError } from '../toolchain/resolver';
-import type { ActionResolution, ToolchainResolution } from '../toolchain/resolver';
+import type {
+  ActionResolution,
+  MiseActionResolution,
+  ToolchainResolution,
+} from '../toolchain/resolver';
 import { checkoutStepIndex, GUEST_RUNNER_PATHS } from '../vm';
 import type { RunReason, RunRequest, RunResult, StepResult } from '../vm';
 import { RunUsageError } from './run-args';
@@ -82,12 +86,13 @@ export type RunStart = {
 export type LaneReason = RunReason | 'lane-unreadable' | 'toolchain-unresolvable';
 
 /**
- * A `uses:` step as the report shows it. The runner never executes an action: resolution maps it to
- * tools the "Install tools" step installs, or to a no-op with its reason.
+ * A `uses:` step as the report shows it: resolution maps it to tools the "Install tools" step
+ * installs, or to a no-op with its reason. The checkout and a `jdx/mise-action` step run in the
+ * guest, so they keep their own results instead.
  */
 export type ResolvedActionStep = Pick<StepResult, 'index' | 'name'> & {
   readonly outcome: 'resolved';
-  readonly action: ActionResolution;
+  readonly action: Exclude<ActionResolution, MiseActionResolution>;
 };
 
 export type ReportStep = StepResult | ResolvedActionStep;
@@ -254,9 +259,12 @@ async function resolveTools(
   }
 }
 
+const isMiseAction = (action: ActionResolution): action is MiseActionResolution =>
+  action.kind === 'mise-action';
+
 /**
  * The VM's step results, with each action step shown as what it resolved to. The checkout step
- * keeps its own result, since the runner performs it.
+ * and a `jdx/mise-action` step keep their own results, since the runner performs them.
  */
 function withResolvedActions(
   plan: StepPlan,
@@ -265,7 +273,9 @@ function withResolvedActions(
 ): ReportStep[] {
   const checkout = checkoutStepIndex(plan);
   const byIndex = new Map(
-    actions.filter((action) => action.index !== checkout).map((action) => [action.index, action]),
+    actions
+      .filter((action) => action.index !== checkout)
+      .flatMap((action) => (isMiseAction(action) ? [] : [[action.index, action] as const])),
   );
   return steps.map((step) => {
     const action = byIndex.get(step.index);
@@ -375,6 +385,16 @@ async function runAtSource(
   if ('report' in resolved) {
     return resolved.report;
   }
+  const miseAction = resolved.toolchain.actions.find(isMiseAction);
+  // Both would install from the same config by different rules (ADR-0007), so no VM boots.
+  if (request.toolSource === 'mise' && miseAction !== undefined) {
+    return noVm(
+      'toolchain-unresolvable',
+      'fail',
+      `step ${miseAction.index} "${miseAction.name}" (${miseAction.uses}) installs the tools of the repository's mise config itself, and the lane also takes its tools from that config (tools: mise); remove tools: mise, and the step installs them as on GitHub's runner.`,
+      source.sha,
+    );
+  }
   // A fault in the lane's tools, which the run owns (ADR-0006), so no VM boots for it.
   if (request.toolSource === 'mise' && checkoutStepIndex(plan) === undefined) {
     return noVm(
@@ -398,6 +418,7 @@ async function runInGuest(
   lane: { event: EventContext; plan: StepPlan; toolchain: ToolchainResolution },
 ): Promise<LaneReport> {
   const { event, plan, toolchain } = lane;
+  const miseActions = toolchain.actions.filter(isMiseAction);
   let guest: GuestSource;
   try {
     guest = await source.guestSource();
@@ -421,6 +442,7 @@ async function runInGuest(
       source: guest.location,
       toolSource: request.toolSource,
       tools: toolchain.tools,
+      ...(miseActions.length === 0 ? {} : { miseActions }),
     });
   } finally {
     await release(guest, deps.warn);

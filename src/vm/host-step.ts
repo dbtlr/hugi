@@ -41,6 +41,8 @@ export type HostStepTools = {
   readonly exec: (script: string) => Promise<number>;
   readonly readFile: (path: string) => Promise<string>;
   readonly log: LogFile;
+  /** Aborts when the deadline passes, the VM is lost, or Hugi is interrupted. */
+  readonly signal: AbortSignal;
 };
 
 export type HostStepRun<Value> = {
@@ -94,6 +96,7 @@ export async function runHostStep<Value>(
             }
             return read.value;
           },
+          signal,
         }),
       { parent: AbortSignal.any([ctx.interrupt, ctx.vmLost]), waitForWork: true },
     );

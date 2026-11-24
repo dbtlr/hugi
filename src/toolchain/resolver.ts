@@ -6,7 +6,13 @@ import { resolveRust } from './rust';
 import type { ReadRepoFile, ToolchainResolution } from './types';
 
 export { ToolchainResolutionError, UnsupportedActionError } from './errors';
-export type { ActionResolution, ReadRepoFile, ToolchainResolution } from './types';
+export type {
+  ActionResolution,
+  MiseActionResolution,
+  MiseActionSettings,
+  ReadRepoFile,
+  ToolchainResolution,
+} from './types';
 
 /**
  * Every action's resolution, or the first failure in step order. All of them settle first, so

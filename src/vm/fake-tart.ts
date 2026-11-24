@@ -2,7 +2,7 @@
 /** Test doubles for the tart port and the clock: a scripted guest and a virtual timeline. */
 import type { Child, ChildExit, Host } from '@loomcli/core';
 
-import { GUEST_TOOL_FILES, stepFiles } from './guest-paths';
+import { GUEST_RUNNER_PATHS, GUEST_TOOL_FILES, miseActionFiles, stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER, READ_FILE_MARKER } from './housekeeping';
 import { TartCallError } from './tart';
 import type {
@@ -140,8 +140,66 @@ export type FakeMise = {
   readonly exitCodes?: Partial<Record<'listing' | 'requests' | 'install', number>>;
 };
 
+/** The guest scripts of a `jdx/mise-action` step (ADR-0007), in the order the step runs them. */
+export type MiseActionPhase =
+  | 'probe'
+  | 'version'
+  | 'bins'
+  | 'prepare'
+  | 'listing'
+  | 'requests'
+  | 'install-check'
+  | 'install'
+  | 'overlap'
+  | 'ls'
+  | 'env';
+
+/** What the guest's `mise` does for a `jdx/mise-action` step's scripts. */
+export type FakeMiseAction = {
+  /** The probe's JSON; the default is mise on PATH with every capability. */
+  readonly probe?: string;
+  /** `mise --version`; the default is 2026.11.12. */
+  readonly version?: string;
+  /** `mise bin-paths` of the workflow tools; the default is `/wf/node`. */
+  readonly workflowBins?: string;
+  /** The config listing; the default names the workspace and no file. */
+  readonly configListing?: string;
+  /** `mise ls --current --json`; the default is `{}`. */
+  readonly configRequests?: string;
+  /** The install check's lines: lock file places and the monorepo answer; the default lists each place empty. */
+  readonly installCheck?: string;
+  /** The overlap listing; the default lists no directory. */
+  readonly overlap?: string;
+  /** `mise env --json`; the default is `{}`. */
+  readonly environment?: string;
+  /** `mise env --paths`, which the overlap check captures for the export; the default is none. */
+  readonly paths?: string;
+  readonly exitCodes?: Partial<Record<MiseActionPhase, number>>;
+  /** This script runs until its signal aborts, like a hung install. */
+  readonly hangs?: MiseActionPhase;
+};
+
+/**
+ * The install check's default answer: each place its script searches holds no regular file. The
+ * places are the loop's `shellQuote`d words, which write an apostrophe as `'\''`.
+ */
+function emptyLockPlaces(script: string): string {
+  const places = /^for place in (.*); do/mu.exec(script)?.[1] ?? '';
+  return [...places.matchAll(/(?:'[^']*'|\\')+/gu)]
+    .map(([word]) => word.replaceAll(String.raw`'\''`, "'").slice(1, -1))
+    .map((path) => `${JSON.stringify({ files: [], path })}\n`)
+    .join('');
+}
+
+export const FAKE_MISE_PROBE = {
+  dataDir: '/Users/admin/.local/share/mise',
+  onPath: true,
+  supports: { envJson: true, envPaths: true, installLocked: true },
+};
+
 export type FakeGuest = {
   mise?: FakeMise;
+  miseAction?: FakeMiseAction;
   checkoutExitCode?: number;
   /** The checkout never finishes, like a stalled clone. */
   checkoutHangs?: boolean;
@@ -277,6 +335,11 @@ export class FakeTart implements Tart {
     if (phase !== undefined) {
       return this.miseConfig(phase, options);
     }
+    const action = /^# hugi-mise-action (\d+) ([\w-]+)/.exec(stdin);
+    if (action !== null) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the runner writes only these phases
+      return this.miseAction(Number(action[1]), action[2] as MiseActionPhase, options);
+    }
     const index = Number(/^# hugi-step (\d+)/.exec(stdin)?.[1]);
     return this.launch(index);
   }
@@ -310,6 +373,45 @@ export class FakeTart implements Tart {
     }
     const codes: Record<string, number | undefined> = { ...mise.exitCodes };
     return { exitCode: codes[phase] ?? 0 };
+  }
+
+  /** One script of a `jdx/mise-action` step: write what its phase writes, then exit as scripted. */
+  private async miseAction(
+    index: number,
+    phase: MiseActionPhase,
+    options: ExecOptions,
+  ): Promise<ExecResult> {
+    const fake = this.guest.miseAction ?? {};
+    const files = miseActionFiles(index);
+    this.events.push(`mise action ${phase}`);
+    options.onOutput?.(`mise action ${phase}\n`);
+    const writes: Partial<Record<MiseActionPhase, [string, string][]>> = {
+      bins: [[files.workflowBins, fake.workflowBins ?? '/wf/node\n']],
+      env: [[files.environment, fake.environment ?? '{}']],
+      'install-check': [[files.install, fake.installCheck ?? emptyLockPlaces(options.stdin ?? '')]],
+      listing: [
+        [
+          files.configListing,
+          fake.configListing ??
+            `${JSON.stringify({ kind: 'workspace', real: GUEST_RUNNER_PATHS.workspace })}\n`,
+        ],
+      ],
+      overlap: [
+        [files.overlap, fake.overlap ?? ''],
+        [files.paths, fake.paths ?? ''],
+      ],
+      probe: [[files.probe, fake.probe ?? JSON.stringify(FAKE_MISE_PROBE)]],
+      requests: [[files.configRequests, fake.configRequests ?? '{}']],
+      version: [[files.version, fake.version ?? '2026.11.12 macos-arm64 (2026-11-21)\n']],
+    };
+    for (const [path, text] of writes[phase] ?? []) {
+      this.files.set(path, text);
+    }
+    if (fake.hangs === phase) {
+      await untilAborted(options.signal);
+      return { exitCode: ABORTED_EXIT_CODE };
+    }
+    return { exitCode: fake.exitCodes?.[phase] ?? 0 };
   }
 
   private probe(): ExecResult {
@@ -416,6 +518,17 @@ export class FakeTart implements Tart {
       throw new Error('vm is busy');
     }
     this.vms.delete(vm);
+  }
+
+  /** The script of phase `phase` of the `jdx/mise-action` step `index`. */
+  miseActionScript(index: number, phase: MiseActionPhase): string {
+    const call = this.execs.find((candidate) =>
+      candidate.stdin?.startsWith(`# hugi-mise-action ${index} ${phase}\n`),
+    );
+    if (!call?.stdin) {
+      throw new Error(`phase ${phase} of step ${index} never ran`);
+    }
+    return call.stdin;
   }
 
   /** The stdin of the launcher that ran step `index`. */
