@@ -385,6 +385,46 @@ test.each(['pnpm', 'npm', 'yarn'])('Node cache %s is recorded as a no-op', async
   ]);
 });
 
+test('Node cache-dependency-path is recorded with the cache no-op and is not checked', async () => {
+  const result = await resolveToolchains(
+    plan(
+      action('actions/setup-node@v7', {
+        cache: 'pnpm',
+        'cache-dependency-path': 'typescript/pnpm-lock.yaml',
+        'node-version': '22.23.2',
+      }),
+    ),
+    readNothing,
+  );
+  expect(result.tools).toEqual(['node@22.23.2']);
+  expect(result.actions).toMatchObject([
+    {
+      kind: 'tools',
+      notes: [
+        'pnpm cache: the golden image holds warm package caches. Cache dependency path "typescript/pnpm-lock.yaml" is not checked.',
+      ],
+    },
+  ]);
+});
+
+test('Node cache-dependency-path without a cache is recorded as unused', async () => {
+  const result = await resolveToolchains(
+    plan(
+      action('actions/setup-node@v7', {
+        'cache-dependency-path': 'pnpm-lock.yaml',
+        'node-version': '22.23.2',
+      }),
+    ),
+    readNothing,
+  );
+  expect(result.actions).toMatchObject([
+    {
+      kind: 'tools',
+      notes: ['Cache dependency path "pnpm-lock.yaml" is unused: no cache is set.'],
+    },
+  ]);
+});
+
 test('Node rejects a cache backend outside its supported list', async () => {
   (
     await expectFailure(

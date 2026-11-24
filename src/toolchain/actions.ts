@@ -14,6 +14,23 @@ function validateInputs(step: ActionStep, allowed: readonly string[]) {
   }
 }
 
+// setup-node's cache inputs are no-ops on the golden image's warm caches. The
+// dependency path is never read, so a path setup-node would reject still passes.
+function nodeCacheNotes(step: ActionStep): string[] {
+  const cache = step.with.cache;
+  const dependencyPath = step.with['cache-dependency-path'];
+  if (cache === undefined) {
+    return dependencyPath === undefined
+      ? []
+      : [`Cache dependency path ${JSON.stringify(dependencyPath)} is unused: no cache is set.`];
+  }
+  const pathNote =
+    dependencyPath === undefined
+      ? ''
+      : ` Cache dependency path ${JSON.stringify(dependencyPath)} is not checked.`;
+  return [`${cache} cache: the golden image holds warm package caches.${pathNote}`];
+}
+
 async function mapAction(step: ActionStep, readRepoFile: ReadRepoFile): Promise<ActionResolution> {
   const source = { index: step.index, name: step.name, uses: step.uses };
   const identity = /^([^/@\s]+\/[^/@\s]+)@[^@\s]+$/u.exec(step.uses)?.[1];
@@ -48,15 +65,13 @@ async function mapAction(step: ActionStep, readRepoFile: ReadRepoFile): Promise<
       };
     }
     case 'actions/setup-node': {
-      validateInputs(step, ['node-version', 'cache']);
+      validateInputs(step, ['node-version', 'cache', 'cache-dependency-path']);
       const cache = step.with.cache;
       if (cache !== undefined && !['pnpm', 'npm', 'yarn'].includes(cache)) {
         throw new Error(`unsupported cache ${JSON.stringify(cache)}`);
       }
       const tool = pinnedVersion('node', step.with['node-version'] ?? 'latest');
-      const notes =
-        cache === undefined ? [] : [`${cache} cache: the golden image holds warm package caches.`];
-      return { ...source, kind: 'tools', notes, tools: [tool] };
+      return { ...source, kind: 'tools', notes: nodeCacheNotes(step), tools: [tool] };
     }
     case 'pnpm/action-setup': {
       validateInputs(step, ['version']);

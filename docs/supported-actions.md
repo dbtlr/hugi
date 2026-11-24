@@ -13,13 +13,15 @@ Every accepted input is listed below. Any other input fails the entire resolutio
 | Action | Accepted inputs | Resolution and reason |
 | --- | --- | --- |
 | `actions/checkout` | `persist-credentials` | No tools. The runner performs it without credentials: the workspace is empty until the plan's first `actions/checkout` step, which checks the commit out detached, at depth 1, with no tags. A later `actions/checkout` step is a no-op. The action's credential persistence input has no effect. |
-| `actions/setup-node` | `node-version`, `cache` | `node@<node-version>`. A missing version is unpinned and fails. `cache` accepts only `pnpm`, `npm`, or `yarn`. Each is a recorded no-op because the golden image holds warm package caches. |
+| `actions/setup-node` | `node-version`, `cache`, `cache-dependency-path` | `node@<node-version>`. A missing version is unpinned and fails. `cache` accepts only `pnpm`, `npm`, or `yarn`. Each is a recorded no-op because the golden image holds warm package caches. `cache-dependency-path` is recorded in the cache note and never read; without `cache`, the note records it as unused. |
 | `oven-sh/setup-bun` | `bun-version`, `bun-version-file` | `bun@<version>`. An explicit version and a version file are mutually exclusive. With neither input, the action defaults to `latest`, which fails as unpinned. Version files use the `.tool-versions` format described below. |
 | `pnpm/action-setup` | `version` | `pnpm@<version>`. Resolution reads root `package.json` through the port. Without `version`, it uses the pnpm `devEngines.packageManager` version when present, as the action does, without checking `packageManager`; else the `packageManager` pin. If the action's `version` and `packageManager` both specify a version, they must agree. A missing or invalid pin fails. |
 | `Swatinem/rust-cache` | None | No-op. The golden image holds warm Rust caches. |
 | `actions/upload-artifact` | `name`, `path`, `if-no-files-found` | No-op. `path` is required, as the action requires it. Hugi publishes no artifacts, following [ADR-0002: verification only](decisions/0002-verification-only.md). `if-no-files-found` must be `warn`, `ignore`, or `error`, as GitHub requires; any other value fails. With `error`, the no-op reason records that the artifact path existence check is skipped. |
 
 **Known gap:** Hugi does not check that the uploaded `path` exists. A lane whose build produces no output passes in Hugi where GitHub's `if-no-files-found: error` setting would fail the step.
+
+**Known gap:** Hugi does not check that `cache-dependency-path` names a lockfile. With `cache` set, a path that matches no file fails the step on GitHub and passes in Hugi.
 
 `node-version-file` is unsupported because the fixture lanes use `node-version`. Action inputs that install packages, run commands, select a different checkout, or provide credentials are outside these mappings.
 
