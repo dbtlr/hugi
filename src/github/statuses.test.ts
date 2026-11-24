@@ -9,6 +9,7 @@ import {
   DESCRIPTION_LIMIT,
   describeStatus,
   StatusPostError,
+  withDetailsLinks,
 } from './statuses';
 
 const REPO = 'example/project';
@@ -414,5 +415,37 @@ describe('a failed post', () => {
     );
     expect(error.message).toContain('not a full commit sha');
     expect(posts).toHaveLength(0);
+  });
+});
+
+describe('Details links', () => {
+  const RUN_ID = '2026-11-19T233200Z-abcdef123-Xy7Kq2';
+  const ORIGIN = 'https://hugi.example.ts.net';
+  const target = { repository: REPO, sha: SHA };
+
+  test('the pending and the final status of a run link to its run page', async () => {
+    const { posts, reporter } = recorder();
+    const linked = withDetailsLinks(reporter, ORIGIN);
+    await linked.reportLane(target, BUILD, { runId: RUN_ID, state: 'pending' });
+    await linked.reportLane(target, BUILD, { runId: RUN_ID, state: 'failure' });
+    expect(posts.map((post) => post.body.target_url)).toEqual([
+      `${ORIGIN}/runs/${RUN_ID}`,
+      `${ORIGIN}/runs/${RUN_ID}`,
+    ]);
+  });
+
+  test('a lane status with no run id has no Details link', async () => {
+    const { posts, reporter } = recorder();
+    await withDetailsLinks(reporter, ORIGIN).reportLane(target, BUILD, {
+      cause: 'the lane cannot be read',
+      state: 'failure',
+    });
+    expect(posts[0]!.body).not.toHaveProperty('target_url');
+  });
+
+  test('the declaration refusal has no Details link', async () => {
+    const { posts, reporter } = recorder();
+    await withDetailsLinks(reporter, ORIGIN).reportRefusal(target, 'no such job');
+    expect(posts[0]!.body).not.toHaveProperty('target_url');
   });
 });

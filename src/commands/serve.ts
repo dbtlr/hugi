@@ -15,7 +15,7 @@ import type { InstallationTokens } from '../github/app-auth';
 import { createGitHubReader, GitHubReadError } from '../github/client';
 import type { GitHubReader } from '../github/client';
 import type { Fetch, PullRequestFacts } from '../github/pull-request';
-import { createStatusReporter } from '../github/statuses';
+import { createStatusReporter, withDetailsLinks } from '../github/statuses';
 import { pollRepositories } from '../queue/poll';
 import { requireHostTools, SERVICE_HOST_TOOLS, spawnWithTools } from '../service/host-tools';
 import { acquireServeLock } from '../service/lock';
@@ -43,11 +43,13 @@ import { runInVm, SERVICE_VM_PREFIX } from '../vm/lifecycle';
 import { sweepVms } from '../vm/sweep';
 import type { Clock } from '../vm/tart';
 import { createTartCli } from '../vm/tart-cli';
+import { loadRunPage } from '../web/run-data';
+import { openRunPageServer } from '../web/server';
 
 const DESCRIPTION =
   'Run the coordinator: poll GitHub, run each lane that lacks a verdict, and post its status.';
 
-const DETAILS = `hugi serve runs in the foreground until it is stopped; \`hugi service install\` runs it as a launchd user agent. It refuses to start, saying what to fix, when another hugi serve holds the lock, the configuration is refused, github_app or its key is unusable, or tart or git is not on its PATH, which \`hugi service install\` copies from the shell that installs it. It deletes every hugi-svc-* VM when it starts, runs one lane at a time, and writes its state for \`hugi service status\`. The README's "Running the coordinator" section has the rules.`;
+const DETAILS = `hugi serve runs in the foreground until it is stopped; \`hugi service install\` runs it as a launchd user agent. It refuses to start, saying what to fix, when another hugi serve holds the lock, the configuration is refused, github_app or its key is unusable, or tart or git is not on its PATH, which \`hugi service install\` copies from the shell that installs it. It deletes every hugi-svc-* VM when it starts, runs one lane at a time, and writes its state for \`hugi service status\`. With \`web\` in the configuration it also serves a read-only page for each run on 127.0.0.1 at web.port, which each lane status's Details link opens. The README's "Running the coordinator" section has the rules.`;
 
 /** A short random VM id: the `hugi-svc-` prefix plus 8 hex digits names the run's VM. */
 const newVmId = () => crypto.randomUUID().slice(0, 8);
@@ -204,12 +206,16 @@ export function perRepositoryReader(fetch: Fetch, tokens: InstallationTokens): G
   };
 }
 
-/** Run the coordinator: GitHub as the App, git and tart as the setup check found them. */
+/**
+ * Run the coordinator: GitHub as the App, git and tart as the setup check found them. With a run
+ * page (`detailsOrigin`), each lane status that carries a run id links to the run's page.
+ */
 async function coordinate(
   ports: ServePorts,
   config: HugiConfig,
   setup: ServeSetup,
   report: Parameters<typeof runCoordinator>[1]['report'],
+  detailsOrigin: string | undefined,
 ): Promise<void> {
   const { fetch, host, log } = ports;
   const tokens = createInstallationTokens({
@@ -221,6 +227,14 @@ async function coordinate(
     uid: host.uid,
   });
   const github = perRepositoryReader(fetch, tokens);
+  const reporterFor = (origin: string | undefined) => {
+    const reporter = createStatusReporter({
+      fetch,
+      invalidate: (repository) => tokens.invalidate(repository),
+      token: tokens,
+    });
+    return origin === undefined ? reporter : withDetailsLinks(reporter, origin);
+  };
   const sourceOptions = serviceSourceOptions(ports, setup);
   // The poll and the run open sources the same way, so one binding serves both.
   const openSource = (spec: RepositorySpec, commit: string) =>
@@ -239,11 +253,7 @@ async function coordinate(
         openPush: (repository, sha) => openSource(githubRepositorySpec(repository), sha),
       }),
     report,
-    reporter: createStatusReporter({
-      fetch,
-      invalidate: (repository) => tokens.invalidate(repository),
-      token: tokens,
-    }),
+    reporter: reporterFor(detailsOrigin),
     runCandidate: createRunCandidate({
       configPath: ports.paths.configPath,
       newVmId: ports.newVmId,
@@ -265,11 +275,21 @@ export function serveDeps(ports: ServePorts): StartDeps<ServeSetup> {
   return {
     acquireLock: () => ports.acquireServeLock(paths.lockPath, { pid, platform: host.platform }),
     checkSetup: (config) => checkSetup(ports, config),
-    coordinate: (config, setup, report) => coordinate(ports, config, setup, report),
+    coordinate: (config, setup, report, detailsOrigin) =>
+      coordinate(ports, config, setup, report, detailsOrigin),
     loadConfig: () => loadConfig(paths.configPath),
     log,
     now: ports.now,
+    openRunPage: (web) =>
+      openRunPageServer({
+        loadRun: (runId) => loadRunPage(paths.runsDir, runId),
+        log,
+        now: ports.now,
+        origin: web.url,
+        port: web.port,
+      }),
     pid,
+    signal: ports.signal,
     sweep: (setup) => sweepVms(createTartCli(setup.spawn, ports.clock), SERVICE_VM_PREFIX),
     writeState: (state) => writeServiceState(paths.stateDir, state),
   };

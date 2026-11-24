@@ -53,7 +53,12 @@ function harness(overrides: Partial<StartDeps<void>> = {}): {
     },
     log: { error: log('error'), info: log('info'), warn: log('warn') },
     now: () => NOW,
+    openRunPage: async () => {
+      seen.steps.push('open page');
+      return { close: () => void seen.steps.push('close page') };
+    },
     pid: 4242,
+    signal: new AbortController().signal,
     sweep: async () => {
       seen.steps.push('sweep');
       return { deleted: [], failed: [] };
@@ -260,4 +265,120 @@ test('applyEvent shows a run being prepared before its VM is known, from when it
   const later = new Date(NOW.getTime() + 90_000);
   const booting = applyEvent(preparing, { kind: 'run-started', ...lane, vmId: 'x1' }, later);
   expect(booting.run).toEqual({ ...lane, startedAt: NOW.toISOString(), vm: 'hugi-svc-x1' });
+});
+
+const WEB = { port: 8470, url: 'https://hugi.example.ts.net' };
+const WITH_WEB: HugiConfig = { ...CONFIG, web: WEB };
+
+test('with web, the run page opens after the sweep, before the loop, and closes at the end', async () => {
+  const origins: (string | undefined)[] = [];
+  const { deps, seen } = harness({
+    coordinate: async (_config, _setup, _report, detailsOrigin) => {
+      seen.steps.push('coordinate');
+      origins.push(detailsOrigin);
+    },
+    loadConfig: async () => WITH_WEB,
+  });
+  await startService(deps);
+  expect(seen.steps).toEqual([
+    'lock',
+    'check',
+    'sweep',
+    'open page',
+    'coordinate',
+    'close page',
+    'release',
+  ]);
+  expect(origins).toEqual([WEB.url]);
+});
+
+test('the run page is given the web settings', async () => {
+  const opened: unknown[] = [];
+  const { deps } = harness({
+    loadConfig: async () => WITH_WEB,
+    openRunPage: async (web) => {
+      opened.push(web);
+      return { close: () => undefined };
+    },
+  });
+  await startService(deps);
+  expect(opened).toEqual([WEB]);
+});
+
+test('without web there is no run page and no Details link', async () => {
+  const origins: (string | undefined)[] = [];
+  const { deps, seen } = harness({
+    coordinate: async (_config, _setup, _report, detailsOrigin) => {
+      origins.push(detailsOrigin);
+    },
+  });
+  await startService(deps);
+  expect(seen.steps).not.toContain('open page');
+  expect(origins).toEqual([undefined]);
+});
+
+test('the run page closes as soon as the service starts to stop, not when the loop ends', async () => {
+  const stop = new AbortController();
+  const { deps, seen } = harness({
+    coordinate: async () => {
+      stop.abort();
+      seen.steps.push('loop still winding down');
+    },
+    loadConfig: async () => WITH_WEB,
+    signal: stop.signal,
+  });
+  await startService(deps);
+  expect(seen.steps.slice(-4)).toEqual([
+    'open page',
+    'close page',
+    'loop still winding down',
+    'release',
+  ]);
+});
+
+test('a run page that cannot open is logged, and the service runs on with no Details link', async () => {
+  const origins: (string | undefined)[] = [];
+  const { deps, seen } = harness({
+    coordinate: async (_config, _setup, _report, detailsOrigin) => {
+      seen.steps.push('coordinate');
+      origins.push(detailsOrigin);
+    },
+    loadConfig: async () => WITH_WEB,
+    openRunPage: async () => {
+      throw new Error('Failed to start server. Is port 8470 in use?');
+    },
+  });
+  await startService(deps);
+  expect(seen.steps).toContain('coordinate');
+  expect(origins).toEqual([undefined]);
+  expect(seen.logs).toContainEqual({
+    level: 'error',
+    message:
+      'Could not open the run page on 127.0.0.1:8470: Failed to start server. Is port 8470 in use? The service runs on without it, and its statuses carry no Details link; fix the cause and restart the service.',
+  });
+});
+
+test('a refused setup never opens the run page', async () => {
+  const { deps, seen } = harness({
+    checkSetup: async () => {
+      throw new Error('tart is not on PATH.');
+    },
+    loadConfig: async () => WITH_WEB,
+  });
+  await rejectionOf(startService(deps));
+  expect(seen.steps).not.toContain('open page');
+});
+
+test('a service stopped before the run page opens never opens it', async () => {
+  const stop = new AbortController();
+  const { deps, seen } = harness({
+    loadConfig: async () => WITH_WEB,
+    signal: stop.signal,
+    sweep: async () => {
+      stop.abort();
+      return { deleted: [], failed: [] };
+    },
+  });
+  await startService(deps);
+  expect(seen.steps).not.toContain('open page');
 });

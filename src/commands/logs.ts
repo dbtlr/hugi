@@ -2,7 +2,7 @@
  * `hugi logs <run>`: a run's summary and the log of its failing step, or of every step.
  * `hugi logs --service`: the last records of Hugi's own log.
  */
-import { lstat, open, readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { applicationDirectory, Command, FatalError, UsageError } from '@loomcli/core';
@@ -15,6 +15,7 @@ import { messageOf } from '../errors';
 import { failingStep } from '../runs/describe';
 import { RunRecordError } from '../runs/record';
 import type { FinishedRecord, RecordedStep, RunRecord } from '../runs/record';
+import { readStepLog } from '../runs/step-log';
 import { findRun, RunLookupError } from '../runs/store';
 import { resolveRunsDir } from '../source/locations';
 import { isMapping } from '../yaml/strict';
@@ -79,31 +80,14 @@ function stepsToPrint(record: RunRecord, all: boolean): RecordedStep[] {
   return failing?.log === undefined ? [] : [failing];
 }
 
-/**
- * Read one step's log; one that is missing, a link, or not a regular file is reported in the
- * result, not thrown and not followed.
- */
+/** Read one step's log; one that is refused (`readStepLog`) is reported in the result, not thrown. */
 async function readLog(runDir: string, step: RecordedStep): Promise<PrintedLog> {
   const path = join(runDir, step.log ?? '');
   const base = { index: step.index, name: step.name, path };
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink()) {
-      return {
-        ...base,
-        error: 'the log is a symbolic link, so Hugi will not read it',
-      };
-    }
-    if (!info.isFile()) {
-      return {
-        ...base,
-        error: 'the log is not a regular file, so Hugi will not read it',
-      };
-    }
-    return { ...base, contents: await readFile(path, 'utf8') };
-  } catch (error) {
-    return { ...base, error: messageOf(error) };
-  }
+  const read = await readStepLog(path);
+  return read.kind === 'read'
+    ? { ...base, contents: read.bytes.toString('utf8') }
+    : { ...base, error: read.message };
 }
 
 function describeVerdict(record: FinishedRecord): string {
