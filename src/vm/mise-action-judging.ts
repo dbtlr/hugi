@@ -67,17 +67,29 @@ export function lockFilePlaces(workingDirectory: string | undefined): LockFilePl
 /**
  * Whether the guest's listing of the places' regular files (`{path, files}` lines) holds a lock
  * file. Two searches can share a directory, as the workspace's `mise` and a working directory
- * named `mise`, so a name counts when any place at that path counts it.
+ * named `mise`, so each place checks its own names against the files listed at its path. A listing
+ * without a readable line for every place cannot say there is no lock file, so it is a
+ * `ToolOutputError`.
  */
 export function hasLockFile(places: readonly LockFilePlace[], listing: string): boolean {
-  return jsonLines(listing, 'the lock file listing').some(({ files, path }) => {
-    const patterns = places
-      .filter((candidate) => candidate.path === path)
-      .flatMap((place) => place.patterns);
-    return (
-      isTextList(files) && files.some((name) => patterns.some((pattern) => pattern.test(name)))
-    );
-  });
+  const listed = new Map<string, readonly string[]>();
+  for (const record of jsonLines(listing, 'the lock file listing')) {
+    if ('monorepo' in record) {
+      continue;
+    }
+    const { files, path } = record;
+    if (typeof path !== 'string' || !isTextList(files)) {
+      throw new ToolOutputError('the lock file listing has a line of an unknown shape');
+    }
+    listed.set(path, files);
+  }
+  const unlisted = places.find(({ path }) => !listed.has(path));
+  if (unlisted !== undefined) {
+    throw new ToolOutputError(`the lock file listing has no line for ${unlisted.path}`);
+  }
+  return places.some(({ path, patterns }) =>
+    (listed.get(path) ?? []).some((name) => patterns.some((pattern) => pattern.test(name))),
+  );
 }
 
 /** Whether the install check found that the config sets `monorepo.config_roots` (a `{monorepo}` line). */
@@ -195,6 +207,24 @@ export function parseProbe(text: string): Probe {
     supports: { envJson, envPaths, installLocked },
     version: (firstLine.trim().split(/\s+/u)[0] ?? '').replace(/^v/u, ''),
   };
+}
+
+/** What the probe writes, with mise's data directory, just before it runs `mise --version`. */
+export const MISE_VERSION_MARKER = 'mise --version';
+
+/**
+ * The data directory, when the probe's file says it stopped at `mise --version` itself: the probe
+ * clears the marker once the version is read, so a failure before or after it leaves none.
+ */
+export function stoppedAtMiseVersion(text: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const { dataDir, marker } = isMapping(parsed) ? parsed : {};
+  return marker === MISE_VERSION_MARKER && typeof dataDir === 'string' ? dataDir : undefined;
 }
 
 /** The workflow tools' bin directories in the tool environment's `PATH` order, the rest after them. */

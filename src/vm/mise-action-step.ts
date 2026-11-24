@@ -27,10 +27,12 @@ import {
   hasLockFile,
   lockFilePlaces,
   managedPaths,
+  MISE_VERSION_MARKER,
   orderedWorkflowBins,
   overlapConflicts,
   parseProbe,
   setsMonorepoRoots,
+  stoppedAtMiseVersion,
 } from './mise-action-judging';
 import type { Probe } from './mise-action-judging';
 import { shellQuote } from './shell';
@@ -182,20 +184,24 @@ function addPath(step: Step, directory: string): void {
 const checksOverlap = (settings: MiseActionSettings): boolean =>
   settings.addShimsToPath || (settings.env && settings.exportPath);
 
+/** `mise --version` itself failed, which is ordinary; the probe had found the data directory. */
+type MiseVersionFailure = { readonly dataDir: string; readonly versionExitCode: number };
+
 /**
  * The guest's mise version, data directory and capabilities. Only `mise --version` failing is
- * ordinary, as the action's own test of mise; the probe's file is empty exactly until it passes,
- * so a failure after it, of a command of Hugi's own, is Hugi's own.
+ * ordinary, as the action's own test of mise: the probe writes a marker just before it and clears
+ * it just after, so a failure of a command of Hugi's own, before or after it, is Hugi's own.
  */
-async function probeMise(step: Step): Promise<Probe | Verdict> {
+async function probeMise(step: Step): Promise<Probe | MiseVersionFailure | Verdict> {
   const output = shellQuote(step.files.probe);
   const exitCode = await runScript(step, 'probe', GUEST_RUNNER_PATHS.temp, [
     `: > ${output}`,
-    'version="$(mise --version)"',
-    `printf '%s\\n' "$version" > ${output}`,
     `if [ -n "\${MISE_DATA_DIR:-}" ]; then data="$MISE_DATA_DIR"`,
     `elif [ -n "\${XDG_DATA_HOME:-}" ]; then data="$XDG_DATA_HOME/mise"`,
     'else data="$HOME/.local/share/mise"; fi',
+    `jq -nc --arg dataDir "$data" '{marker: ${JSON.stringify(MISE_VERSION_MARKER)}, dataDir: $dataDir}' > ${output}`,
+    'version="$(mise --version)"',
+    `: > ${output}`,
     // The action's own test for `--locked`, on the help text, which is held whole before grep.
     'supports() { local help; help="$(NO_COLOR=1 mise "$1" --help 2>&1 || true)"',
     String.raw`  if grep -Eq -- "(^|[[:space:]])$2([[:space:],]|\$)" <<< "$help"; then echo true; else echo false; fi; }`,
@@ -205,11 +211,13 @@ async function probeMise(step: Step): Promise<Probe | Verdict> {
     `  '{version: $version, dataDir: $dataDir, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}')"`,
     `printf '%s\\n' "$probed" > ${output}`,
   ]);
+  const written = await step.tools.readFile(step.files.probe);
   if (exitCode === 0) {
-    return parseProbe(await step.tools.readFile(step.files.probe));
+    return parseProbe(written);
   }
-  if ((await step.tools.readFile(step.files.probe)) === '') {
-    return failed(`mise --version exited with code ${exitCode}`, exitCode);
+  const dataDir = stoppedAtMiseVersion(written);
+  if (dataDir !== undefined) {
+    return { dataDir, versionExitCode: exitCode };
   }
   return hugisOwn(
     step,
@@ -274,7 +282,7 @@ function checkMise(step: Step, probe: Probe): Verdict | undefined {
 }
 
 /** Steps 3 and 4: the action's defaults, then the shims and the workflow tools' bins on `PATH`. */
-function writeDefaultsAndShims(step: Step, probe: Probe, workflowBins: readonly string[]): void {
+function writeDefaultsAndShims(step: Step, dataDir: string, workflowBins: readonly string[]): void {
   const { settings, toolPath } = step.input;
   if (settings.experimental) {
     exportDefault(step, 'MISE_EXPERIMENTAL', '1');
@@ -285,7 +293,7 @@ function writeDefaultsAndShims(step: Step, probe: Probe, workflowBins: readonly 
   exportDefault(step, 'MISE_TRUSTED_CONFIG_PATHS', GUEST_RUNNER_PATHS.workspace);
   exportDefault(step, 'MISE_YES', '1');
   if (settings.addShimsToPath) {
-    addPath(step, posix.join(probe.dataDir, 'shims'));
+    addPath(step, posix.join(dataDir, 'shims'));
     // Added last-first, so the first comes first on PATH, ahead of the shims.
     for (const bin of orderedWorkflowBins(workflowBins, toolPath).toReversed()) {
       addPath(step, bin);
@@ -489,7 +497,7 @@ async function runAction(step: Step): Promise<Verdict> {
   if ('ok' in probe) {
     return probe;
   }
-  const stop = checkMise(step, probe);
+  const stop = 'version' in probe ? checkMise(step, probe) : undefined;
   if (stop) {
     return stop;
   }
@@ -497,7 +505,14 @@ async function runAction(step: Step): Promise<Verdict> {
   if (!Array.isArray(workflowBins)) {
     return workflowBins;
   }
-  writeDefaultsAndShims(step, probe, workflowBins);
+  writeDefaultsAndShims(step, probe.dataDir, workflowBins);
+  // The action writes its defaults and shims before its own test of mise fails (ADR-0007 step 6).
+  if ('versionExitCode' in probe) {
+    return failed(
+      `mise --version exited with code ${probe.versionExitCode}`,
+      probe.versionExitCode,
+    );
+  }
   const early = (await prepare(step)) ?? (await checkConfig(step));
   if (early) {
     return early;

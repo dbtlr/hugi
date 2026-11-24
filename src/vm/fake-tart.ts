@@ -163,7 +163,7 @@ export type FakeMiseAction = {
   readonly configListing?: string;
   /** `mise ls --current --json`; the default is `{}`. */
   readonly configRequests?: string;
-  /** The install check's lines: lock file places and the monorepo answer; the default is none. */
+  /** The install check's lines: lock file places and the monorepo answer; the default lists each place empty. */
   readonly installCheck?: string;
   /** The overlap listing; the default lists no directory. */
   readonly overlap?: string;
@@ -175,6 +175,14 @@ export type FakeMiseAction = {
   /** This script runs until its signal aborts, like a hung install. */
   readonly hangs?: MiseActionPhase;
 };
+
+/** The install check's default answer: each place its script searches holds no regular file. */
+function emptyLockPlaces(script: string): string {
+  const places = /^for place in (.*); do/mu.exec(script)?.[1] ?? '';
+  return [...places.matchAll(/'([^']*)'/gu)]
+    .map(([, path]) => `${JSON.stringify({ files: [], path })}\n`)
+    .join('');
+}
 
 export const FAKE_MISE_PROBE = {
   dataDir: '/Users/admin/.local/share/mise',
@@ -376,7 +384,7 @@ export class FakeTart implements Tart {
         [files.environment, fake.environment ?? '{}'],
         [files.paths, fake.paths ?? ''],
       ],
-      'install-check': [[files.install, fake.installCheck ?? '']],
+      'install-check': [[files.install, fake.installCheck ?? emptyLockPlaces(options.stdin ?? '')]],
       listing: [
         [
           files.configListing,

@@ -9,13 +9,18 @@ import {
   overlapConflicts,
   parseProbe,
   setsMonorepoRoots,
+  stoppedAtMiseVersion,
 } from './mise-action-judging';
+import type { LockFilePlace } from './mise-action-judging';
 import { ToolOutputError } from './tool-environment';
 
 const WORKSPACE = '/Users/admin/hugi/workspace';
 
-/** One line of the lock file listing: a place and its regular files. */
-const listing = (path: string, files: string[]) => `${JSON.stringify({ files, path })}\n`;
+/** The lock file listing of `places`, none holding a regular file, then `files` at `path`. */
+const listing = (places: readonly LockFilePlace[], path: string, files: string[]) =>
+  [...places.map((place) => ({ files: [], path: place.path })), { files, path }]
+    .map((record) => `${JSON.stringify(record)}\n`)
+    .join('');
 
 const entry = (role: string, dir: string, executables: string[], real = dir) =>
   JSON.stringify({ dir, executables, real, role });
@@ -42,11 +47,12 @@ describe('the lock file search', () => {
     ['mise', '/mise', 'config.lock'],
     ['.mise', '/.mise', 'config.lock'],
     ['.config/mise', '/.config/mise', 'config.lock'],
+    ['.config', '/.config', '.mise.lock'],
   ])(
     'with working directory %s, a place two searches share counts the names of both',
     (workingDirectory, place, file) => {
       const places = lockFilePlaces(workingDirectory);
-      expect(hasLockFile(places, listing(`${WORKSPACE}${place}`, [file]))).toBe(true);
+      expect(hasLockFile(places, listing(places, `${WORKSPACE}${place}`, [file]))).toBe(true);
     },
   );
 
@@ -75,7 +81,7 @@ describe('the lock file search', () => {
     ['/mise', 'config.lock'],
   ])('finds %s/%s', (place, file) => {
     const places = lockFilePlaces(undefined);
-    expect(hasLockFile(places, listing(`${WORKSPACE}${place}`, [file]))).toBe(true);
+    expect(hasLockFile(places, listing(places, `${WORKSPACE}${place}`, [file]))).toBe(true);
   });
 
   test.each([
@@ -87,11 +93,11 @@ describe('the lock file search', () => {
     ['/other', 'mise.lock'],
   ])('does not count %s/%s', (place, file) => {
     const places = lockFilePlaces(undefined);
-    expect(hasLockFile(places, listing(`${WORKSPACE}${place}`, [file]))).toBe(false);
+    expect(hasLockFile(places, listing(places, `${WORKSPACE}${place}`, [file]))).toBe(false);
   });
 
   test('a monorepo line says whether the config sets monorepo.config_roots', () => {
-    const listingText = listing(WORKSPACE, ['mise.toml']);
+    const listingText = listing(lockFilePlaces(undefined), WORKSPACE, ['mise.toml']);
     expect(setsMonorepoRoots(`${listingText}{"monorepo":true}\n`)).toBe(true);
     expect(setsMonorepoRoots(`${listingText}{"monorepo":false}\n`)).toBe(false);
     expect(setsMonorepoRoots(listingText)).toBe(false);
@@ -99,8 +105,20 @@ describe('the lock file search', () => {
 
   test('counts a lock file in an ancestor of the working directory inside the workspace', () => {
     const places = lockFilePlaces('pkg/app');
-    expect(hasLockFile(places, listing(`${WORKSPACE}/pkg`, ['mise.lock']))).toBe(true);
-    expect(hasLockFile(places, listing('/Users/admin/hugi', ['mise.lock']))).toBe(false);
+    expect(hasLockFile(places, listing(places, `${WORKSPACE}/pkg`, ['mise.lock']))).toBe(true);
+    expect(hasLockFile(places, listing(places, '/Users/admin/hugi', ['mise.lock']))).toBe(false);
+  });
+
+  test('a listing without a readable line for every place it searched is a ToolOutputError', () => {
+    const places = lockFilePlaces(undefined);
+    const rest = listing(places.slice(1), `${WORKSPACE}/other`, []);
+    expect(() => hasLockFile(places, '')).toThrow(ToolOutputError);
+    expect(() => hasLockFile(places, rest)).toThrow(new RegExp(`no line for ${WORKSPACE}$`, 'u'));
+    expect(() =>
+      hasLockFile(places, listing(places.slice(0, -1), WORKSPACE, ['mise.lock'])),
+    ).toThrow(`no line for ${WORKSPACE}/mise`);
+    const unreadable = `${JSON.stringify({ files: [1], path: WORKSPACE })}\n`;
+    expect(() => hasLockFile(places, `${unreadable}${rest}`)).toThrow(ToolOutputError);
   });
 });
 
@@ -181,6 +199,16 @@ describe('the probe', () => {
 
   test('output of another shape is a ToolOutputError', () => {
     expect(() => parseProbe('{}')).toThrow(ToolOutputError);
+  });
+
+  test('stopped at mise --version only when its file holds the marker, which keeps the data directory', () => {
+    const dataDir = '/Users/admin/.local/share/mise';
+    expect(stoppedAtMiseVersion(JSON.stringify({ dataDir, marker: 'mise --version' }))).toBe(
+      dataDir,
+    );
+    for (const text of ['', '2026.11.12\n', probe('2026.11.12'), 'not json', '{"dataDir":"/d"}']) {
+      expect(stoppedAtMiseVersion(text)).toBeUndefined();
+    }
   });
 });
 

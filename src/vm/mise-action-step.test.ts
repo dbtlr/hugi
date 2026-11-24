@@ -24,6 +24,7 @@ import {
   overlapConflicts,
   parseProbe,
   setsMonorepoRoots,
+  stoppedAtMiseVersion,
 } from './mise-action-judging';
 import type { RunRequest } from './run-request';
 import { parseConfigListing } from './tool-environment';
@@ -149,6 +150,11 @@ function harness(miseAction: FakeMiseAction = {}, guest: Partial<FakeGuest> = {}
 
 const probe = (overrides: Partial<typeof FAKE_MISE_PROBE>) =>
   JSON.stringify({ ...FAKE_MISE_PROBE, ...overrides });
+/** The probe's file when `mise --version` itself failed: the marker and the data directory. */
+const STOPPED_AT_MISE_VERSION = JSON.stringify({
+  dataDir: dirname(SHIMS),
+  marker: 'mise --version',
+});
 const lines = (...records: object[]) =>
   `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 const listing = (...files: string[]) =>
@@ -347,7 +353,12 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
 
   test('installs with --locked when a lock file lies between the working directory and the workspace root', async () => {
     const h = harness({
-      installCheck: lines({ files: ['mise.toml', 'mise.lock'], path: `${WORKSPACE}/pkg` }),
+      installCheck: lines(
+        ...lockFilePlaces('pkg/app').map(({ path }) => ({
+          files: path === `${WORKSPACE}/pkg` ? ['mise.toml', 'mise.lock'] : [],
+          path,
+        })),
+      ),
     });
     await h.run(
       requestOf({
@@ -468,8 +479,8 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(later).not.toContain('FOO');
   });
 
-  test("a mise --version that fails is ordinary, as the action's own test of mise fails on GitHub", async () => {
-    const h = harness({ exitCodes: { probe: 3 }, probe: '' });
+  test("a mise --version that fails is ordinary, after the defaults and shims, as the action's own test of mise fails on GitHub", async () => {
+    const h = harness({ exitCodes: { probe: 3 }, probe: STOPPED_AT_MISE_VERSION });
     const result = await h.run(requestOf({ step: { continueOnError: true } }));
     expect(result.reason).toBe('passed');
     expect(result.steps[2]).toMatchObject({
@@ -477,6 +488,11 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
       error: 'mise --version exited with code 3',
       outcome: 'failure',
     });
+    expect(h.phases()).toEqual(['probe', 'bins']);
+    const later = h.tart.launcherFor(3);
+    expect(later).toContain("export MISE_YES='1'");
+    expect(later).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+    expect(later).toContain(`/wf/node:${SHIMS}`);
   });
 
   test('continue-on-error lets an ordinary failure pass, as on GitHub', async () => {
@@ -538,6 +554,20 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       {},
       ['probe'],
       "the probe of the guest's mise",
+    ],
+    [
+      "a probe command of Hugi's own that fails before mise --version",
+      { exitCodes: { probe: 127 }, probe: '' },
+      {},
+      ['probe'],
+      "the probe of the guest's mise",
+    ],
+    [
+      'workflow tools bins mise cannot find, after mise --version fails',
+      { exitCodes: { bins: 1, probe: 3 }, probe: STOPPED_AT_MISE_VERSION },
+      {},
+      ['probe', 'bins'],
+      'mise bin-paths',
     ],
     [
       'workflow tools bins mise cannot find',
@@ -757,12 +787,17 @@ describe.skipIf(mise === null || jq === null)(
       });
     });
 
-    test('the probe file stays empty only when mise --version itself fails', async () => {
+    test('the probe marks only mise --version itself failing, not a command before or after it', async () => {
       const script = (await scriptsOf({}))('probe');
       onHost(script, { exitCode: 3, stubs: stub('mise', 'exit 3') });
-      expect(output('mise-probe.json')).toBe('');
+      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBe(
+        join(root, 'home/.local/share/mise'),
+      );
       onHost(script, { exitCode: 4, stubs: stub('jq', 'exit 4') });
-      expect(output('mise-probe.json')).not.toBe('');
+      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBeUndefined();
+      const lateJq = stub('jq', `case "$*" in *--argjson*) exit 5;; esac\nexec ${jq!} "$@"`);
+      onHost(script, { exitCode: 5, stubs: lateJq });
+      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBeUndefined();
     });
 
     test('the listing loads only the workspace config, not the one above it or the global one', async () => {
