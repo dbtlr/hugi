@@ -12,13 +12,16 @@
  *
  * After "Install tools" the runner computes the tool environment (`./tool-steps`), and every step
  * runs with its `PATH` and variables. A `tools: mise` lane gets one more step after the checkout.
+ * A `jdx/mise-action` step runs at its own place (`./mise-action-step`, ADR-0007); the steps after
+ * one that ran no longer ignore the repository's mise config.
  *
  * GitHub's run-time conditions apply, including to the synthetic "Install
  * tools" step: after a failure, `success` steps are skipped while `always` and
  * `failure` steps still run. One exception: once the job times out, every
  * remaining step is skipped, `always` steps included.
  */
-import type { PlanStep, RunStep, StepWhen } from '../lane/step-plan';
+import type { ActionStep, PlanStep, RunStep, StepWhen } from '../lane/step-plan';
+import type { MiseActionResolution } from '../toolchain/types';
 import { buildWorkspaceScript, checkoutStepIndex } from './checkout';
 import { withDeadline } from './deadline';
 import {
@@ -29,6 +32,7 @@ import {
   prependPaths,
   stepEnvironment,
   toolVersionEnvironment,
+  withoutToolVersions,
 } from './guest-env';
 import type { Environment } from './guest-env';
 import { stepFiles } from './guest-paths';
@@ -38,6 +42,7 @@ import type { HostStepContext, HostStepRun, HostStepVerdict } from './host-step'
 import { copyGuestFile, killProcessGroup, readGuestFile } from './housekeeping';
 import type { GuestCall } from './housekeeping';
 import { openLogFile, stepLogName } from './logs';
+import { runMiseActionStep } from './mise-action-step';
 import type { RunRequest, StepResult } from './run-request';
 import { shellQuote } from './shell';
 import { buildStepLauncher } from './step-launcher';
@@ -90,6 +95,8 @@ type CarriedState = {
   readonly extraPath: readonly string[];
   /** The tool environment (ADR-0006) every step runs with once it is computed. */
   readonly toolEnvironment?: Environment;
+  /** A `jdx/mise-action` step has run, so later steps read the repository's config (ADR-0007). */
+  readonly afterMiseAction: boolean;
 };
 
 /** Hugi's own step that installs the tools the repository's mise config requests (`tools: mise`). */
@@ -288,24 +295,42 @@ function cutShortBy(timedOut: boolean, jobLimited: boolean): StepEnd {
   return 'interrupted';
 }
 
+/**
+ * The runner's layer of a step's environment: GitHub's variables, the workflow tools' version
+ * variables, and the tool environment. After a `jdx/mise-action` step has run, it no longer sets
+ * `MISE_IGNORED_CONFIG_PATHS`, as GitHub's runner sets none (ADR-0007).
+ */
+function runnerEnvironment(ctx: StepRunContext, carried: CarriedState): Environment {
+  const runner = {
+    ...githubEnvironment(ctx.request.event),
+    ...toolVersionEnvironment(ctx.request.tools),
+    ...carried.toolEnvironment,
+  };
+  if (!carried.afterMiseAction) {
+    return runner;
+  }
+  const { MISE_IGNORED_CONFIG_PATHS: _ignored, ...rest } = runner;
+  return rest;
+}
+
+/** How long a step may run, and whether the job deadline, not its own timeout, is the limit. */
+function stepLimit(step: PlanStep, remainingMs: number) {
+  const stepLimitMs = (step.timeoutMinutes ?? Number.POSITIVE_INFINITY) * MILLISECONDS_PER_MINUTE;
+  return { jobLimited: remainingMs <= stepLimitMs, limitMs: Math.min(stepLimitMs, remainingMs) };
+}
+
 async function runOneStep(
   ctx: StepRunContext,
   step: RunStep,
   carried: CarriedState,
   remainingMs: number,
 ): Promise<StepRun> {
-  const stepLimitMs = (step.timeoutMinutes ?? Number.POSITIVE_INFINITY) * MILLISECONDS_PER_MINUTE;
-  const limitMs = Math.min(stepLimitMs, remainingMs);
-  const jobLimited = remainingMs <= stepLimitMs;
+  const { jobLimited, limitMs } = stepLimit(step, remainingMs);
   const files = stepFiles(step.index);
   const env = stepEnvironment({
     fromGithubEnv: carried.fromGithubEnv,
     plan: ctx.request.plan.env,
-    runner: {
-      ...githubEnvironment(ctx.request.event),
-      ...toolVersionEnvironment(ctx.request.tools),
-      ...carried.toolEnvironment,
-    },
+    runner: runnerEnvironment(ctx, carried),
     step: step.env,
   });
   const began = ctx.clock.now();
@@ -498,6 +523,75 @@ async function computeToolEnvironment(
   }
 }
 
+/**
+ * Fold a step's end into the walk. `continue-on-error` lets a failure or a step timeout pass,
+ * except a failure that is Hugi's own (ADR-0007); any other end stops the run.
+ */
+function foldStep(
+  ctx: StepRunContext,
+  walk: Walk,
+  results: StepResult[],
+  run: { readonly result: StepResult; readonly end: StepEnd },
+  tolerated: boolean,
+): void {
+  const ranToEnd = run.end === 'exited' || run.end === 'step-timeout';
+  const failedStep = ranToEnd && run.result.outcome !== 'success';
+  results.push(failedStep && tolerated ? { ...run.result, continuedOnError: true } : run.result);
+  if (!ranToEnd) {
+    walk.stop = stopFor(ctx, run.end, run.result);
+  } else if (failedStep && !tolerated) {
+    walk.failed = true;
+    walk.firstFailure ??= describeFailure(run.result);
+  }
+}
+
+/**
+ * Run a `jdx/mise-action` step at its place (ADR-0007). Its own mise commands run without Hugi's
+ * runner `MISE_IGNORED_CONFIG_PATHS` and the workflow tools' version variables; what it wrote,
+ * even before a failure, reaches later steps, which from now on read the repository's config.
+ */
+async function runMiseAction(
+  ctx: StepRunContext,
+  step: ActionStep,
+  action: MiseActionResolution,
+  walk: Walk,
+  results: StepResult[],
+  remainingMs: number,
+): Promise<void> {
+  const { carried } = walk;
+  const { jobLimited, limitMs } = stepLimit(step, remainingMs);
+  const { MISE_IGNORED_CONFIG_PATHS: _ignored, ...runner } = runnerEnvironment(ctx, carried);
+  const env = stepEnvironment({
+    fromGithubEnv: carried.fromGithubEnv,
+    plan: ctx.request.plan.env,
+    runner: withoutToolVersions(runner),
+    step: step.env,
+  });
+  const run = await runMiseActionStep(
+    hostContext(ctx),
+    {
+      env,
+      extraPath: carried.extraPath,
+      index: step.index,
+      name: step.name,
+      settings: action.settings,
+      tools: ctx.request.tools,
+      ...(carried.toolEnvironment?.PATH === undefined
+        ? {}
+        : { toolPath: carried.toolEnvironment.PATH }),
+    },
+    limitMs,
+  );
+  walk.carried = {
+    ...carried,
+    afterMiseAction: true,
+    extraPath: prependPaths(carried.extraPath, parsePathFile(run.writes.path.join('\n'))),
+    fromGithubEnv: { ...carried.fromGithubEnv, ...run.writes.env },
+  };
+  const end: StepEnd = run.end === 'job-timeout' && !jobLimited ? 'step-timeout' : run.end;
+  foldStep(ctx, walk, results, { end, result: run.result }, step.continueOnError && !run.hugisOwn);
+}
+
 /** Run Hugi's own mise-config step and fold its verdict into the walk. */
 async function runMiseConfig(
   ctx: StepRunContext,
@@ -537,7 +631,7 @@ async function runMiseConfig(
  */
 export async function runSteps(ctx: StepRunContext, results: StepResult[]): Promise<PlanOutcome> {
   const walk: Walk = {
-    carried: { extraPath: [], fromGithubEnv: {} },
+    carried: { afterMiseAction: false, extraPath: [], fromGithubEnv: {} },
     checkedOut: false,
     failed: false,
     firstFailure: undefined,
@@ -546,6 +640,7 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
   };
   const checkoutIndex = checkoutStepIndex(ctx.request.plan);
   const install = installToolsStep(ctx.request.tools);
+  const miseActions = new Map(ctx.request.miseActions?.map((action) => [action.index, action]));
 
   for (const step of stepsOf(ctx.request, install)) {
     if (!walk.toolEnvironmentTried && step !== install) {
@@ -553,7 +648,9 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
       await computeToolEnvironment(ctx, walk, results);
     }
     const remainingMs = ctx.jobDeadline - ctx.clock.now();
-    const performed = step.kind !== 'action' || step.index === checkoutIndex;
+    const miseAction = step.kind === 'action' ? miseActions.get(step.index) : undefined;
+    const performed =
+      step.kind !== 'action' || step.index === checkoutIndex || miseAction !== undefined;
     const wanted = step.kind === 'mise-config' ? walk.checkedOut : true;
     if (walk.stop || !performed || !wanted || !shouldRun(step.when, walk.failed)) {
       results.push(skipped(step));
@@ -577,6 +674,11 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
       await runMiseConfig(ctx, step, walk, results, remainingMs);
       continue;
     }
+    if (step.kind === 'action' && miseAction !== undefined) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      await runMiseAction(ctx, step, miseAction, walk, results, remainingMs);
+      continue;
+    }
     if (step.kind === 'action') {
       // oxlint-disable-next-line no-await-in-loop -- sequential by design
       const checkout = await runCheckoutStep(ctx, step, remainingMs);
@@ -589,20 +691,8 @@ export async function runSteps(ctx: StepRunContext, results: StepResult[]): Prom
     }
     // oxlint-disable-next-line no-await-in-loop -- sequential by design
     const run = await runOneStep(ctx, step, walk.carried, remainingMs);
-    const continued =
-      (run.end === 'exited' || run.end === 'step-timeout') &&
-      run.result.outcome !== 'success' &&
-      step.continueOnError;
-    results.push(continued ? { ...run.result, continuedOnError: true } : run.result);
     walk.carried = run.carried;
-    if (run.end === 'exited' || run.end === 'step-timeout') {
-      if (run.result.outcome !== 'success' && !step.continueOnError) {
-        walk.failed = true;
-        walk.firstFailure ??= describeFailure(run.result);
-      }
-    } else {
-      walk.stop = stopFor(ctx, run.end, run.result);
-    }
+    foldStep(ctx, walk, results, run, step.continueOnError);
   }
 
   if (walk.stop) {

@@ -22,6 +22,10 @@ export function canonicalToolName(name: string): string {
 
 export type ToolPin = { readonly name: string; readonly version: string };
 
+/** The specs that pin a version: `tool@version`. */
+export const pinnedSpecs = (specs: readonly string[]): string[] =>
+  specs.filter((spec) => spec.lastIndexOf('@') > 0);
+
 /** The workflow tools' pins from `tool@version` specs; a spec with no version pins nothing. */
 export function workflowPins(specs: readonly string[]): ToolPin[] {
   const pins: ToolPin[] = [];
@@ -37,6 +41,8 @@ export function workflowPins(specs: readonly string[]): ToolPin[] {
 /** What a shell accepts as a variable name; a key becomes an `export KEY=...` line in every step's launcher. */
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+export const isVariableName = (name: string): boolean => VARIABLE_NAME.test(name);
+
 /** A tool environment is `mise env --json`'s object of valid variable names, with a non-empty `PATH`. */
 export function parseToolEnvironment(text: string): Environment {
   let parsed: unknown;
@@ -50,7 +56,7 @@ export function parseToolEnvironment(text: string): Environment {
   }
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
-    if (!VARIABLE_NAME.test(key)) {
+    if (!isVariableName(key)) {
       throw new ToolOutputError(
         `the tool environment has ${JSON.stringify(key)}, which is not a valid variable name`,
       );
@@ -105,11 +111,19 @@ export function parseConfigListing(text: string): ConfigListing {
   return { files, workspace };
 }
 
+const insideWorkspace = (listing: ConfigListing, real: string) =>
+  real === listing.workspace || real.startsWith(`${listing.workspace}/`);
+
 /** The paths of the loaded config files that lie inside the workspace once symbolic links are resolved. */
 export function configFilesInWorkspace(listing: ConfigListing): string[] {
-  const inside = (real: string) =>
-    real === listing.workspace || real.startsWith(`${listing.workspace}/`);
-  return listing.files.filter((file) => inside(file.real)).map((file) => file.path);
+  return listing.files
+    .filter((file) => insideWorkspace(listing, file.real))
+    .map((file) => file.path);
+}
+
+/** The loaded config files that lie outside the workspace once symbolic links are resolved. */
+export function configFilesOutsideWorkspace(listing: ConfigListing): ConfigListing['files'] {
+  return listing.files.filter((file) => !insideWorkspace(listing, file.real));
 }
 
 export type RequestedVersions = ReadonlyMap<

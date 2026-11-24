@@ -24,6 +24,7 @@ import {
   mergeToolEnvironments,
   parseConfigListing,
   parseToolEnvironment,
+  pinnedSpecs,
   requestedVersions,
   ToolOutputError,
   versionConflicts,
@@ -33,14 +34,22 @@ import {
 /** The name of the step that installs the tools from the repository's mise config. */
 export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 
-/** The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`. */
-function guestScript(marker: string, env: Environment, lines: readonly string[]): string {
+/**
+ * The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`, or the
+ * `PATH` that `env` sets, with `extraPath` in front of it.
+ */
+export function guestScript(
+  marker: string,
+  env: Environment,
+  lines: readonly string[],
+  extraPath: readonly string[] = [],
+): string {
   return [
     `# hugi-${marker}`,
     'set -eo pipefail',
     'exec 2>&1',
     ...environmentExports(env),
-    `export PATH="${guestPath([], env.PATH)}"`,
+    `export PATH="${guestPath(extraPath, env.PATH)}"`,
     ...lines,
     '',
   ].join('\n');
@@ -95,8 +104,18 @@ export function runToolEnvironment(
 export function configListingScript(request: RunRequest): string {
   return guestScript('mise-config listing', readingEnvironment(request), [
     `cd ${shellQuote(GUEST_RUNNER_PATHS.workspace)}`,
+    ...configListingLines(GUEST_TOOL_FILES.configListing),
+  ]);
+}
+
+/**
+ * Write the listing of the config files mise loads in the current directory to `output`, in the
+ * form `parseConfigListing` reads. The workspace's own resolved path comes first.
+ */
+export function configListingLines(output: string): string[] {
+  return [
     '{',
-    `  jq -nc --arg real "$(realpath .)" '{kind: "workspace", real: $real}'`,
+    `  jq -nc --arg real "$(realpath ${shellQuote(GUEST_RUNNER_PATHS.workspace)})" '{kind: "workspace", real: $real}'`,
     `  mise config ls --json | jq -r '.[].path | @base64' | while IFS= read -r encoded; do`,
     // The trailing `x` keeps the substitution from dropping a newline that ends a name.
     `    path="$(printf %s "$encoded" | base64 -d; printf x)"; path="\${path%x}"`,
@@ -104,8 +123,8 @@ export function configListingScript(request: RunRequest): string {
     `    [ -n "$real" ] || real="$path"`,
     `    jq -nc --arg real "$real" --arg path "$path" '{kind: "file", path: $path, real: $real}'`,
     '  done',
-    `} > ${shellQuote(GUEST_TOOL_FILES.configListing)}`,
-  ]);
+    `} > ${shellQuote(output)}`,
+  ];
 }
 
 /**
@@ -135,7 +154,7 @@ function configInstallScript(request: RunRequest): string {
     ...toolVersionEnvironment(request.tools),
     MISE_LOCKFILE: 'false',
   };
-  const pinned = request.tools.filter((spec) => spec.lastIndexOf('@') > 0);
+  const pinned = pinnedSpecs(request.tools);
   const bins = ` > ${shellQuote(GUEST_TOOL_FILES.workflowBins)}`;
   return guestScript('mise-config install', env, [
     `cd ${shellQuote(GUEST_RUNNER_PATHS.workspace)}`,

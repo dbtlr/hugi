@@ -46,9 +46,13 @@ export type StepFiles = {
   readonly output: string;
 };
 
+/** Step `index`'s own directory in the control directory. */
+const stepDirectory = (index: number) =>
+  `${GUEST_CONTROL_DIR}/step-${String(index).padStart(2, '0')}`;
+
 /** Where step `index` keeps its files, under a directory of its own in the control directory. */
 export function stepFiles(index: number): StepFiles {
-  const directory = `${GUEST_CONTROL_DIR}/step-${String(index).padStart(2, '0')}`;
+  const directory = stepDirectory(index);
   return {
     env: `${directory}/github_env`,
     log: `${directory}/output.log`,
@@ -77,3 +81,31 @@ export const GUEST_TOOL_FILES = {
   /** The workflow tools' bin directories, one per line. */
   workflowBins: `${GUEST_CONTROL_DIR}/workflow-bins.txt`,
 } as const;
+
+/**
+ * The guest files of a `jdx/mise-action` step (ADR-0007): an empty directory its mise commands take
+ * as their config directory, and what its scripts write for the host to read.
+ */
+export function miseActionFiles(index: number) {
+  const directory = stepDirectory(index);
+  return {
+    /** `MISE_CONFIG_DIR`, kept empty so no config outside the workspace loads. */
+    configDir: `${directory}/mise-config`,
+    /** The config files mise loads in the working directory, resolved. */
+    configListing: `${directory}/mise-config-listing.txt`,
+    /** What the config requests: `mise ls --current --json`. */
+    configRequests: `${directory}/mise-config-requests.json`,
+    /** `mise env --json` in the working directory, after the install. */
+    environment: `${directory}/mise-env.json`,
+    /** The regular files of the places the lock file search looks, and the monorepo answer. */
+    install: `${directory}/mise-install.txt`,
+    /** The executables of the config's `PATH` directories and the workflow tools' bin directories. */
+    overlap: `${directory}/mise-overlap.txt`,
+    /** `mise env --paths` in the working directory, after the install. */
+    paths: `${directory}/mise-paths.txt`,
+    /** The guest's mise version, data directory and capabilities, and the workflow tools' bins. */
+    probe: `${directory}/mise-probe.json`,
+  } as const;
+}
+
+export type MiseActionFiles = ReturnType<typeof miseActionFiles>;
