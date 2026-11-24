@@ -820,6 +820,24 @@ describe.skipIf(mise === null || jq === null)(
       expect(setsMonorepoRoots(found)).toBe(false);
     });
 
+    test.each([
+      ['.config', '.mise.lock'],
+      ['mise', 'config.lock'],
+      ['.mise', 'config.lock'],
+      ['.config/mise', 'config.ci.lock'],
+    ])(
+      'a working directory %s, which the workspace search shares, holding %s installs with --locked',
+      async (directory, file) => {
+        mkdirSync(join(workspace(), directory), { recursive: true });
+        writeFileSync(join(workspace(), directory, file), '');
+        onHost((await scriptsOf({ workingDirectory: directory }))('install-check'));
+        const found = output('mise-install.txt').replaceAll(hugi(), '/Users/admin/hugi');
+        const h = harness({ installCheck: found });
+        await h.run(requestOf({ settings: { workingDirectory: directory } }));
+        expect(h.script('install')).toMatch(/^mise install --locked$/m);
+      },
+    );
+
     test('the install check finds monorepo.config_roots', async () => {
       onHost((await scriptsOf({ workingDirectory: 'mono' }))('install-check'));
       expect(setsMonorepoRoots(output('mise-install.txt'))).toBe(true);

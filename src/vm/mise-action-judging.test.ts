@@ -16,9 +16,15 @@ import { ToolOutputError } from './tool-environment';
 
 const WORKSPACE = '/Users/admin/hugi/workspace';
 
-/** The lock file listing of `places`, none holding a regular file, then `files` at `path`. */
+/**
+ * The lock file listing of `places`, one line each, none holding a regular file but `path`, which
+ * holds `files`; a `path` that is not one of the places gets a line of its own at the end.
+ */
 const listing = (places: readonly LockFilePlace[], path: string, files: string[]) =>
-  [...places.map((place) => ({ files: [], path: place.path })), { files, path }]
+  [
+    ...places.map((place) => ({ files: place.path === path ? files : [], path: place.path })),
+    ...(places.some((place) => place.path === path) ? [] : [{ files, path }]),
+  ]
     .map((record) => `${JSON.stringify(record)}\n`)
     .join('');
 
@@ -42,6 +48,24 @@ describe('the lock file search', () => {
     ]);
     expect(paths.every((path) => path.startsWith(WORKSPACE))).toBe(true);
   });
+
+  test.each([
+    ['mise', '/mise', ['.mise.lock', 'config.lock']],
+    ['.mise', '/.mise', ['.mise.lock', 'config.lock']],
+    ['.config/mise', '/.config/mise', ['.mise.lock', 'config.lock']],
+    ['.config', '/.config', ['.mise.lock', 'mise.lock']],
+  ])(
+    'with working directory %s, a directory two searches share is one place with the names of both',
+    (workingDirectory, place, names) => {
+      const places = lockFilePlaces(workingDirectory);
+      const paths = places.map((each) => each.path);
+      expect(new Set(paths).size).toBe(paths.length);
+      const shared = places.find((each) => each.path === `${WORKSPACE}${place}`);
+      for (const name of names) {
+        expect(shared?.patterns.some((pattern) => pattern.test(name))).toBe(true);
+      }
+    },
+  );
 
   test.each([
     ['mise', '/mise', 'config.lock'],
@@ -119,6 +143,14 @@ describe('the lock file search', () => {
     ).toThrow(`no line for ${WORKSPACE}/mise`);
     const unreadable = `${JSON.stringify({ files: [1], path: WORKSPACE })}\n`;
     expect(() => hasLockFile(places, `${unreadable}${rest}`)).toThrow(ToolOutputError);
+  });
+
+  test('a listing with two lines for one directory is a ToolOutputError, whichever holds the lock file', () => {
+    const places = lockFilePlaces(undefined);
+    const once = listing(places, WORKSPACE, ['mise.lock']);
+    const again = `${JSON.stringify({ files: [], path: WORKSPACE })}\n`;
+    expect(() => hasLockFile(places, `${once}${again}`)).toThrow(`lists ${WORKSPACE} twice`);
+    expect(() => hasLockFile(places, `${again}${once}`)).toThrow(`lists ${WORKSPACE} twice`);
   });
 });
 

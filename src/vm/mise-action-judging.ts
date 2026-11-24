@@ -47,6 +47,8 @@ export type LockFilePlace = {
 /**
  * Where the action looks for a mise lock file: in the working directory and each of its ancestors,
  * up to the workspace root, since directories above the workspace are empty on GitHub's runner.
+ * Two searches can share a directory, as the workspace's `mise` and a working directory named
+ * `mise`, so each directory is one place, with the names of every search that looks there.
  */
 export function lockFilePlaces(workingDirectory: string | undefined): LockFilePlace[] {
   const { workspace } = GUEST_RUNNER_PATHS;
@@ -55,21 +57,25 @@ export function lockFilePlaces(workingDirectory: string | undefined): LockFilePl
     dirs.push(`${workspace}/${dir}`);
   }
   dirs.push(workspace);
-  return dirs.flatMap((dir) => [
-    { path: dir, patterns: [ROOT_LOCK] },
-    { path: `${dir}/.config`, patterns: [CONFIG_DIR_LOCK] },
-    { path: `${dir}/.config/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
-    { path: `${dir}/.mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
-    { path: `${dir}/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
-  ]);
+  const places = new Map<string, RegExp[]>();
+  for (const dir of dirs) {
+    for (const [path, patterns] of [
+      [dir, [ROOT_LOCK]],
+      [`${dir}/.config`, [CONFIG_DIR_LOCK]],
+      [`${dir}/.config/mise`, [ROOT_LOCK, CONFIG_LOCK]],
+      [`${dir}/.mise`, [ROOT_LOCK, CONFIG_LOCK]],
+      [`${dir}/mise`, [ROOT_LOCK, CONFIG_LOCK]],
+    ] as const) {
+      places.set(path, [...new Set([...(places.get(path) ?? []), ...patterns])]);
+    }
+  }
+  return [...places].map(([path, patterns]) => ({ path, patterns }));
 }
 
 /**
  * Whether the guest's listing of the places' regular files (`{path, files}` lines) holds a lock
- * file. Two searches can share a directory, as the workspace's `mise` and a working directory
- * named `mise`, so each place checks its own names against the files listed at its path. A listing
- * without a readable line for every place cannot say there is no lock file, so it is a
- * `ToolOutputError`.
+ * file. A listing without exactly one readable line for every place cannot say there is no lock
+ * file, so it is a `ToolOutputError`.
  */
 export function hasLockFile(places: readonly LockFilePlace[], listing: string): boolean {
   const listed = new Map<string, readonly string[]>();
@@ -80,6 +86,9 @@ export function hasLockFile(places: readonly LockFilePlace[], listing: string): 
     const { files, path } = record;
     if (typeof path !== 'string' || !isTextList(files)) {
       throw new ToolOutputError('the lock file listing has a line of an unknown shape');
+    }
+    if (listed.has(path)) {
+      throw new ToolOutputError(`the lock file listing lists ${path} twice`);
     }
     listed.set(path, files);
   }
