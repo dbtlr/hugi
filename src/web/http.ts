@@ -59,17 +59,19 @@ function respond(page: RenderedPage, method: string, extra: Record<string, strin
   return new Response(method === 'HEAD' ? null : page.html, { headers, status: page.status });
 }
 
-async function answer(
-  request: Request,
-  context: RunPageContext,
-  pathname: string,
-): Promise<Response> {
+/** The request's path, or `''` when its url does not parse (as a `CONNECT` target may not). */
+function pathnameOf(request: Request): string {
+  return URL.parse(request.url)?.pathname ?? '';
+}
+
+async function answer(request: Request, context: RunPageContext): Promise<Response> {
   const { method } = request;
+  // The Host is checked before the url is parsed: a missing or malformed Host is simply not allowed.
   const host = (request.headers.get('host') ?? '').toLowerCase();
   if (!allowedHosts(context.port, context.origin).has(host)) {
     return respond(renderWrongHost(), method);
   }
-  const runId = runIdOfPath(pathname);
+  const runId = runIdOfPath(pathnameOf(request));
   if (runId === undefined) {
     return respond(renderNotFound(), method);
   }
@@ -87,13 +89,11 @@ export async function answerRunPageRequest(
   request: Request,
   context: RunPageContext,
 ): Promise<Response> {
-  let pathname = '';
   try {
-    ({ pathname } = new URL(request.url));
-    return await answer(request, context, pathname);
+    return await answer(request, context);
   } catch (error) {
     context.log.error(
-      `The run page could not answer ${request.method} ${pathname}: ${messageOf(error)}`,
+      `The run page could not answer ${request.method} ${pathnameOf(request)}: ${messageOf(error)}`,
     );
     return respond(renderUnexpectedError(), request.method);
   }
