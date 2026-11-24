@@ -55,7 +55,7 @@ The step does, in the guest, what the action does on GitHub's runner, in the act
 8. When `install` is true, the default, it runs `mise install` in the working directory, followed by the tool names from `install_args`. It adds `--locked` when a mise lock file lies in the working directory or one of its ancestors up to the workspace root, matched by the names and places that the action searches. Directories above the workspace count as empty, as they are on GitHub's runner. When `monorepo` is true and the config sets `monorepo.config_roots`, the step fails, because Hugi does not reproduce a monorepo install. That failure is Hugi's own.
 9. When `add_shims_to_path` is true, or `env` and `export_path` are both true, it runs the overlap check described below, whether or not the install succeeded. A failed install then fails the step.
 10. It runs `mise ls`, as the action does.
-11. When `env` is true, the default, it runs `mise env --json` in the working directory and writes every variable except `PATH` to `GITHUB_ENV`. When `export_path` is also true, the default, it adds the entries that `mise env --paths` lists to `GITHUB_PATH`, in the order that keeps mise's first entry first. The step's log names the variables it exported but not their values.
+11. When `env` is true, the default, it runs `mise env --json` in the working directory and writes every variable except `PATH` to `GITHUB_ENV`. When `export_path` is also true, the default, it adds to `GITHUB_PATH` the entries that `mise env --paths` listed for the overlap check, in the order that keeps mise's first entry first. It does not run `mise env --paths` again, so the export holds exactly the directories the check inspected, even when a config `_.source` would print a different list the second time. The step's log names the variables it exported but not their values.
 
 The working directory is `working_directory` when set, a directory inside the workspace, and the workspace otherwise. A job's `defaults.run.working-directory` does not apply, because it applies only to `run:` steps.
 
@@ -85,7 +85,7 @@ The overlap check makes that order irrelevant. After the install, the step lists
 
 ### Hugi's own failures
 
-A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed. A check whose own commands fail, or print output that Hugi cannot read, fails as Hugi's own, because the check cannot pass. So does a step `PATH` that does not reach the guest's mise, and a failure to read the guest's mise version when `version` is set.
+A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed. A check whose own commands fail, or print output that Hugi cannot read, fails as Hugi's own, because the check cannot pass. So does a check that the step's `timeout-minutes` or an interrupt ends before it returns, because it is unfinished. A timeout during one of the action's own commands, such as `mise --version`, `mise install`, `mise ls`, or `mise env`, stays an ordinary timeout that `continue-on-error` covers. So does a step `PATH` that does not reach the guest's mise, and a failure to read the guest's mise version when `version` is set.
 
 ### Later steps
 
