@@ -21,8 +21,8 @@ brew upgrade mise
 # A jdx/mise-action step needs these flags and reproduces none of the action's fallbacks for older
 # releases (ADR-0007), so an image whose mise lacks one fails here instead of in every such lane.
 for need in 'env --paths' 'env --json' 'install --locked'; do
-  set -- $need
-  if ! mise "$1" --help | grep -qE -- "(^|[[:space:]])$2([[:space:],]|$)"; then
+  read -r command flag <<< "$need"
+  if ! mise "$command" --help | grep -qE -- "(^|[[:space:]])$flag([[:space:],]|$)"; then
     echo "mise $(mise --version) lacks mise $need, which a jdx/mise-action step needs" >&2
     exit 1
   fi
