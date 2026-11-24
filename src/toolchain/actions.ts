@@ -2,6 +2,7 @@ import { messageOf } from '../errors';
 import type { ActionStep } from '../lane/step-plan';
 import { bunVersion } from './bun';
 import { UnsupportedActionError } from './errors';
+import { checkMiseActionRef, MISE_ACTION_INPUTS, miseActionSettings } from './mise-action';
 import { pnpmVersion } from './pnpm';
 import type { ActionResolution, ReadRepoFile } from './types';
 import { pinnedVersion } from './versions';
@@ -77,6 +78,11 @@ async function mapAction(step: ActionStep, readRepoFile: ReadRepoFile): Promise<
       validateInputs(step, ['version']);
       const tool = pinnedVersion('pnpm', await pnpmVersion(step.with, readRepoFile));
       return { ...source, kind: 'tools', notes: [], tools: [tool] };
+    }
+    case 'jdx/mise-action': {
+      checkMiseActionRef(step.uses.slice(step.uses.indexOf('@') + 1));
+      validateInputs(step, MISE_ACTION_INPUTS);
+      return { ...source, kind: 'mise-action', settings: miseActionSettings(step.with) };
     }
     case 'oven-sh/setup-bun': {
       validateInputs(step, ['bun-version', 'bun-version-file']);

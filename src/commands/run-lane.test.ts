@@ -745,3 +745,67 @@ describe('a lane that takes its tools from the mise config (ADR-0006)', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe('a lane whose job runs jdx/mise-action (ADR-0007)', () => {
+  const workflow = WORKFLOW.replace(
+    '      - run: echo hello',
+    '      - uses: jdx/mise-action@v5\n        with: { install_args: nushell }\n      - run: echo hello',
+  );
+  const files = { '.github/workflows/ci.yml': workflow };
+
+  test('under tools: mise, fails before the VM boots, saying to remove tools: mise', async () => {
+    const { calls, deps } = harness(files);
+    const report = await runLane({ ...request, toolSource: 'mise' }, deps);
+    expect(report).toMatchObject({ reason: 'toolchain-unresolvable', verdict: 'fail' });
+    expect(report.detail).toContain('step 3');
+    expect(report.detail).toContain('jdx/mise-action@v5');
+    expect(report.detail).toContain('remove tools: mise');
+    expect(calls).toHaveLength(0);
+  });
+
+  test('under the default, reaches the VM with its settings, and adds no workflow tool', async () => {
+    const { calls, deps } = harness(files);
+    await runLane(request, deps);
+    expect(calls[0]!.tools).toEqual(['bun@1.4.4']);
+    expect(calls[0]!.miseActions).toEqual([
+      {
+        index: 3,
+        kind: 'mise-action',
+        name: 'jdx/mise-action@v5',
+        settings: expect.objectContaining({ installArgs: ['nushell'] }),
+        uses: 'jdx/mise-action@v5',
+      },
+    ]);
+  });
+
+  test("the step keeps the VM's result in the report, as a step that ran", async () => {
+    const ran: RunResult = {
+      ...passed,
+      steps: [
+        { index: 1, name: 'actions/checkout@v7', outcome: 'success', seconds: 1 },
+        { index: 2, name: 'oven-sh/setup-bun@v2', outcome: 'skipped', seconds: 0 },
+        {
+          index: 3,
+          logFile: '/logs/03.log',
+          name: 'jdx/mise-action@v5',
+          outcome: 'failure',
+          seconds: 4,
+        },
+        { index: 4, name: 'run', outcome: 'skipped', seconds: 0 },
+      ],
+    };
+    const { deps } = harness(files, ran);
+    const report = await runLane(request, deps);
+    expect(report.steps.map((step) => step.outcome)).toEqual([
+      'success',
+      'resolved',
+      'failure',
+      'skipped',
+    ]);
+    expect(report.toolchain?.actions.map((action) => action.kind)).toEqual([
+      'noop',
+      'tools',
+      'mise-action',
+    ]);
+  });
+});

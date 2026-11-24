@@ -16,7 +16,6 @@ import {
 } from '../source/locations';
 import { parseRepository, RepositorySpecError } from '../source/repository-spec';
 import type { RepositorySpec } from '../source/repository-spec';
-import type { ActionResolution } from '../toolchain/resolver';
 import { createTartCli, GOLDEN_IMAGE, runInVm, systemClock } from '../vm';
 import {
   parseLaneArgument,
@@ -26,7 +25,13 @@ import {
   RunUsageError,
 } from './run-args';
 import { exitCodeForVerdict, runLane } from './run-lane';
-import type { LaneReport, ReportStep, RunLaneDeps, RunLaneRequest } from './run-lane';
+import type {
+  LaneReport,
+  ReportStep,
+  ResolvedActionStep,
+  RunLaneDeps,
+  RunLaneRequest,
+} from './run-lane';
 import { recordRunStart, storeRun } from './run-record';
 
 const DESCRIPTION =
@@ -72,7 +77,7 @@ function oneOf<const Allowed extends readonly string[]>(
 }
 
 /** What an action resolved to: its tools with any notes, or the no-op and its reason. */
-function describeAction(action: ActionResolution): string {
+function describeAction(action: ResolvedActionStep['action']): string {
   if (action.kind === 'noop') {
     return `no-op: ${action.reason}`;
   }
