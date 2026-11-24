@@ -15,6 +15,7 @@ export const LOG_LIMIT_BYTES = 1024 * 1024;
 export const LOG_READ_BYTES = LOG_LIMIT_BYTES + 1;
 
 const NEWLINE = 10; // "\n"
+const CARRIAGE_RETURN = 13; // "\r"
 
 /**
  * Terminal escape sequences, longest forms first: OSC (ended by BEL or ST), DCS, SOS, PM and APC
@@ -30,10 +31,16 @@ const ESCAPE_SEQUENCE =
 // oxlint-disable-next-line no-control-regex -- the pattern is made of control characters
 const CONTROL_CHARACTER = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/gu;
 
-/** A line as a terminal leaves it: carriage returns that end it dropped, then the text after the last one. */
+/**
+ * A line as a terminal leaves it: carriage returns that end it dropped, then the text after the
+ * last one. A loop, not a regular expression, so a long run of carriage returns stays linear.
+ */
 function settleCarriageReturns(line: string): string {
-  const ended = line.replace(/\r+$/u, '');
-  return ended.slice(ended.lastIndexOf('\r') + 1);
+  let end = line.length;
+  while (end > 0 && line.charCodeAt(end - 1) === CARRIAGE_RETURN) {
+    end -= 1;
+  }
+  return end === 0 ? '' : line.slice(line.lastIndexOf('\r', end - 1) + 1, end);
 }
 
 /** `text` with escape sequences and control characters (but newline and tab) removed. */

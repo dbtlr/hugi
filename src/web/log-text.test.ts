@@ -38,6 +38,15 @@ describe('cleaning a log for the page', () => {
     expect(cleanLogText(`old${ESC}[K\rnew`)).toBe('new');
   });
 
+  test.each([
+    ['a long run of carriage returns before a last character', `${'\r'.repeat(1024 * 1024)}x`, 'x'],
+    ['the same run ending in a line break', `${'\r'.repeat(1024 * 1024)}x\n`, 'x\n'],
+  ])('cleans %s in linear time', (_name, input, output) => {
+    const started = performance.now();
+    expect(cleanLogText(input)).toBe(output);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test('ordinary text, markup characters included, is left as it is', () => {
     expect(cleanLogText('<b>&amp; "quoted"</b> ünïcödé ✓')).toBe('<b>&amp; "quoted"</b> ünïcödé ✓');
   });
