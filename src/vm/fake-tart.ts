@@ -143,6 +143,7 @@ export type FakeMise = {
 /** The guest scripts of a `jdx/mise-action` step (ADR-0007), in the order the step runs them. */
 export type MiseActionPhase =
   | 'probe'
+  | 'version'
   | 'bins'
   | 'prepare'
   | 'listing'
@@ -155,8 +156,10 @@ export type MiseActionPhase =
 
 /** What the guest's `mise` does for a `jdx/mise-action` step's scripts. */
 export type FakeMiseAction = {
-  /** The probe's JSON; the default is mise 2026.11.12 with every capability. */
+  /** The probe's JSON; the default is mise on PATH with every capability. */
   readonly probe?: string;
+  /** `mise --version`; the default is 2026.11.12. */
+  readonly version?: string;
   /** `mise bin-paths` of the workflow tools; the default is `/wf/node`. */
   readonly workflowBins?: string;
   /** The config listing; the default names the workspace and no file. */
@@ -186,8 +189,8 @@ function emptyLockPlaces(script: string): string {
 
 export const FAKE_MISE_PROBE = {
   dataDir: '/Users/admin/.local/share/mise',
+  onPath: true,
   supports: { envJson: true, envPaths: true, installLocked: true },
-  version: '2026.11.12 macos-arm64 (2026-11-21)',
 };
 
 export type FakeGuest = {
@@ -395,6 +398,7 @@ export class FakeTart implements Tart {
       overlap: [[files.overlap, fake.overlap ?? '']],
       probe: [[files.probe, fake.probe ?? JSON.stringify(FAKE_MISE_PROBE)]],
       requests: [[files.configRequests, fake.configRequests ?? '{}']],
+      version: [[files.version, fake.version ?? '2026.11.12 macos-arm64 (2026-11-21)\n']],
     };
     for (const [path, text] of writes[phase] ?? []) {
       this.files.set(path, text);

@@ -103,8 +103,10 @@ export function miseActionFiles(index: number) {
     overlap: `${directory}/mise-overlap.txt`,
     /** `mise env --paths` in the working directory, after the install. */
     paths: `${directory}/mise-paths.txt`,
-    /** The guest's mise version, data directory and capabilities. */
+    /** Whether the step's PATH reaches the guest's mise, its data directory and capabilities. */
     probe: `${directory}/mise-probe.json`,
+    /** `mise --version`, read when the step names a version. */
+    version: `${directory}/mise-version.txt`,
     /** `mise bin-paths` of the workflow tools, found in the tool environment's environment. */
     workflowBins: `${directory}/mise-workflow-bins.txt`,
   } as const;

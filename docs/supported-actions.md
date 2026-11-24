@@ -38,7 +38,7 @@ The inputs are those of v5.3.0. [ADR-0007](decisions/0007-a-workflow-installs-to
 | `install_args` | Honoured. It must be tool names separated by spaces, such as `nushell pnpm`, each without `@` or a leading `-`. A version, a flag, a tab, a line break, a quote, or a backslash fails resolution. The action splits the value on spaces only and strips double quotes, so a tab, a line break, or a double quote would split differently there. It keeps a single quote and a backslash as written, and Hugi refuses them because no tool name contains them. |
 | `working_directory` | Honoured. It must be a relative path without parent traversal, inside the workspace. A leading `./` is accepted. |
 | `log_level`, `mise_env` | Honoured: exported as `MISE_LOG_LEVEL` and `MISE_ENV`, as the action exports them. |
-| `version` | Checked: the guest's mise must report this version, with any leading `v` dropped, or the step fails and names both versions. |
+| `version` | Checked: the guest's mise must report this version, with any leading `v` dropped, or the step fails and names both versions. A `mise --version` that fails for this check fails the step too. Both failures fail the lane even under `continue-on-error`. |
 | `cache`, `cache_save`, `cache_save_post`, `cache_key`, `cache_key_prefix` | No-op. The golden image holds mise's installs. Boolean inputs follow the rule above. |
 | `cache_max_age_days` | No-op. It must be a non-negative integer, as the action requires, or resolution fails. |
 | `cache_restore_retry_budget`, `cache_save_retry_budget` | No-op. Each must be a duration the action accepts, such as `60s`, `2m`, or `0s`, or resolution fails, as the action fails before it runs. |

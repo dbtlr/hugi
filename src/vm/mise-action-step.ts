@@ -27,12 +27,11 @@ import {
   hasLockFile,
   lockFilePlaces,
   managedPaths,
-  MISE_VERSION_MARKER,
+  miseVersion,
   orderedWorkflowBins,
   overlapConflicts,
   parseProbe,
   setsMonorepoRoots,
-  stoppedAtMiseVersion,
 } from './mise-action-judging';
 import type { Probe } from './mise-action-judging';
 import { shellQuote } from './shell';
@@ -184,45 +183,66 @@ function addPath(step: Step, directory: string): void {
 const checksOverlap = (settings: MiseActionSettings): boolean =>
   settings.addShimsToPath || (settings.env && settings.exportPath);
 
-/** `mise --version` itself failed, which is ordinary; the probe had found the data directory. */
-type MiseVersionFailure = { readonly dataDir: string; readonly versionExitCode: number };
-
 /**
- * The guest's mise version, data directory and capabilities. Only `mise --version` failing is
- * ordinary, as the action's own test of mise: the probe writes a marker just before it and clears
- * it just after, so a failure of a command of Hugi's own, before or after it, is Hugi's own.
+ * Whether the step's `PATH` reaches the guest's mise, its data directory, and its capabilities.
+ * Every failure is Hugi's own, and so is a `PATH` without mise: the action adds the directory of
+ * the mise it fetched to `PATH` before it runs mise, where Hugi uses the guest's mise from `PATH`.
  */
-async function probeMise(step: Step): Promise<Probe | MiseVersionFailure | Verdict> {
+async function probeMise(step: Step): Promise<Probe | Verdict> {
   const output = shellQuote(step.files.probe);
   const exitCode = await runScript(step, 'probe', GUEST_RUNNER_PATHS.temp, [
     `: > ${output}`,
     `if [ -n "\${MISE_DATA_DIR:-}" ]; then data="$MISE_DATA_DIR"`,
     `elif [ -n "\${XDG_DATA_HOME:-}" ]; then data="$XDG_DATA_HOME/mise"`,
     'else data="$HOME/.local/share/mise"; fi',
-    `jq -nc --arg dataDir "$data" '{marker: ${JSON.stringify(MISE_VERSION_MARKER)}, dataDir: $dataDir}' > ${output}`,
-    'version="$(mise --version)"',
-    `: > ${output}`,
+    'if command -v mise > /dev/null; then onPath=true; else onPath=false; fi',
     // The action's own test for `--locked`, on the help text, which is held whole before grep.
     'supports() { local help; help="$(NO_COLOR=1 mise "$1" --help 2>&1 || true)"',
     String.raw`  if grep -Eq -- "(^|[[:space:]])$2([[:space:],]|\$)" <<< "$help"; then echo true; else echo false; fi; }`,
-    'probed="$(jq -n --arg version "$version" --arg dataDir "$data" \\',
+    'probed="$(jq -n --arg dataDir "$data" --argjson onPath "$onPath" \\',
     '  --argjson envJson "$(supports env --json)" --argjson envPaths "$(supports env --paths)" \\',
     '  --argjson installLocked "$(supports install --locked)" \\',
-    `  '{version: $version, dataDir: $dataDir, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}')"`,
+    `  '{dataDir: $dataDir, onPath: $onPath, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}')"`,
     `printf '%s\\n' "$probed" > ${output}`,
   ]);
-  const written = await step.tools.readFile(step.files.probe);
-  if (exitCode === 0) {
-    return parseProbe(written);
+  if (exitCode !== 0) {
+    return hugisOwn(
+      step,
+      `the probe of the guest's mise (its data directory and capabilities) exited with code ${exitCode}`,
+    );
   }
-  const dataDir = stoppedAtMiseVersion(written);
-  if (dataDir !== undefined) {
-    return { dataDir, versionExitCode: exitCode };
+  const probe = parseProbe(await step.tools.readFile(step.files.probe));
+  if (!probe.onPath) {
+    return hugisOwn(
+      step,
+      "the step's PATH does not reach the guest's mise, which GitHub's action would add to PATH; leave mise's directory on the step's PATH",
+    );
   }
-  return hugisOwn(
-    step,
-    `the probe of the guest's mise (its data directory and capabilities) exited with code ${exitCode}`,
-  );
+  return probe;
+}
+
+/**
+ * Step 2: when the step names a version, the guest's mise must report it. The action fetches that
+ * version and runs no mise to learn it, so failing to read the version is Hugi's own too.
+ */
+async function checkVersion(step: Step): Promise<Verdict | undefined> {
+  const { version } = step.input.settings;
+  if (version === undefined) {
+    return undefined;
+  }
+  const exitCode = await runScript(step, 'version', GUEST_RUNNER_PATHS.temp, [
+    `mise --version > ${shellQuote(step.files.version)}`,
+  ]);
+  if (exitCode !== 0) {
+    return hugisOwn(
+      step,
+      `reading the guest's mise version for the step's version ${version} failed: mise --version exited with code ${exitCode}`,
+    );
+  }
+  const found = miseVersion(await step.tools.readFile(step.files.version));
+  return found === version
+    ? undefined
+    : hugisOwn(step, `the step asks for mise ${version}, but the guest's mise is ${found}`);
 }
 
 /**
@@ -258,15 +278,8 @@ async function findWorkflowBins(step: Step): Promise<string[] | Verdict> {
   return bins;
 }
 
-/** Step 2: the guest's mise must be the version the step names, and have what the step needs. */
-function checkMise(step: Step, probe: Probe): Verdict | undefined {
-  const { version } = step.input.settings;
-  if (version !== undefined && probe.version !== version) {
-    return hugisOwn(
-      step,
-      `the step asks for mise ${version}, but the guest's mise is ${probe.version}`,
-    );
-  }
+/** The guest's mise must have what the step needs, since Hugi does not reproduce the fallbacks. */
+function checkCapabilities(step: Step, probe: Probe): Verdict | undefined {
   const missing = [
     ...(probe.supports.envJson ? [] : ['mise env --json']),
     ...(probe.supports.envPaths ? [] : ['mise env --paths']),
@@ -275,7 +288,7 @@ function checkMise(step: Step, probe: Probe): Verdict | undefined {
   if (missing.length > 0) {
     return hugisOwn(
       step,
-      `the guest's mise ${probe.version} lacks ${missing.join(', ')}, which the step needs; Hugi does not reproduce the action's fallbacks for older mise releases`,
+      `the guest's mise lacks ${missing.join(', ')}, which the step needs; Hugi does not reproduce the action's fallbacks for older mise releases`,
     );
   }
   return undefined;
@@ -301,7 +314,11 @@ function writeDefaultsAndShims(step: Step, dataDir: string, workflowBins: readon
   }
 }
 
-/** Steps 5 and 6: `mise reshim -f` when asked, then `mise --version`, in the working directory. */
+/**
+ * Steps 5 and 6: `mise reshim -f` when asked, then the action's own test of mise, `mise --version`,
+ * in the working directory with what steps 1 to 4 wrote. Their failures are ordinary, a working
+ * directory that does not exist included.
+ */
 async function prepare(step: Step): Promise<Verdict | undefined> {
   const { settings } = step.input;
   const exitCode = await runScript(step, 'prepare', workingDirectory(settings), [
@@ -497,22 +514,15 @@ async function runAction(step: Step): Promise<Verdict> {
   if ('ok' in probe) {
     return probe;
   }
-  const stop = 'version' in probe ? checkMise(step, probe) : undefined;
-  if (stop) {
-    return stop;
+  const unfit = (await checkVersion(step)) ?? checkCapabilities(step, probe);
+  if (unfit) {
+    return unfit;
   }
   const workflowBins = await findWorkflowBins(step);
   if (!Array.isArray(workflowBins)) {
     return workflowBins;
   }
   writeDefaultsAndShims(step, probe.dataDir, workflowBins);
-  // The action writes its defaults and shims before its own test of mise fails (ADR-0007 step 6).
-  if ('versionExitCode' in probe) {
-    return failed(
-      `mise --version exited with code ${probe.versionExitCode}`,
-      probe.versionExitCode,
-    );
-  }
   const early = (await prepare(step)) ?? (await checkConfig(step));
   if (early) {
     return early;

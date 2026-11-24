@@ -7,9 +7,9 @@ import {
   managedPaths,
   orderedWorkflowBins,
   overlapConflicts,
+  miseVersion,
   parseProbe,
   setsMonorepoRoots,
-  stoppedAtMiseVersion,
 } from './mise-action-judging';
 import type { LockFilePlace } from './mise-action-judging';
 import { ToolOutputError } from './tool-environment';
@@ -31,11 +31,11 @@ const listing = (places: readonly LockFilePlace[], path: string, files: string[]
 const entry = (role: string, dir: string, executables: string[], real = dir) =>
   JSON.stringify({ dir, executables, real, role });
 const lines = (...entries: string[]) => `${entries.join('\n')}\n`;
-const probe = (version: string) =>
+const probe = (onPath: boolean) =>
   JSON.stringify({
     dataDir: '/Users/admin/.local/share/mise',
+    onPath,
     supports: { envJson: true, envPaths: true, installLocked: false },
-    version,
   });
 
 describe('the lock file search', () => {
@@ -216,30 +216,33 @@ describe('what the step exports', () => {
 });
 
 describe('the probe', () => {
-  test('reads the version from the first line, without a leading v', () => {
-    expect(parseProbe(probe('2026.11.12 macos-arm64 (2026-11-21)\n')).version).toBe('2026.11.12');
-    expect(parseProbe(probe('v2026.1.0 linux-x64')).version).toBe('2026.1.0');
-  });
-
-  test('keeps the data directory and the capabilities', () => {
-    expect(parseProbe(probe('2026.11.12'))).toEqual({
-      dataDir: '/Users/admin/.local/share/mise',
-      supports: { envJson: true, envPaths: true, installLocked: false },
-      version: '2026.11.12',
-    });
+  test('keeps the data directory, whether mise is on PATH, and the capabilities', () => {
+    for (const onPath of [true, false]) {
+      expect(parseProbe(probe(onPath))).toEqual({
+        dataDir: '/Users/admin/.local/share/mise',
+        onPath,
+        supports: { envJson: true, envPaths: true, installLocked: false },
+      });
+    }
   });
 
   test('output of another shape is a ToolOutputError', () => {
     expect(() => parseProbe('{}')).toThrow(ToolOutputError);
+    expect(() => parseProbe(JSON.stringify({ ...JSON.parse(probe(true)), onPath: 'yes' }))).toThrow(
+      ToolOutputError,
+    );
+  });
+});
+
+describe("the guest's mise version", () => {
+  test('is the first word of the first line, without a leading v', () => {
+    expect(miseVersion('2026.11.12 macos-arm64 (2026-11-21)\n')).toBe('2026.11.12');
+    expect(miseVersion('\nv2026.1.0 linux-x64')).toBe('2026.1.0');
   });
 
-  test('stopped at mise --version only when its file holds the marker, which keeps the data directory', () => {
-    const dataDir = '/Users/admin/.local/share/mise';
-    expect(stoppedAtMiseVersion(JSON.stringify({ dataDir, marker: 'mise --version' }))).toBe(
-      dataDir,
-    );
-    for (const text of ['', '2026.11.12\n', probe('2026.11.12'), 'not json', '{"dataDir":"/d"}']) {
-      expect(stoppedAtMiseVersion(text)).toBeUndefined();
+  test('output without one is a ToolOutputError', () => {
+    for (const text of ['', '\n', '  \n', 'v']) {
+      expect(() => miseVersion(text)).toThrow('mise --version printed no version');
     }
   });
 });

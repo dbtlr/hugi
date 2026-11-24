@@ -180,10 +180,10 @@ export function managedPaths(text: string): string[] {
 
 /** What the probe found out about the guest's mise before the step changes anything. */
 export type Probe = {
-  /** The version `mise --version` reports, without a leading `v`. */
-  readonly version: string;
   /** mise's data directory by the action's rule, which holds the shims directory. */
   readonly dataDir: string;
+  /** Whether the step's `PATH` reaches the guest's mise. */
+  readonly onPath: boolean;
   /** Whether the guest's mise has the commands the step needs and does not fall back from. */
   readonly supports: {
     readonly envJson: boolean;
@@ -199,41 +199,28 @@ export function parseProbe(text: string): Probe {
   } catch {
     throw new ToolOutputError('the mise probe is not JSON');
   }
-  const { dataDir, supports, version } = isMapping(parsed) ? parsed : {};
+  const { dataDir, onPath, supports } = isMapping(parsed) ? parsed : {};
   const { envJson, envPaths, installLocked } = isMapping(supports) ? supports : {};
   if (
-    typeof version !== 'string' ||
     typeof dataDir !== 'string' ||
+    typeof onPath !== 'boolean' ||
     typeof envJson !== 'boolean' ||
     typeof envPaths !== 'boolean' ||
     typeof installLocked !== 'boolean'
   ) {
     throw new ToolOutputError('the mise probe has an unknown shape');
   }
-  const firstLine = version.split('\n').find((line) => line.trim() !== '') ?? '';
-  return {
-    dataDir,
-    supports: { envJson, envPaths, installLocked },
-    version: (firstLine.trim().split(/\s+/u)[0] ?? '').replace(/^v/u, ''),
-  };
+  return { dataDir, onPath, supports: { envJson, envPaths, installLocked } };
 }
 
-/** What the probe writes, with mise's data directory, just before it runs `mise --version`. */
-export const MISE_VERSION_MARKER = 'mise --version';
-
-/**
- * The data directory, when the probe's file says it stopped at `mise --version` itself: the probe
- * clears the marker once the version is read, so a failure before or after it leaves none.
- */
-export function stoppedAtMiseVersion(text: string): string | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return undefined;
+/** The version `mise --version` printed: the first word of its first line, without a leading `v`. */
+export function miseVersion(text: string): string {
+  const firstLine = text.split('\n').find((line) => line.trim() !== '') ?? '';
+  const version = (firstLine.trim().split(/\s+/u)[0] ?? '').replace(/^v/u, '');
+  if (version === '') {
+    throw new ToolOutputError('mise --version printed no version');
   }
-  const { dataDir, marker } = isMapping(parsed) ? parsed : {};
-  return marker === MISE_VERSION_MARKER && typeof dataDir === 'string' ? dataDir : undefined;
+  return version;
 }
 
 /** The workflow tools' bin directories in the tool environment's `PATH` order, the rest after them. */

@@ -21,10 +21,10 @@ import { runInVm } from './lifecycle';
 import {
   hasLockFile,
   lockFilePlaces,
+  miseVersion,
   overlapConflicts,
   parseProbe,
   setsMonorepoRoots,
-  stoppedAtMiseVersion,
 } from './mise-action-judging';
 import type { RunRequest } from './run-request';
 import { parseConfigListing } from './tool-environment';
@@ -150,11 +150,6 @@ function harness(miseAction: FakeMiseAction = {}, guest: Partial<FakeGuest> = {}
 
 const probe = (overrides: Partial<typeof FAKE_MISE_PROBE>) =>
   JSON.stringify({ ...FAKE_MISE_PROBE, ...overrides });
-/** The probe's file when `mise --version` itself failed: the marker and the data directory. */
-const STOPPED_AT_MISE_VERSION = JSON.stringify({
-  dataDir: dirname(SHIMS),
-  marker: 'mise --version',
-});
 const lines = (...records: object[]) =>
   `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 const listing = (...files: string[]) =>
@@ -479,20 +474,64 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(later).not.toContain('FOO');
   });
 
-  test("a mise --version that fails is ordinary, after the defaults and shims, as the action's own test of mise fails on GitHub", async () => {
-    const h = harness({ exitCodes: { probe: 3 }, probe: STOPPED_AT_MISE_VERSION });
-    const result = await h.run(requestOf({ step: { continueOnError: true } }));
+  test("a mise --version that fails is ordinary, in the working directory after the writes of steps 1 to 4, as the action's own test of mise fails on GitHub", async () => {
+    const h = harness({ exitCodes: { prepare: 3 } });
+    const result = await h.run(
+      requestOf({
+        settings: { miseEnv: 'ci', workingDirectory: 'pkg' },
+        step: { continueOnError: true },
+      }),
+    );
     expect(result.reason).toBe('passed');
     expect(result.steps[2]).toMatchObject({
       continuedOnError: true,
-      error: 'mise --version exited with code 3',
+      error: 'mise exited with code 3',
       outcome: 'failure',
     });
-    expect(h.phases()).toEqual(['probe', 'bins']);
+    expect(h.phases()).toEqual(['probe', 'bins', 'prepare']);
+    // The action's testMise sees the variables of steps 1 to 3 and the PATH of step 4.
+    const prepare = h.script('prepare');
+    expect(prepare).toContain(`cd '${WORKSPACE}/pkg'\nmise --version`);
+    expect(prepare).toContain("export MISE_ENV='ci'");
+    expect(prepare).toContain("export MISE_YES='1'");
+    expect(prepare).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+    expect(prepare).toContain(`export PATH="/wf/node:${SHIMS}:`);
     const later = h.tart.launcherFor(3);
     expect(later).toContain("export MISE_YES='1'");
-    expect(later).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
     expect(later).toContain(`/wf/node:${SHIMS}`);
+  });
+
+  test("Hugi's own commands before the writes never run mise --version without version", async () => {
+    const h = harness();
+    await h.run(requestOf());
+    expect(h.script('probe')).not.toContain('mise --version');
+    expect(h.phases()).not.toContain('version');
+  });
+
+  test("with version, reads the guest's mise version in a call of its own, after the probe and before the writes", async () => {
+    const h = harness();
+    await h.run(requestOf({ settings: { miseEnv: 'ci', version: '2026.11.12' } }));
+    expect(h.phases().slice(0, 3)).toEqual(['probe', 'version', 'bins']);
+    const version = h.script('version');
+    expect(version).toContain("cd '/Users/admin/hugi/temp'");
+    expect(version).toContain('mise --version >');
+    expect(version).toContain("export MISE_ENV='ci'");
+    expect(version).toContain("export MISE_CEILING_PATHS='/Users/admin/hugi'");
+    expect(version).not.toContain('MISE_YES');
+  });
+
+  test("a step PATH that does not reach the guest's mise is Hugi's own, though the action would add mise to PATH", async () => {
+    const h = harness({ probe: probe({ onPath: false }) });
+    const result = await h.run(
+      requestOf({ step: { continueOnError: true, env: { PATH: '/usr/bin:/bin' } } }),
+    );
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain("the step's PATH does not reach the guest's mise");
+    expect(result.steps[2]).not.toHaveProperty('continuedOnError');
+    expect(h.phases()).toEqual(['probe']);
+    const script = h.script('probe');
+    expect(script).toContain('export PATH="/usr/bin:/bin"');
+    expect(script).toContain('command -v mise');
   });
 
   test('continue-on-error lets an ordinary failure pass, as on GitHub', async () => {
@@ -540,7 +579,28 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
     ],
   });
   test.each<[string, FakeMiseAction, Partial<MiseActionSettings>, string[], string]>([
-    ['a version mismatch', {}, { version: '2026.1.0' }, ['probe'], '2026.1.0'],
+    ['a version mismatch', {}, { version: '2026.1.0' }, ['probe', 'version'], '2026.1.0'],
+    [
+      'a version the guest mise cannot report',
+      { exitCodes: { version: 3 } },
+      { version: '2026.11.12' },
+      ['probe', 'version'],
+      "reading the guest's mise version",
+    ],
+    [
+      'a version Hugi cannot read',
+      { version: '' },
+      { version: '2026.11.12' },
+      ['probe', 'version'],
+      'mise --version printed no version',
+    ],
+    [
+      "mise not on the step's PATH",
+      { probe: probe({ onPath: false }) },
+      {},
+      ['probe'],
+      "the step's PATH does not reach the guest's mise",
+    ],
     [
       'a mise without the commands the step needs',
       { probe: probe({ supports: { envJson: true, envPaths: false, installLocked: true } }) },
@@ -549,25 +609,11 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       'mise env --paths',
     ],
     [
-      "a probe command of Hugi's own that fails after mise --version",
-      { exitCodes: { probe: 1 } },
-      {},
-      ['probe'],
-      "the probe of the guest's mise",
-    ],
-    [
-      "a probe command of Hugi's own that fails before mise --version",
+      "a probe command of Hugi's own that fails",
       { exitCodes: { probe: 127 }, probe: '' },
       {},
       ['probe'],
       "the probe of the guest's mise",
-    ],
-    [
-      'workflow tools bins mise cannot find, after mise --version fails',
-      { exitCodes: { bins: 1, probe: 3 }, probe: STOPPED_AT_MISE_VERSION },
-      {},
-      ['probe', 'bins'],
-      'mise bin-paths',
     ],
     [
       'workflow tools bins mise cannot find',
@@ -699,14 +745,15 @@ test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
   },
 );
 
-/** The scripts a run of the step with `settings` and no workflow tools generated. */
+/** The scripts a run of the step with `settings`, `tools` and `step` generated. */
 async function scriptsOf(
   settings: Partial<MiseActionSettings>,
   fake: FakeMiseAction = {},
   tools: string[] = [],
+  step: Partial<ActionStep> = {},
 ) {
   const h = harness(fake);
-  await h.run(requestOf({ settings, tools }));
+  await h.run(requestOf({ settings, step, tools }));
   return h.script;
 }
 
@@ -752,12 +799,17 @@ describe.skipIf(mise === null || jq === null)(
 
     /**
      * Run a captured guest script on the host, with the guest's directories moved under `root`
-     * and the programs of `stubs` ahead of the real ones; its exit code must be `exitCode`.
+     * and the programs of `stubs` ahead of the directories of `programs`, by default mise's and
+     * jq's; its exit code must be `exitCode`.
      */
-    function onHost(script: string, { exitCode = 0, stubs = '' } = {}): void {
+    function onHost(
+      script: string,
+      { exitCode = 0, programs = [dirname(mise!), dirname(jq!)], stubs = '' } = {},
+    ): void {
+      const front = [stubs, ...programs, '/bin'].join(':');
       const text = script
         .replaceAll('/Users/admin/hugi', hugi())
-        .replace('export PATH="', `export PATH="${stubs}:${dirname(mise!)}:${dirname(jq!)}:/bin:`);
+        .replace('export PATH="', `export PATH="${front}:`);
       const ran = Bun.spawnSync(['bash', '-s'], {
         env: { HOME: join(root, 'home'), PATH: '/usr/bin:/bin' },
         stdin: new TextEncoder().encode(text),
@@ -776,28 +828,32 @@ describe.skipIf(mise === null || jq === null)(
 
     const output = (name: string) => readFileSync(join(hugi(), 'control/step-02', name), 'utf8');
 
-    test("the probe reports the guest's mise, its data directory and its capabilities", async () => {
+    test("the probe reports the guest's mise on PATH, its data directory and its capabilities", async () => {
       onHost((await scriptsOf({}))('probe'));
-      const probed = parseProbe(output('mise-probe.json'));
-      const version = Bun.spawnSync([mise!, '--version']).stdout.toString().split(/\s+/)[0];
-      expect(probed).toEqual({
+      expect(parseProbe(output('mise-probe.json'))).toEqual({
         dataDir: join(root, 'home/.local/share/mise'),
+        onPath: true,
         supports: { envJson: true, envPaths: true, installLocked: true },
-        version: version!.replace(/^v/, ''),
       });
     });
 
-    test('the probe marks only mise --version itself failing, not a command before or after it', async () => {
-      const script = (await scriptsOf({}))('probe');
-      onHost(script, { exitCode: 3, stubs: stub('mise', 'exit 3') });
-      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBe(
-        join(root, 'home/.local/share/mise'),
-      );
-      onHost(script, { exitCode: 4, stubs: stub('jq', 'exit 4') });
-      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBeUndefined();
-      const lateJq = stub('jq', `case "$*" in *--argjson*) exit 5;; esac\nexec ${jq!} "$@"`);
-      onHost(script, { exitCode: 5, stubs: lateJq });
-      expect(stoppedAtMiseVersion(output('mise-probe.json'))).toBeUndefined();
+    test("a step PATH without the guest's mise fails the lane under continue-on-error", async () => {
+      const step = { continueOnError: true, env: { PATH: '/usr/bin:/bin' } };
+      const script = (await scriptsOf({}, {}, [], step))('probe');
+      // Only jq, through a program of its own, joins the step's PATH: mise stays off it.
+      onHost(script, { programs: [], stubs: stub('jq', `exec ${jq!} "$@"`) });
+      const found = output('mise-probe.json');
+      expect(parseProbe(found).onPath).toBe(false);
+      const h = harness({ probe: found.replaceAll(hugi(), '/Users/admin/hugi') });
+      const result = await h.run(requestOf({ step }));
+      expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+      expect(result.detail).toContain("the step's PATH does not reach the guest's mise");
+    });
+
+    test("the version call reads the guest's mise version", async () => {
+      onHost((await scriptsOf({ version: '1' }))('version'));
+      const version = Bun.spawnSync([mise!, '--version']).stdout.toString().split(/\s+/)[0];
+      expect(miseVersion(output('mise-version.txt'))).toBe(version!.replace(/^v/, ''));
     });
 
     test('the listing loads only the workspace config, not the one above it or the global one', async () => {
