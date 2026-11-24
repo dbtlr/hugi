@@ -59,13 +59,14 @@ export type LogText = { readonly text: string; readonly cut: boolean };
 /**
  * The text of a log read from byte `start` to its end, `LOG_READ_BYTES` at most. A log read whole
  * (`start` 0) is shown whole; a longer one from the first whole line in its last 1 MiB, or from the
- * start of that 1 MiB when it holds no line break.
+ * start of that 1 MiB when it holds no line break with a line after it.
  */
 export function logTextOf(bytes: Buffer, start: number): LogText {
   if (start === 0) {
     return { cut: false, text: cleanLogText(bytes.toString('utf8')) };
   }
   const newline = bytes.indexOf(NEWLINE);
-  const from = newline === -1 ? Math.max(0, bytes.length - LOG_LIMIT_BYTES) : newline + 1;
+  const startsLine = newline !== -1 && newline + 1 < bytes.length;
+  const from = startsLine ? newline + 1 : Math.max(0, bytes.length - LOG_LIMIT_BYTES);
   return { cut: true, text: cleanLogText(bytes.subarray(from).toString('utf8')) };
 }

@@ -79,6 +79,14 @@ describe('the text the page shows of a log', () => {
     expect(logTextOf(read, 10)).toEqual({ cut: true, text: tail });
   });
 
+  test('a tail whose only line break is its last byte starts where the last 1 MiB starts', () => {
+    const read = Buffer.from(`y${'x'.repeat(LOG_LIMIT_BYTES - 1)}\n`);
+    expect(logTextOf(read, 10)).toEqual({
+      cut: true,
+      text: `${'x'.repeat(LOG_LIMIT_BYTES - 1)}\n`,
+    });
+  });
+
   test('a tail with no line break starts where the last 1 MiB starts', () => {
     const read = Buffer.from(`y${'x'.repeat(LOG_LIMIT_BYTES)}`);
     const shown = logTextOf(read, 10);

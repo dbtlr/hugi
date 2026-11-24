@@ -182,7 +182,7 @@ function logOf(log: StepLogView | undefined): SafeHtml {
       ${log.detail === undefined ? words : `${words}: ${log.detail}`}
     </p>`;
   }
-  if (log.text === '') {
+  if (log.text === '' && !log.cut) {
     return html`<p class="note">This step wrote no output.</p>`;
   }
   const cut = log.cut

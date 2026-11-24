@@ -237,6 +237,13 @@ describe('the steps', () => {
     expect(openRowsOf(markup)[0]).toContain('last 1 MiB');
   });
 
+  test('a cut log that cleans to nothing still says it was cut, not that it wrote no output', () => {
+    const markup = body(finished({ steps: [step(1, 'failure')] }, [text('', true)]));
+    const [open = ''] = openRowsOf(markup);
+    expect(open).toContain('last 1 MiB');
+    expect(open).not.toContain('wrote no output');
+  });
+
   test.each([
     ['missing', undefined, 'missing'],
     ['symbolic-link', undefined, 'symbolic link'],
