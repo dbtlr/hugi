@@ -149,8 +149,9 @@ function checkRefused(inputs: Inputs): void {
 
 /**
  * Tool names separated by spaces, each without a version or a flag. The action splits them with
- * @actions/exec's argStringToArray, on spaces only, stripping double quotes; any other whitespace,
- * quote, or backslash would split differently there, so it is refused.
+ * @actions/exec's argStringToArray, on spaces only, stripping double quotes, so any other
+ * whitespace or a double quote would split differently there. It keeps a single quote and a
+ * backslash as written; they are refused too, since no tool name contains them.
  */
 function installArgsOf(inputs: Inputs): string[] {
   const value = inputOf(inputs, 'install_args');

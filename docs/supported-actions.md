@@ -35,7 +35,7 @@ The inputs are those of v5.3.0. [ADR-0007](decisions/0007-a-workflow-installs-to
 | Inputs | Handling |
 | --- | --- |
 | `install`, `env`, `export_path`, `add_shims_to_path`, `reshim`, `experimental`, `monorepo` | Booleans, honoured as the action honours them. With `monorepo` true, a config that sets `monorepo.config_roots` fails the step, because Hugi does not reproduce a monorepo install. |
-| `install_args` | Honoured. It must be tool names separated by spaces, such as `nushell pnpm`, each without `@` or a leading `-`. A version, a flag, a tab, a line break, a quote, or a backslash fails resolution, because the action splits the value on spaces only and strips quotes. |
+| `install_args` | Honoured. It must be tool names separated by spaces, such as `nushell pnpm`, each without `@` or a leading `-`. A version, a flag, a tab, a line break, a quote, or a backslash fails resolution. The action splits the value on spaces only and strips double quotes, so a tab, a line break, or a double quote would split differently there. It keeps a single quote and a backslash as written, and Hugi refuses them because no tool name contains them. |
 | `working_directory` | Honoured. It must be a relative path without parent traversal, inside the workspace. A leading `./` is accepted. |
 | `log_level`, `mise_env` | Honoured: exported as `MISE_LOG_LEVEL` and `MISE_ENV`, as the action exports them. |
 | `version` | Checked: the guest's mise must report this version, with any leading `v` dropped, or the step fails and names both versions. |
