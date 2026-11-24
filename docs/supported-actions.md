@@ -28,7 +28,7 @@ Every accepted input is listed below. Any other input fails the entire resolutio
 
 ### jdx/mise-action
 
-The ref must be `v5`, `v5.<minor>`, `v5.<minor>.<patch>`, or a 40-character commit SHA; any other ref fails resolution. Hugi reproduces v5.3.0 and cannot tell which release a SHA names, so a SHA pin counts as v5.
+The ref must be the moving tag `v5`, a release tag `v5.<minor>.<patch>` from `v5.3.0` on, or a 40-character commit SHA; any other ref fails resolution. Hugi reproduces v5.3.0 and cannot tell which release a SHA or the moving tag names, so it treats them as v5.3.0.
 
 The inputs are those of v5.3.0. [ADR-0007](decisions/0007-a-workflow-installs-tools-from-its-mise-config.md) describes what the step does with them. A boolean input accepts `true`, `True`, `TRUE`, `false`, `False`, or `FALSE`, the values GitHub's runner accepts. Hugi refuses any other value, even for an input the action would not read.
 

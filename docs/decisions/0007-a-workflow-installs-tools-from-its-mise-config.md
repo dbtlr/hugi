@@ -37,7 +37,7 @@ Earlier major versions of the action behave differently: v2 exports no `mise env
 
 ### Which references run
 
-Hugi runs `jdx/mise-action` at a reference that names major version 5: the tag `v5`, a tag `v5.<minor>` or `v5.<minor>.<patch>`, or a 40-character commit SHA. It reproduces v5.3.0. Any other reference, such as `v4` or `main`, fails resolution. Hugi cannot tell which version a SHA names, so a SHA pin counts as v5; that is a limit below.
+Hugi runs `jdx/mise-action` at the moving tag `v5`, at a release tag `v5.<minor>.<patch>` from v5.3.0 on, or at a 40-character commit SHA. It reproduces v5.3.0. Any other reference fails resolution: an earlier major version such as `v4`, a v5 release before v5.3.0, which lacks inputs this record honours, and a branch such as `main`. Hugi cannot tell which release a SHA or the moving tag names, so it treats them as v5.3.0; that is a limit below.
 
 ### Hugi does what the action does
 
@@ -48,19 +48,20 @@ The step does, in the guest, what the action does on GitHub's runner, in the act
 1. When `mise_env` is set, it writes `MISE_ENV`.
 2. When `version` is set, it checks that the guest's mise reports that version. A mismatch fails the step, naming both versions, and is Hugi's own. Without `version`, the step uses the guest's mise.
 3. It writes `MISE_EXPERIMENTAL=1` when `experimental` is true, `MISE_LOG_LEVEL` from `log_level` (`info` by default), `MISE_TRUSTED_CONFIG_PATHS` set to the workspace, and `MISE_YES=1`. As in the action, each of these is written only when the step's environment leaves it unset or empty.
-4. When `add_shims_to_path` is true, the default, it adds the shims directory to `GITHUB_PATH`, and then the workflow tools' bin directories. The shims directory is the action's: `shims` under `MISE_DATA_DIR`, else under `$XDG_DATA_HOME/mise`, else under `~/.local/share/mise`. The workflow tools' directories come after it so that they stay ahead of it on `PATH`. On GitHub's runner no shim exists for a tool that only a setup action installed.
+4. When `add_shims_to_path` is true, the default, it adds the shims directory to `GITHUB_PATH`, and then the workflow tools' bin directories, which are what `mise bin-paths` prints for the workflow tools' specs, every one of which is pinned, in the tool environment's order. The shims directory is the action's: `shims` under `MISE_DATA_DIR`, else under `$XDG_DATA_HOME/mise`, else under `~/.local/share/mise`. The workflow tools' directories come after it so that they stay ahead of it on `PATH`. On GitHub's runner no shim exists for a tool that only a setup action installed.
 5. When `reshim` is true, it runs `mise reshim -f`.
-6. It runs `mise --version`.
+6. It runs `mise --version`. A working directory that does not exist fails the step at its first mise command in that directory, step 5 or this one, after the writes of steps 1 to 4, as it fails the action.
 7. It checks the repository's config against the workflow tools, as described below.
 8. When `install` is true, the default, it runs `mise install` in the working directory, followed by the tool names from `install_args`. It adds `--locked` when a mise lock file lies in the working directory or one of its ancestors up to the workspace root, matched by the names and places that the action searches. Directories above the workspace count as empty, as they are on GitHub's runner. When `monorepo` is true and the config sets `monorepo.config_roots`, the step fails, because Hugi does not reproduce a monorepo install. That failure is Hugi's own.
-9. It runs `mise ls`, as the action does.
-10. When `env` is true, the default, it runs `mise env --json` in the working directory and writes every variable except `PATH` to `GITHUB_ENV`. When `export_path` is also true, the default, it first runs the overlap check described below, then adds the entries that `mise env --paths` lists to `GITHUB_PATH`, in the order that keeps mise's first entry first. The step's log names the variables it exported but not their values.
+9. When `add_shims_to_path` is true, or `env` and `export_path` are both true, it runs the overlap check described below, whether or not the install succeeded. A failed install then fails the step.
+10. It runs `mise ls`, as the action does.
+11. When `env` is true, the default, it runs `mise env --json` in the working directory and writes every variable except `PATH` to `GITHUB_ENV`. When `export_path` is also true, the default, it adds the entries that `mise env --paths` lists to `GITHUB_PATH`, in the order that keeps mise's first entry first. The step's log names the variables it exported but not their values.
 
-The working directory is `working_directory` when set, a directory inside the workspace, and the workspace otherwise. A job's `defaults.run.working-directory` does not apply, because it applies only to `run:` steps. A working directory that does not exist fails the step, as it fails the action.
+The working directory is `working_directory` when set, a directory inside the workspace, and the workspace otherwise. A job's `defaults.run.working-directory` does not apply, because it applies only to `run:` steps.
 
 The step writes its `GITHUB_ENV` and `GITHUB_PATH` additions as it goes. A failure partway through keeps the additions made before it, as on GitHub's runner, for any later step that still runs.
 
-The image's mise must support `mise env --paths`, `mise install --locked`, and `mise env --json`. The step fails when it does not, and does not reproduce the action's fallbacks for older releases. The action also adds the directory of its own mise binary to `PATH`. Hugi does not, because the guest's mise is already on the base `PATH`, and putting its directory first would put the other programs installed beside it ahead of the tool environment.
+The image's mise must support `mise env --paths`, `mise install --locked`, and `mise env --json`. The step fails when it does not, and does not reproduce the action's fallbacks for older releases. That failure is Hugi's own. The action also adds the directory of its own mise binary to `PATH`. Hugi does not, because the guest's mise is already on the base `PATH`, and putting its directory first would put the other programs installed beside it ahead of the tool environment.
 
 ### What mise sees in the step
 
@@ -76,7 +77,9 @@ Before it installs, the step reads the version that the repository's config requ
 
 Hugi installs the workflow tools before the job's first step, while GitHub's runner installs each at its setup action's step. On `PATH`, the action's additions come before the workflow tools in every later step under Hugi. On GitHub, a setup action that runs after the action comes before it. So the order of the two on `PATH` can differ.
 
-The overlap check makes that order irrelevant. After the install, the step lists the executables in each directory that `mise env --paths` lists and in each workflow tool's bin directory. When an executable name appears in one of the action's directories and in a workflow tool's directory, and the two directories differ, the step fails, naming the executable and both directories. That failure is Hugi's own. The same install of the same version is one directory, so a tool that the config and the workflow pin alike passes. A tool under another backend, such as `npm:pnpm` beside the workflow's `pnpm`, a version from an idiomatic file such as `.nvmrc`, and a partial request that installs a different patch release all fail, where ADR-0006 lets the workflow tool win.
+The shims directory adds a second way for the config's tools to reach `PATH`: on GitHub's runner it sits ahead of a setup action that ran before the action, and under Hugi behind every workflow tool. So the order matters whenever the step adds the shims directory or exports `PATH`.
+
+The overlap check makes that order irrelevant. After the install, the step lists the executables in each directory that `mise env --paths` lists in the working directory, which holds the bin directories of the tools the config makes current and the config's `_.path` entries, and in each workflow tool's bin directory. Directories compare after resolving symbolic links. When an executable name appears in one of the config's directories and in a workflow tool's directory, and the two directories differ, the step fails, naming the executable and both directories. That failure is Hugi's own. The same install of the same version is one directory, so a tool that the config and the workflow pin alike passes. A tool under another backend, such as `npm:pnpm` beside the workflow's `pnpm`, a version from an idiomatic file such as `.nvmrc`, and a partial request that installs a different patch release all fail, where ADR-0006 lets the workflow tool win.
 
 ### Hugi's own failures
 
@@ -101,7 +104,7 @@ The step needs no special case for these. Before the plan's `actions/checkout` s
 These limits are accepted:
 
 - The guest's mise is the golden image's, unless `version` names it exactly. Without `version`, GitHub's runner downloads the newest mise release that is older than `minimum_release_age`, so the two can differ in how they resolve or install a tool.
-- Hugi reproduces v5.3.0. The moving `v5` tag, a later `v5` minor release, or a SHA pin can name a release whose behaviour differs.
+- Hugi reproduces v5.3.0. The moving `v5` tag, a later v5 release, or a SHA pin can name a release whose behaviour differs.
 - The shims directory holds shims for the image's installed tools as well as the config's, and steps after the action read the repository's config. So a command that neither the workflow nor the config pins, run as a shim, resolves through the repository's config and the image's global config, where GitHub's runner has no shim and runs its own program or none. A subdirectory's config that pins such a tool reaches it the same way. The same holds for a later step's own `mise run`, `mise exec`, or `mise env`, which still read the image's global config.
 - With `install: false`, or with `install_args` naming a subset, a tool that the config requests and the image already holds is active under Hugi and missing on GitHub's runner.
 - When the action re-adds the workflow tools' bin directories to `PATH`, they come ahead of directories that earlier steps added to `GITHUB_PATH`.
