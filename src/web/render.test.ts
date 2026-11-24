@@ -4,6 +4,7 @@ import type { FinishedRecord, RecordedStep } from '../runs/record';
 import { sampleRecord, sampleRunningRecord } from '../runs/testing';
 import { renderRunPage } from './render';
 import type { RunPageData, StepLogView } from './run-data';
+import { RUN_PAGE_STYLE } from './style';
 
 const NOW = new Date('2026-11-19T10:10:00.000Z');
 const HOUR = 3_600_000;
@@ -378,6 +379,10 @@ describe('the other answers', () => {
   test('an unknown run is a 404', () => {
     expect(page({ kind: 'not-found' }).status).toBe(404);
   });
+});
+
+test('the stylesheet reaches the page as written, not escaped', () => {
+  expect(body(finished())).toContain(RUN_PAGE_STYLE);
 });
 
 test('a page loads nothing from elsewhere and runs no script', () => {

@@ -5,8 +5,7 @@
 import { isRepositoryName } from '../config/schema';
 import { failingStep } from '../runs/describe';
 import type { FinishedRecord, RecordedStep, RunRecord } from '../runs/record';
-import { html } from './html';
-import type { SafeHtml } from './html';
+import { html, SafeHtml } from './html';
 import type { RunPageData, StepLogView } from './run-data';
 import { RUN_PAGE_STYLE } from './style';
 
@@ -271,6 +270,9 @@ function stepsOf(record: FinishedRecord, logs: readonly (StepLogView | undefined
   </ol>`;
 }
 
+/** The stylesheet is Hugi's own constant, not a value from a run, so it is markup as written. */
+const STYLE = new SafeHtml(RUN_PAGE_STYLE);
+
 /** A whole page: the document around `main`. */
 function documentOf(title: string, main: SafeHtml): string {
   return html`<!doctype html>
@@ -280,7 +282,7 @@ function documentOf(title: string, main: SafeHtml): string {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>${title}</title>
         <style>
-          ${RUN_PAGE_STYLE}
+          ${STYLE}
         </style>
       </head>
       <body>
