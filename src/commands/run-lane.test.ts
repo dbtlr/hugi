@@ -545,6 +545,7 @@ describe('with a real local repository', () => {
             cacheDir: join(scratch, 'cache'),
             cwd: scratch,
             env: handle.env,
+            platform: handle.platform,
             spawn: (command, args, options) =>
               handle.spawn(command, args, { cwd: scratch, env: handle.env, ...options }),
             tempDir,

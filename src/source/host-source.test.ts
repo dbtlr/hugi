@@ -1,11 +1,22 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { processHandle } from '@loomcli/core';
 
 import { messageOf } from '../errors';
+import { openExclusiveLock } from '../file-lock';
 import type { PullRequestFacts } from '../github/pull-request';
 import { FakeClock, FakeSpawn } from '../vm/fake-tart';
 import {
@@ -26,6 +37,7 @@ const hostOptions = (
   cacheDir,
   cwd: handle.cwd(),
   env: handle.env,
+  platform: handle.platform,
   spawn: (command, args, options) =>
     handle.spawn(command, args, { cwd: handle.cwd(), env: handle.env, ...options }),
   tempDir: tmpdir(),
@@ -942,5 +954,339 @@ describe('a pull request opens at its merge commit only when the merge is curren
   test('a pushed merge commit is compared with its first parent', async () => {
     const source = await openHostSource({ kind: 'local', path: upstream }, merge, pullsOptions());
     expect(await source.changedFiles()).toEqual(['feature.txt']);
+  });
+
+  test("git lock files a killed fetch left do not fail the next fetch of a pull request's refs", async () => {
+    await openPullRequestSource(spec(), current(7), pullsOptions());
+    const gitDir = join(root, 'pulls-cache', 'repos', 'example__pulls.git');
+    const leftovers = [
+      join(gitDir, 'refs', 'pull', '7', 'head.lock'),
+      join(gitDir, 'packed-refs.lock'),
+    ];
+    await mkdir(join(gitDir, 'refs', 'pull', '7'), { recursive: true });
+    await Promise.all(leftovers.map(async (path) => writeFile(path, '')));
+    const source = await openPullRequestSource(spec(), current(7), pullsOptions());
+    expect(source.sha).toBe(merge);
+    expect(await Promise.all(leftovers.map(exists))).toEqual([false, false]);
+  });
+});
+
+/** A new upstream repository with one commit holding `ci.yml`, served over `file`. */
+async function upstreamRepository(name: string): Promise<string> {
+  const upstream = join(root, `${name}-upstream`);
+  await mkdir(upstream);
+  await gitIn(upstream, 'init', '--quiet', '--initial-branch=main');
+  await gitIn(upstream, 'config', 'uploadpack.allowFilter', 'true');
+  await gitIn(upstream, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+  await commitFile(upstream, 'one\n');
+  return upstream;
+}
+
+async function commitFile(upstream: string, content: string): Promise<string> {
+  await writeFile(join(upstream, 'ci.yml'), content);
+  await gitIn(upstream, 'add', '-A');
+  await gitIn(upstream, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', content);
+  return gitIn(upstream, 'rev-parse', 'HEAD');
+}
+
+const specOf = (name: string, upstream: string) =>
+  ({ cloneUrl: `file://${upstream}`, kind: 'github', name: `example/${name}` }) as const;
+const gitDirOf = (cacheDir: string, name: string) =>
+  join(cacheDir, 'repos', `example__${name}.git`);
+
+/**
+ * The source of a child Hugi process that opens `spec` into `cacheDir` and is killed with
+ * SIGKILL by its clone step, once git has made the clone's directory and written nothing into it.
+ */
+const killedDuringClone = (spec: ReturnType<typeof specOf>, cacheDir: string) => `
+  const { processHandle } = await import('@loomcli/core');
+  const source = ${JSON.stringify(join(import.meta.dir, 'host-source.ts'))};
+  const { openHostSource } = await import(source);
+  const handle = processHandle();
+  const { env } = handle;
+  const killedClone = (args) => ['-c', 'mkdir "$1"; kill -9 $PPID', 'sh', args.at(-1)];
+  const spawn = (command, args, options) =>
+    args.includes('clone')
+      ? handle.spawn('sh', killedClone(args), { cwd: handle.cwd(), env, ...options })
+      : handle.spawn(command, args, { cwd: handle.cwd(), env, ...options });
+  await openHostSource(${JSON.stringify(spec)}, 'main', {
+    cacheDir: ${JSON.stringify(cacheDir)}, cwd: handle.cwd(), env, platform: handle.platform,
+    remoteTransport: 'file', spawn, tempDir: handle.tmpdir, uid: handle.uid,
+  });
+`;
+
+describe('a cached clone stays usable after a killed or concurrent fetch', () => {
+  test('git lock files a killed fetch left in the clone do not fail the next fetch', async () => {
+    const upstream = await upstreamRepository('stale-locks');
+    const cacheDir = join(root, 'stale-locks-cache');
+    const spec = specOf('stale-locks', upstream);
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    await openHostSource(spec, 'main', options);
+    const gitDir = gitDirOf(cacheDir, 'stale-locks');
+    const leftovers = [
+      join(gitDir, 'refs', 'heads', 'main.lock'),
+      join(gitDir, 'packed-refs.lock'),
+    ];
+    await mkdir(join(gitDir, 'refs', 'heads'), { recursive: true });
+    await Promise.all(leftovers.map(async (path) => writeFile(path, '')));
+    const tip = await commitFile(upstream, 'two\n');
+    const source = await openHostSource(spec, 'main', options);
+    expect(source.sha).toBe(tip);
+    expect(await Promise.all(leftovers.map(exists))).toEqual([false, false]);
+  });
+
+  test('a first clone killed partway leaves nothing the next run reads', async () => {
+    const upstream = await upstreamRepository('killed-clone');
+    const cacheDir = join(root, 'killed-clone-cache');
+    const spec = specOf('killed-clone', upstream);
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    // The clone dies after git made its directory and before it wrote anything into it.
+    const killedClone: HostSourceOptions = {
+      ...options,
+      spawn: (command, args, spawnOptions) =>
+        args.includes('clone')
+          ? options.spawn(
+              'sh',
+              ['-c', 'mkdir "$1"; exit 137', 'sh', args.at(-1) ?? ''],
+              spawnOptions,
+            )
+          : options.spawn(command, args, spawnOptions),
+    };
+    expect(await failureOf(openHostSource(spec, 'main', killedClone))).toBeInstanceOf(SourceError);
+    const source = await openHostSource(spec, 'main', options);
+    expect(source.sha).toBe(await gitIn(upstream, 'rev-parse', 'HEAD'));
+    expect(await source.readFile('ci.yml')).toBe('one\n');
+  });
+
+  test('a first clone whose Hugi process was killed partway leaves nothing the next run reads', async () => {
+    const upstream = await upstreamRepository('killed-run');
+    const cacheDir = join(root, 'killed-run-cache');
+    const spec = specOf('killed-run', upstream);
+    const child = Bun.spawn([process.execPath, '-e', killedDuringClone(spec, cacheDir)], {
+      cwd: join(import.meta.dir, '..', '..'),
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    expect(await child.exited).not.toBe(0);
+    expect(child.signalCode).toBe('SIGKILL');
+    const source = await openHostSource(
+      spec,
+      'main',
+      hostOptions(cacheDir, { remoteTransport: 'file' }),
+    );
+    expect(await source.readFile('ci.yml')).toBe('one\n');
+  });
+
+  test('a half-made clone left in the cache is deleted the next time the clone is opened', async () => {
+    const upstream = await upstreamRepository('leftover-partial');
+    const cacheDir = join(root, 'leftover-partial-cache');
+    const leftover = join(cacheDir, 'repos', '.partial', 'example__leftover-partial.git', 'stale');
+    await mkdir(leftover, { recursive: true });
+    await writeFile(join(leftover, 'HEAD'), 'ref: refs/heads/main\n');
+    const spec = specOf('leftover-partial', upstream);
+    await openHostSource(spec, 'main', hostOptions(cacheDir, { remoteTransport: 'file' }));
+    expect(await exists(leftover)).toBe(false);
+  });
+
+  test("another repository's clone whose name starts with this one's survives an open", async () => {
+    const upstream = await upstreamRepository('prefix');
+    const cacheDir = join(root, 'prefix-cache');
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    const neighbour = specOf('prefix.git.partial-x', upstream);
+    await openHostSource(neighbour, 'main', options);
+    const neighbourDir = gitDirOf(cacheDir, 'prefix.git.partial-x');
+    // A first clone of the neighbour still being built, by another process holding its lock.
+    const neighbourPartial = join(
+      cacheDir,
+      'repos',
+      '.partial',
+      'example__prefix.git.partial-x.git',
+    );
+    await mkdir(join(neighbourPartial, 'clone-building'), { recursive: true });
+    const kept = [
+      neighbourDir,
+      neighbourPartial,
+      ...(handle.platform === 'darwin' ? [`${neighbourDir}.hugi-lock`] : []),
+    ];
+    await openHostSource(specOf('prefix', upstream), 'main', options);
+    expect(await Promise.all(kept.map(exists))).toEqual(kept.map(() => true));
+  });
+
+  test('the lock-file sweep never follows a symlink out of the clone', async () => {
+    const upstream = await upstreamRepository('symlinked');
+    const cacheDir = join(root, 'symlinked-cache');
+    const spec = specOf('symlinked', upstream);
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    await openHostSource(spec, 'main', options);
+    const outside = join(root, 'symlinked-outside');
+    await mkdir(outside);
+    await writeFile(join(outside, 'x.lock'), '');
+    await symlink(outside, join(gitDirOf(cacheDir, 'symlinked'), 'info', 'outside'));
+    await symlink('..', join(gitDirOf(cacheDir, 'symlinked'), 'info', 'loop'));
+    await openHostSource(spec, 'main', options);
+    expect(await exists(join(outside, 'x.lock'))).toBe(true);
+  });
+
+  test.each([
+    ['the cached clone', (cacheDir: string) => gitDirOf(cacheDir, 'linked')],
+    [
+      'the directory first clones are built in',
+      (cacheDir: string) => join(cacheDir, 'repos', '.partial'),
+    ],
+  ] as const)(
+    'a cache where %s is a symbolic link is refused, and its target left alone',
+    async (_name, linkOf) => {
+      const upstream = await upstreamRepository(`linked-${_name.length}`);
+      const cacheDir = join(root, `linked-${_name.length}-cache`);
+      const target = join(root, `linked-${_name.length}-target`);
+      // The target looks like what the link stands for: a bare clone, or a partial clone's directory.
+      await gitIn(
+        root,
+        'clone',
+        '--quiet',
+        '--bare',
+        `file://${upstream}`,
+        join(target, 'example__linked.git'),
+      );
+      await writeFile(join(target, 'example__linked.git', 'x.lock'), '');
+      await mkdir(join(cacheDir, 'repos'), { mode: 0o700, recursive: true });
+      const link = linkOf(cacheDir);
+      await symlink(link.endsWith('.partial') ? target : join(target, 'example__linked.git'), link);
+      const failure = await failureOf(
+        openHostSource(
+          specOf('linked', upstream),
+          'main',
+          hostOptions(cacheDir, { remoteTransport: 'file' }),
+        ),
+      );
+      expect(failure).toBeInstanceOf(SourceError);
+      expect(messageOf(failure)).toContain('is a symbolic link');
+      expect(await exists(join(target, 'example__linked.git', 'x.lock'))).toBe(true);
+    },
+  );
+
+  test("git's housekeeping runs to completion inside the open, so no detached git outlives it", async () => {
+    const upstream = await upstreamRepository('maintenance');
+    const cacheDir = join(root, 'maintenance-cache');
+    const spec = specOf('maintenance', upstream);
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    await openHostSource(spec, 'main', options);
+    const gitDir = gitDirOf(cacheDir, 'maintenance');
+    await gitIn(gitDir, 'config', 'gc.autoPackLimit', '2');
+    await gitIn(gitDir, 'config', 'maintenance.strategy', 'gc');
+    for (const content of ['two\n', 'three\n', 'four\n']) {
+      // oxlint-disable-next-line no-await-in-loop -- each open fetches the commit before it
+      await commitFile(upstream, content);
+      // oxlint-disable-next-line no-await-in-loop -- each open adds one pack to the clone
+      await openHostSource(spec, 'main', options);
+    }
+    const packs = (await readdir(join(gitDir, 'objects', 'pack'))).filter((name) =>
+      name.endsWith('.pack'),
+    );
+    expect(packs.length).toBeLessThanOrEqual(2);
+    const busy = [join(gitDir, 'gc.pid'), join(gitDir, 'objects', 'maintenance.lock')];
+    expect(await Promise.all(busy.map(exists))).toEqual([false, false]);
+  });
+
+  test('a fetch starts no git that goes on writing the clone after the open returns', async () => {
+    const upstream = await upstreamRepository('detached');
+    const cacheDir = join(root, 'detached-cache');
+    const spec = specOf('detached', upstream);
+    const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+    await openHostSource(spec, 'main', options);
+    const gitDir = gitDirOf(cacheDir, 'detached');
+    await gitIn(gitDir, 'config', 'gc.autoPackLimit', '1');
+    await gitIn(gitDir, 'config', 'maintenance.strategy', 'gc');
+    const packDir = join(gitDir, 'objects', 'pack');
+    const afterFetch = join(root, 'detached-after-fetch');
+    // The packs as the fetch left them, listed the moment its git exits.
+    const listedFetches: HostSourceOptions = {
+      ...options,
+      spawn: (command, args, spawnOptions) =>
+        options.spawn(
+          'sh',
+          args.includes('fetch')
+            ? ['-c', '"$0" "$@"; s=$?; ls "$PACKS" > "$OUT"; exit $s', command, ...args]
+            : ['-c', 'exec "$0" "$@"', command, ...args],
+          { ...spawnOptions, env: { ...spawnOptions?.env, OUT: afterFetch, PACKS: packDir } },
+        ),
+    };
+    await commitFile(upstream, 'two\n');
+    await openHostSource(spec, 'main', listedFetches);
+    await Bun.sleep(1000);
+    const listed = (await readFile(afterFetch, 'utf8')).trim().split('\n');
+    expect((await readdir(packDir)).toSorted()).toEqual(listed.toSorted());
+  });
+
+  describe.skipIf(handle.platform !== 'darwin')('the clone lock (macOS)', () => {
+    test('two opens of one repository fetch into its clone one at a time', async () => {
+      const upstream = await upstreamRepository('concurrent');
+      const cacheDir = join(root, 'concurrent-cache');
+      const spec = specOf('concurrent', upstream);
+      const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+      await openHostSource(spec, 'main', options);
+      let running = 0;
+      let most = 0;
+      const slowFetches: HostSourceOptions = {
+        ...options,
+        spawn: (command, args, spawnOptions) => {
+          if (!args.includes('fetch')) {
+            return options.spawn(command, args, spawnOptions);
+          }
+          running += 1;
+          most = Math.max(most, running);
+          const child = options.spawn(
+            'sh',
+            ['-c', 'sleep 0.3; exec "$0" "$@"', command, ...args],
+            spawnOptions,
+          );
+          const settled = async () => {
+            await child.exited;
+            running -= 1;
+          };
+          void settled();
+          return child;
+        },
+      };
+      const tip = await commitFile(upstream, 'two\n');
+      const sources = await Promise.all([
+        openHostSource(spec, 'main', slowFetches),
+        openHostSource(spec, 'main', slowFetches),
+      ]);
+      expect(sources.map((source) => source.sha)).toEqual([tip, tip]);
+      expect(most).toBe(1);
+    });
+
+    test('an open that finds the clone held past its deadline has no source, naming the holder', async () => {
+      const upstream = await upstreamRepository('held');
+      const cacheDir = join(root, 'held-cache');
+      const spec = specOf('held', upstream);
+      const options = hostOptions(cacheDir, { remoteTransport: 'file' });
+      await openHostSource(spec, 'main', options);
+      const held = await openExclusiveLock(`${gitDirOf(cacheDir, 'held')}.hugi-lock`);
+      try {
+        const failure = await failureOf(
+          openHostSource(spec, 'main', { ...options, deadlineMs: 300 }),
+        );
+        expect(failure).toBeInstanceOf(SourceError);
+        expect(messageOf(failure)).toContain('Another Hugi process holds the cached clone');
+      } finally {
+        await held?.close();
+      }
+    });
+
+    test('a clone lock that cannot be opened at all has no source', async () => {
+      const upstream = await upstreamRepository('unopenable');
+      const cacheDir = join(root, 'unopenable-cache');
+      // A directory in the lock file's place: opening it to write fails with EISDIR.
+      await mkdir(`${gitDirOf(cacheDir, 'unopenable')}.hugi-lock`, { recursive: true });
+      const failure = await failureOf(
+        openHostSource(specOf('unopenable', upstream), 'main', {
+          ...hostOptions(cacheDir, { remoteTransport: 'file' }),
+        }),
+      );
+      expect(failure).toBeInstanceOf(SourceError);
+      expect(messageOf(failure)).toContain('lock');
+    });
   });
 });

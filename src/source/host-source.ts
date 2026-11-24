@@ -5,14 +5,17 @@
  * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`). A pull
  * request is read at GitHub's merge commit, only after checking the merge is current (ADR-0005).
  */
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 
 import type { Host } from '@loomcli/core';
 
+import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
+import { EXCLUSIVE_LOCK_PLATFORM, openExclusiveLock } from '../file-lock';
 import type { PullRequestFacts } from '../github/pull-request';
 import type { SourceLocation } from '../vm';
+import { systemClock } from '../vm/clock';
 import type { Clock } from '../vm/tart';
 import { createGit } from './git';
 import type { Git, GitTransport } from './git';
@@ -111,7 +114,7 @@ export type OpenedSource = HostSource & CommitMessageReader;
 
 export type HostSourceOptions = {
   readonly cacheDir: string;
-  /** An optional deadline for each host git call. */
+  /** An optional deadline for each host git call, and for the wait for a cached clone's lock. */
   readonly deadlineMs?: number;
   /** The clock that deadline is measured on; the system clock unless a test replaces it. */
   readonly clock?: Clock;
@@ -120,6 +123,8 @@ export type HostSourceOptions = {
   /** The run's `host.env`, from which git's environment is built. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly cwd: string;
+  /** The run's `host.platform`: a cached clone is locked only on macOS, where the lock exists. */
+  readonly platform: string;
   /** The run's `host.uid`: the only user a cached clone may belong to. */
   readonly uid: number | undefined;
   /** The transport a GitHub source is fetched over; https unless a test serves a fixture. */
@@ -171,15 +176,161 @@ async function checkPrivate(path: string, uid: number | undefined): Promise<bool
 /** The refs a refresh mirrors from the repository URL; a pull request's refs are fetched on their own. */
 const MIRRORED_REFS = ['+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'] as const;
 
+/** How often an open that finds a cached clone locked tries the lock again. */
+const CLONE_LOCK_RETRY_MS = 100;
+
 /**
- * Bare, blob-less clone: cheap to fetch, and enough to read the few files Hugi needs. A refresh
- * fetches from the repository's URL, never from a remote name the clone's config defines.
+ * Take the lock of the cached clone at `gitDir`, the file `<gitDir>.hugi-lock` (`../file-lock`),
+ * waiting while another Hugi process holds it: up to the git deadline when there is one, else
+ * until it frees. Returns the release. Off macOS no lock exists, and nothing is taken.
  */
-async function cachedClone(
+async function lockClone(
+  gitDir: string,
+  spec: GitHubRepositorySpec,
+  options: HostSourceOptions,
+): Promise<() => Promise<void>> {
+  if (options.platform !== EXCLUSIVE_LOCK_PLATFORM) {
+    return async () => {};
+  }
+  const clock = options.clock ?? systemClock;
+  const started = clock.now();
+  const lockPath = `${gitDir}.hugi-lock`;
+  for (;;) {
+    let handle;
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- each try waits for the one before it
+      handle = await openExclusiveLock(lockPath);
+    } catch (error) {
+      throw new SourceError(`Cannot open the cached clone's lock ${lockPath}: ${messageOf(error)}`);
+    }
+    if (handle !== undefined) {
+      return async () => handle.close();
+    }
+    const waited = clock.now() - started;
+    if (options.deadlineMs !== undefined && waited >= options.deadlineMs) {
+      throw new SourceError(
+        `Another Hugi process holds the cached clone of ${spec.name} and kept it for ${Math.round(waited / 1000)} seconds, so it was not read; try again once that run has fetched.`,
+      );
+    }
+    // oxlint-disable-next-line no-await-in-loop -- the pause between tries
+    await clock.sleep(CLONE_LOCK_RETRY_MS);
+  }
+}
+
+/**
+ * The directory the first clones of `gitDir` are built in, `repos/.partial/<owner>__<name>.git`.
+ * No clone is named `.partial`, since every clone's name holds `__` and ends in `.git`.
+ */
+const partialsDirOf = (reposDir: string, gitDir: string) =>
+  join(reposDir, '.partial', basename(gitDir));
+
+/**
+ * Delete what a killed clone or fetch left behind: every temporary directory a first clone of
+ * `gitDir` was being built in, and every git lock file (`*.lock`) inside the clone. git leaves
+ * those when it is killed, and any one of them fails every later fetch of the repository. On macOS
+ * the clone's lock is held, so no other Hugi process can be writing; where no lock exists, this
+ * runs unlocked.
+ */
+async function removeLeftovers(reposDir: string, gitDir: string, cloned: boolean): Promise<void> {
+  await rm(partialsDirOf(reposDir, gitDir), { force: true, recursive: true });
+  if (cloned) {
+    await removeLockFiles(gitDir);
+  }
+}
+
+/**
+ * Delete every git lock file under `dir`: the regular files whose names end in `.lock`. It descends
+ * only into real directories, never through a symlink, so nothing outside the clone is touched.
+ */
+async function removeLockFiles(dir: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await removeLockFiles(path);
+      } else if (entry.isFile() && entry.name.endsWith('.lock')) {
+        await unlink(path).catch((error: unknown) => {
+          if (errnoCode(error) !== 'ENOENT') {
+            throw error;
+          }
+        });
+      }
+    }),
+  );
+}
+
+/**
+ * The first clone of `spec`: built in a temporary directory under `partialsDirOf` and moved into
+ * place only once git has finished, so a clone killed partway never leaves a `gitDir` a later open
+ * reads.
+ */
+async function cloneInto(git: Git, spec: GitHubRepositorySpec, reposDir: string, gitDir: string) {
+  const partialsDir = partialsDirOf(reposDir, gitDir);
+  try {
+    await mkdir(partialsDir, { mode: 0o700, recursive: true });
+    const building = await mkdtemp(join(partialsDir, 'clone-'));
+    await gitOrThrow(git, undefined, [
+      'clone',
+      '--bare',
+      '--quiet',
+      '--filter=blob:none',
+      spec.cloneUrl,
+      building,
+    ]);
+    await rename(building, gitDir);
+  } catch (error) {
+    throw error instanceof SourceError
+      ? error
+      : new SourceError(`Cannot clone ${spec.name} into the cache: ${messageOf(error)}`);
+  } finally {
+    // The next open clears a leftover, so a removal that fails must not hide the clone's outcome.
+    await rm(partialsDir, { force: true, recursive: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Refuse a cache path that is a symbolic link: the cleanup deletes inside the clone and the
+ * partials directory, and must never reach a directory outside the cache.
+ */
+async function refuseSymlink(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => undefined);
+  if (info?.isSymbolicLink() === true) {
+    throw new SourceError(`The cache path ${path} is a symbolic link; remove it.`);
+  }
+}
+
+/**
+ * git's own housekeeping of the clone, such as packing the many small packs that lazy reads leave,
+ * run to the end while the lock is held. Every git call has automatic maintenance off (`./git`), so
+ * none starts a detached one that outlives the lock. A failed run is only housekeeping missed, so
+ * it does not fail the read.
+ */
+const MAINTENANCE_ARGS = [
+  '-c',
+  'maintenance.autoDetach=false',
+  // A git before 2.47 runs the gc task without --no-detach, so its gc would detach by default.
+  '-c',
+  'gc.autoDetach=false',
+  'maintenance',
+  'run',
+  '--auto',
+  '--quiet',
+];
+
+/**
+ * Open the bare, blob-less clone of `spec` in the cache and run `work` on it while holding the
+ * clone's lock, so no other Hugi process clones, fetches, or clears locks in it meanwhile. Cheap
+ * to fetch, and enough to read the few files Hugi needs. A refresh fetches from the repository's
+ * URL, never from a remote name the clone's config defines. The lock is let go when `work` ends:
+ * reads after that change no ref.
+ */
+async function withCachedClone<T>(
   git: Git,
   spec: GitHubRepositorySpec,
   options: HostSourceOptions,
-): Promise<Repository> {
+  work: (repository: Repository) => Promise<T>,
+): Promise<T> {
   const { cloneUrl, name } = spec;
   const { cacheDir, uid } = options;
   const reposDir = join(cacheDir, 'repos');
@@ -193,20 +344,31 @@ async function cachedClone(
     throw new SourceError(`Cannot create the cache at ${reposDir}: ${messageOf(error)}`);
   }
   await checkPrivate(reposDir, uid);
-  if (await checkPrivate(gitDir, uid)) {
-    await checkPrivate(join(gitDir, 'config'), uid);
-    await gitOrThrow(git, gitDir, ['rev-parse', '--git-dir']);
-    return { gitDir, refresh };
+  const release = await lockClone(gitDir, spec, options);
+  try {
+    await refuseSymlink(gitDir);
+    await refuseSymlink(join(reposDir, '.partial'));
+    const cloned = await checkPrivate(gitDir, uid);
+    if (cloned) {
+      await checkPrivate(join(gitDir, 'config'), uid);
+    }
+    try {
+      await removeLeftovers(reposDir, gitDir, cloned);
+    } catch (error) {
+      throw new SourceError(
+        `Cannot clear what a killed git left in the cache at ${gitDir}: ${messageOf(error)}`,
+      );
+    }
+    if (cloned) {
+      await gitOrThrow(git, gitDir, ['rev-parse', '--git-dir']);
+      await git(gitDir, MAINTENANCE_ARGS);
+    } else {
+      await cloneInto(git, spec, reposDir, gitDir);
+    }
+    return await work({ gitDir, refresh });
+  } finally {
+    await release();
   }
-  await gitOrThrow(git, undefined, [
-    'clone',
-    '--bare',
-    '--quiet',
-    '--filter=blob:none',
-    cloneUrl,
-    gitDir,
-  ]);
-  return { gitDir, refresh };
 }
 
 /** A fetch of `refspecs` from the repository's URL into the cached clone, keeping it blob-less. */
@@ -422,10 +584,22 @@ export async function openHostSource(
   options: HostSourceOptions,
 ): Promise<OpenedSource> {
   const git = sourceGit(spec, options);
-  const repository =
-    spec.kind === 'local'
-      ? await localRepository(git, spec.path)
-      : await cachedClone(git, spec, options);
+  if (spec.kind === 'local') {
+    return openAt(spec, git, await localRepository(git, spec.path), commit, options);
+  }
+  return withCachedClone(git, spec, options, async (repository) =>
+    openAt(spec, git, repository, commit, options),
+  );
+}
+
+/** Resolve `commit` in `repository`, refreshing a cached clone for a branch or tag name. */
+async function openAt(
+  spec: RepositorySpec,
+  git: Git,
+  repository: Repository,
+  commit: string,
+  options: HostSourceOptions,
+): Promise<OpenedSource> {
   if (spec.kind === 'github' && !looksLikeSha(commit)) {
     await repository.refresh();
   }
@@ -544,7 +718,20 @@ export async function openPullRequestSource(
 ): Promise<OpenedSource> {
   const reported = reportedMerge(facts);
   const git = sourceGit(spec, options);
-  const repository = await cachedClone(git, spec, options);
+  return withCachedClone(git, spec, options, async (repository) =>
+    checkedMerge(spec, git, repository, facts, reported, options),
+  );
+}
+
+/** ADR-0005's conditions 3 to 5, on the pull request's refs fetched into the cached clone. */
+async function checkedMerge(
+  spec: GitHubRepositorySpec,
+  git: Git,
+  repository: Repository,
+  facts: PullRequestFacts,
+  reported: string,
+  options: HostSourceOptions,
+): Promise<OpenedSource> {
   const refs = await fetchPullRefs(git, repository, spec, facts);
   const merge = await commitAt(git, repository, refs.merge);
   if (merge !== reported) {

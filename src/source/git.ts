@@ -18,6 +18,9 @@
  *   the one the snapshot carries.
  * - `core.hooksPath=/dev/null`, `core.fsmonitor=false`, and `core.alternateRefsCommand=true`: no
  *   hook, monitor, or alternate-refs command runs.
+ * - `maintenance.auto=false`, which reaches the gits git starts itself through
+ *   `GIT_CONFIG_PARAMETERS`: no fetch, lazy ones included, starts a detached `git maintenance` that
+ *   goes on writing a cached clone after Hugi has let go of its lock.
  * - `GIT_NO_LAZY_FETCH=1` for a local repository, so a partial clone's promisor remote is never
  *   contacted: a missing object is a read failure, not a fetch.
  */
@@ -67,6 +70,7 @@ export function hardenedConfig(transport: GitTransport): string[] {
     'core.hooksPath=/dev/null',
     'core.fsmonitor=false',
     'core.alternateRefsCommand=true',
+    'maintenance.auto=false',
     'protocol.allow=never',
     ...TRANSPORTS.map(
       (name) => `protocol.${name}.allow=${name === transport ? 'always' : 'never'}`,
