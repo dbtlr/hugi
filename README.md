@@ -33,6 +33,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 | Toolchain resolution | Maps each setup action in the plan to pinned tool versions or a documented no-op, and reads the repository's Rust toolchain file. See [supported actions](docs/supported-actions.md). |
 | VM lifecycle | Clones a golden image, boots it, fetches the commit, installs the lane's tools in an "Install tools" step, runs the steps, collects logs, and deletes the VM. The workspace is empty until the lane's `actions/checkout` step, which checks the commit out. The image holds warm package caches and default tool versions. Uses [tart](https://tart.run) on Apple's Virtualization framework. |
 | Reporter | Authenticates as the Hugi GitHub App and posts a commit status for each lane: `pending` when its run starts, then `success` or `failure`. A refused declaration posts one `failure` status named `hugi`. See [Reporting to GitHub](#reporting-to-github). |
+| Run page | Serves a read-only page for each run from the runs directory, the page a lane status's Details link opens. See [The run page](#the-run-page). |
 
 ## Plan
 
@@ -166,9 +167,12 @@ runs: # optional, how much of the runs directory Hugi keeps
 github_app: # optional; `hugi serve` needs it, `hugi run` does not
   app_id: 123456 # the App's id, from its settings page
   private_key_path: ~/.config/hugi/app.pem # absolute, or starting with ~/
+web: # optional; only `hugi serve` reads it. Without it there is no run page and no Details link
+  port: 8470 # required, 1024 to 65535: the loopback port the run page listens on
+  url: https://hugi.example.ts.net # required: the address that reaches that port, http or https
 ```
 
-Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. The `runs` limits apply to the runs directory ([Run records and logs](#run-records-and-logs)). `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
+Commits on a repository's default branch run without the allowlist. The VM size is a tunable setting of [ADR-0003](docs/decisions/0003-one-throwaway-vm-per-run.md); only the coordinator reads it, and `hugi run` always uses the default. The `runs` limits apply to the runs directory ([Run records and logs](#run-records-and-logs)). `web` sets up the run page ([The run page](#the-run-page)): `url` is an absolute `http` or `https` URL with no query, fragment, or credentials, and a trailing `/` is dropped. `hugi config check` loads and validates the file, prints the effective configuration with defaults applied (`--format json` for JSON), and exits 1 with the problem and its key path, such as `repositories[2]`, when the file is missing or refused.
 
 Hugi finds tart and git on the `PATH` it runs with. The service gets its `PATH` from the shell that installed it ([Installing the service](#installing-the-service)); an earlier `path` key, which set it in the configuration, is now refused like any unknown key.
 
@@ -196,6 +200,8 @@ A lane's status is named from its identity, not its workflow path, so promoting 
 The name lists the matrix row's values in the order the workflow lists its matrix keys, with one limitation: JavaScript orders integer-like object keys, such as `'2'`, before the others, so such a key's value is listed first whatever its place in the workflow. Two lanes whose names GitHub treats as one context are refused, so names are compared the way GitHub was observed to compare contexts: ignoring case and accents, with `ß` equal to `s` and trailing spaces trimmed. A status name cannot hold an emoji or any other character outside the Basic Multilingual Plane (a 4-byte character in UTF-8), which GitHub refuses, so a declaration with such a name is refused. The name stays stable for a lane. A promoted workflow must list its matrix keys in the same order for the names to match.
 
 A pull request's statuses go on its head commit, and the description records the merge commit that was tested, such as `Passed [run 2026-11-19T233200Z-abcdef123-Xy7Kq2] (merge 0123456789ab)`, so shadow can tell base drift from a real mismatch. A description is at most 140 characters, GitHub's limit; a long cause is shortened, and the merge commit and the run id are always kept ([Run records and logs](#run-records-and-logs)).
+
+When the configuration has `web`, a lane status that carries a run id also carries a Details link, `<web.url>/runs/<run id>`, to that run's page ([The run page](#the-run-page)); the `pending` status and the final one both do. A status with no run id (the `hugi` refusal, or a lane that failed before a VM booted) has no Details link, and neither does any status when `web` is unset.
 
 ## Running the coordinator
 
@@ -228,6 +234,24 @@ A wait is forgotten on the same terms. Waits and unposted verdicts are kept in m
 A read that fails at a poll (a repository, a branch head, a pull request) skips that commit until a later poll. The service logs each distinct failure once, when it first appears, and logs again when it clears; a failure Hugi does not expect, such as one caused by a bug, is logged as an error. Every `git` call the service makes has a deadline, so a hung fetch cannot stall the loop.
 
 On SIGTERM or Ctrl-C the service stops taking work, interrupts the run in flight, deletes its VM, and exits. Run by hand, it waits up to three minutes for that, as an interrupted `hugi run` does. Under launchd it has less: the agent asks launchd to wait 60 seconds after SIGTERM before it kills the service, the most launchd allows from macOS 26.4. A run cut short can need up to 167 seconds to finish deleting its VM, so a kill can still leave the VM behind; the next start deletes it. Stop the service while `hugi service status` shows the run as `idle` before you `uninstall` it, and `tart delete` any VM the `leftover VMs` row lists after a stop. The interrupted run records no verdict, so its lane runs again after the restart. A run killed before it finished keeps its `running` record; retention treats it as stale once it is older than `runs.max_age_days`.
+
+### The run page
+
+When the configuration has `web`, `hugi serve` also serves a read-only page for each run, so a lane status's Details link opens that run's logs. It listens on `127.0.0.1` at `web.port` and on no other address; something else, such as a tailnet proxy, makes it reachable at `web.url`, and Hugi does not check that it does. The page has no script, no login, and no way to change anything, so expose it only where everyone who can reach it may read every enrolled repository's logs.
+
+It answers `GET` and `HEAD` at `/runs/<run id>`, where the run id is a run directory's full name; a prefix is not looked up. Any other path is answered `404`, and any other method `405`. Every answer is HTML with a content security policy that allows no script and nothing loaded from elsewhere, and is sent with `Cache-Control: no-store`.
+
+A run's page shows, from its record and logs:
+
+- **The verdict as a sentence.** A failed run states its cause, as its status does (`Step 8 "Early host reads" failed with exit code 101.`), or names its failing step when the record has no cause. A passed run says it passed, and a run with no verdict says so and gives its cause.
+- **Its facts.** The lane's status name and repository, the head commit and, for a pull request, the merge commit that was tested, when it started, and how long it took.
+- **Every step in order,** each with its number, name, and outcome. A step with a log opens to it. The failing step, the one whose log explains the verdict, is open, with its log scrolled to the last line. Consecutive steps that did not run are folded into one row.
+
+A run that is still going shows what its record knows (its lane, commit, and start time, but no steps yet), says it is running, and reloads every 30 seconds until it ends. A run directory with no record is shown as left by a run that did not finish.
+
+The page reads the runs directory the way `hugi logs` does and refuses what it refuses: a record that is a symlink or names another run, and a step log that is a symlink or not a regular file. A refused record is answered `500` with the reason; a refused or missing log is shown in place of that step's log, and the rest of the page still shows. An unknown run id is answered `404`, which is also what a Details link gets once retention has deleted its run. A log longer than 1 MiB shows only its last 1 MiB and says so. Logs are shown as text: terminal colour codes are removed and anything else that could be read as HTML is escaped.
+
+When the port cannot be opened (another process holds it, say), the service logs the error, runs on without the page, and posts its statuses with no Details link, so a run page problem never stops verdicts. Fix the cause and restart the service.
 
 ### Installing a release
 
