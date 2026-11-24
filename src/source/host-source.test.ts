@@ -1095,8 +1095,17 @@ describe('a cached clone stays usable after a killed or concurrent fetch', () =>
     const neighbour = specOf('prefix.git.partial-x', upstream);
     await openHostSource(neighbour, 'main', options);
     const neighbourDir = gitDirOf(cacheDir, 'prefix.git.partial-x');
+    // A first clone of the neighbour still being built, by another process holding its lock.
+    const neighbourPartial = join(
+      cacheDir,
+      'repos',
+      '.partial',
+      'example__prefix.git.partial-x.git',
+    );
+    await mkdir(join(neighbourPartial, 'clone-building'), { recursive: true });
     const kept = [
       neighbourDir,
+      neighbourPartial,
       ...(handle.platform === 'darwin' ? [`${neighbourDir}.hugi-lock`] : []),
     ];
     await openHostSource(specOf('prefix', upstream), 'main', options);
@@ -1117,6 +1126,44 @@ describe('a cached clone stays usable after a killed or concurrent fetch', () =>
     await openHostSource(spec, 'main', options);
     expect(await exists(join(outside, 'x.lock'))).toBe(true);
   });
+
+  test.each([
+    ['the cached clone', (cacheDir: string) => gitDirOf(cacheDir, 'linked')],
+    [
+      'the directory first clones are built in',
+      (cacheDir: string) => join(cacheDir, 'repos', '.partial'),
+    ],
+  ] as const)(
+    'a cache where %s is a symbolic link is refused, and its target left alone',
+    async (_name, linkOf) => {
+      const upstream = await upstreamRepository(`linked-${_name.length}`);
+      const cacheDir = join(root, `linked-${_name.length}-cache`);
+      const target = join(root, `linked-${_name.length}-target`);
+      // The target looks like what the link stands for: a bare clone, or a partial clone's directory.
+      await gitIn(
+        root,
+        'clone',
+        '--quiet',
+        '--bare',
+        `file://${upstream}`,
+        join(target, 'example__linked.git'),
+      );
+      await writeFile(join(target, 'example__linked.git', 'x.lock'), '');
+      await mkdir(join(cacheDir, 'repos'), { mode: 0o700, recursive: true });
+      const link = linkOf(cacheDir);
+      await symlink(link.endsWith('.partial') ? target : join(target, 'example__linked.git'), link);
+      const failure = await failureOf(
+        openHostSource(
+          specOf('linked', upstream),
+          'main',
+          hostOptions(cacheDir, { remoteTransport: 'file' }),
+        ),
+      );
+      expect(failure).toBeInstanceOf(SourceError);
+      expect(messageOf(failure)).toContain('is a symbolic link');
+      expect(await exists(join(target, 'example__linked.git', 'x.lock'))).toBe(true);
+    },
+  );
 
   test("git's housekeeping runs to completion inside the open, so no detached git outlives it", async () => {
     const upstream = await upstreamRepository('maintenance');

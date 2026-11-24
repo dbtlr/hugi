@@ -5,7 +5,7 @@
  * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`). A pull
  * request is read at GitHub's merge commit, only after checking the merge is current (ADR-0005).
  */
-import { mkdir, mkdtemp, readdir, rename, rm, unlink } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { Host } from '@loomcli/core';
@@ -284,7 +284,19 @@ async function cloneInto(git: Git, spec: GitHubRepositorySpec, reposDir: string,
       ? error
       : new SourceError(`Cannot clone ${spec.name} into the cache: ${messageOf(error)}`);
   } finally {
-    await rm(partialsDir, { force: true, recursive: true });
+    // The next open clears a leftover, so a removal that fails must not hide the clone's outcome.
+    await rm(partialsDir, { force: true, recursive: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Refuse a cache path that is a symbolic link: the cleanup deletes inside the clone and the
+ * partials directory, and must never reach a directory outside the cache.
+ */
+async function refuseSymlink(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => undefined);
+  if (info?.isSymbolicLink() === true) {
+    throw new SourceError(`The cache path ${path} is a symbolic link; remove it.`);
   }
 }
 
@@ -297,6 +309,9 @@ async function cloneInto(git: Git, spec: GitHubRepositorySpec, reposDir: string,
 const MAINTENANCE_ARGS = [
   '-c',
   'maintenance.autoDetach=false',
+  // A git before 2.47 runs the gc task without --no-detach, so its gc would detach by default.
+  '-c',
+  'gc.autoDetach=false',
   'maintenance',
   'run',
   '--auto',
@@ -331,6 +346,8 @@ async function withCachedClone<T>(
   await checkPrivate(reposDir, uid);
   const release = await lockClone(gitDir, spec, options);
   try {
+    await refuseSymlink(gitDir);
+    await refuseSymlink(join(reposDir, '.partial'));
     const cloned = await checkPrivate(gitDir, uid);
     if (cloned) {
       await checkPrivate(join(gitDir, 'config'), uid);
