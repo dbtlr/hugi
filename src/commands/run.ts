@@ -183,6 +183,7 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
         cacheDir: resolveCacheDir(options['cache-dir'], host.env, host.home),
         cwd: host.cwd,
         env: host.env,
+        platform: host.platform,
         spawn: host.spawn,
         tempDir: host.tmpdir,
         uid: host.uid,

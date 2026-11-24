@@ -170,6 +170,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       cacheDir: join(scratch, 'cache'),
       cwd: scratch,
       env: handle.env,
+      platform: handle.platform,
       spawn,
       tempDir: scratch,
       uid: handle.uid,

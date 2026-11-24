@@ -141,6 +141,7 @@ export function serviceSourceOptions(ports: ServePorts, setup: ServeSetup): Host
     cwd: host.cwd,
     deadlineMs: SERVICE_GIT_DEADLINE_MS,
     env: setup.env,
+    platform: host.platform,
     spawn: setup.spawn,
     tempDir: host.tmpdir,
     uid: host.uid,
