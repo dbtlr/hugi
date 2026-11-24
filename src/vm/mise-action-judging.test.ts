@@ -29,10 +29,26 @@ const probe = (version: string) =>
 
 describe('the lock file search', () => {
   test('climbs from the working directory to the workspace root and no further', () => {
-    const dirs = [...new Set(lockFilePlaces('a/b').map((place) => place.dir))];
-    expect(dirs).toEqual([`${WORKSPACE}/a/b`, `${WORKSPACE}/a`, WORKSPACE]);
-    expect(lockFilePlaces(undefined).every((place) => place.dir === WORKSPACE)).toBe(true);
+    const paths = lockFilePlaces('a/b').map((place) => place.path);
+    expect(paths.filter((path) => !/\/\.?(?:config|mise)$/u.test(path))).toEqual([
+      `${WORKSPACE}/a/b`,
+      `${WORKSPACE}/a`,
+      WORKSPACE,
+    ]);
+    expect(paths.every((path) => path.startsWith(WORKSPACE))).toBe(true);
   });
+
+  test.each([
+    ['mise', '/mise', 'config.lock'],
+    ['.mise', '/.mise', 'config.lock'],
+    ['.config/mise', '/.config/mise', 'config.lock'],
+  ])(
+    'with working directory %s, a place two searches share counts the names of both',
+    (workingDirectory, place, file) => {
+      const places = lockFilePlaces(workingDirectory);
+      expect(hasLockFile(places, listing(`${WORKSPACE}${place}`, [file]))).toBe(true);
+    },
+  );
 
   test('searches the places the action searches in each directory', () => {
     expect(lockFilePlaces(undefined).map((place) => place.path)).toEqual([

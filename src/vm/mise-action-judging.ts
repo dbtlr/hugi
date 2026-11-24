@@ -40,8 +40,6 @@ const CONFIG_LOCK = /^config(?:\.[^.]+)?\.lock$/u;
 
 /** A directory the lock file search lists, and the names that count as a lock file there. */
 export type LockFilePlace = {
-  /** The directory whose ancestors' search this place belongs to. */
-  readonly dir: string;
   readonly path: string;
   readonly patterns: readonly RegExp[];
 };
@@ -58,23 +56,25 @@ export function lockFilePlaces(workingDirectory: string | undefined): LockFilePl
   }
   dirs.push(workspace);
   return dirs.flatMap((dir) => [
-    { dir, path: dir, patterns: [ROOT_LOCK] },
-    { dir, path: `${dir}/.config`, patterns: [CONFIG_DIR_LOCK] },
-    { dir, path: `${dir}/.config/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
-    { dir, path: `${dir}/.mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
-    { dir, path: `${dir}/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
+    { path: dir, patterns: [ROOT_LOCK] },
+    { path: `${dir}/.config`, patterns: [CONFIG_DIR_LOCK] },
+    { path: `${dir}/.config/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
+    { path: `${dir}/.mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
+    { path: `${dir}/mise`, patterns: [ROOT_LOCK, CONFIG_LOCK] },
   ]);
 }
 
-/** Whether the guest's listing of the places' regular files (`{path, files}` lines) holds a lock file. */
+/**
+ * Whether the guest's listing of the places' regular files (`{path, files}` lines) holds a lock
+ * file. Two searches can share a directory, as the workspace's `mise` and a working directory
+ * named `mise`, so a name counts when any place at that path counts it.
+ */
 export function hasLockFile(places: readonly LockFilePlace[], listing: string): boolean {
   return jsonLines(listing, 'the lock file listing').some(({ files, path }) => {
-    const place = places.find((candidate) => candidate.path === path);
-    return (
-      place !== undefined &&
-      isTextList(files) &&
-      files.some((name) => place.patterns.some((pattern) => pattern.test(name)))
-    );
+    const patterns = places
+      .filter((candidate) => candidate.path === path)
+      .flatMap((place) => place.patterns);
+    return isTextList(files) && files.some((name) => patterns.some((pattern) => pattern.test(name)));
   });
 }
 

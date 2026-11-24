@@ -697,8 +697,7 @@ describe.skipIf(mise === null || jq === null)(
     test('the lock file search lists regular files up to the workspace root, not a symbolic link', async () => {
       onHost((await scriptsOf({ workingDirectory: 'pkg/app' }))('install-check'));
       const found = output('mise-install.txt');
-      const places = lockFilePlaces('pkg/app').map(({ dir, path, patterns }) => ({
-        dir,
+      const places = lockFilePlaces('pkg/app').map(({ path, patterns }) => ({
         path: path.replace('/Users/admin/hugi', hugi()),
         patterns,
       }));
