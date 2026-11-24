@@ -217,7 +217,7 @@ function stepRow(step: RecordedStep, log: StepLogView | undefined, explains: boo
 
 function skippedRow(steps: readonly RecordedStep[], later: boolean): SafeHtml {
   const count = steps.length;
-  const label = `${count} ${later ? 'later ' : ''}${count === 1 ? 'step' : 'steps'} did not run`;
+  const label = `${count} ${later ? 'later ' : ''}steps did not run`;
   return html`<li class="row skips">
     <details>
       <summary>
@@ -231,7 +231,7 @@ function skippedRow(steps: readonly RecordedStep[], later: boolean): SafeHtml {
   </li>`;
 }
 
-/** A step, or a run of consecutive steps that did not run, with each step's log. */
+/** A step with its log, or a run of two or more consecutive steps that did not run. */
 type StepEntry =
   | { readonly kind: 'step'; readonly step: RecordedStep; readonly log: StepLogView | undefined }
   | { readonly kind: 'skipped'; readonly steps: RecordedStep[] };
@@ -243,12 +243,13 @@ function entriesOf(
   const entries: StepEntry[] = [];
   for (const [position, step] of steps.entries()) {
     const last = entries.at(-1);
-    if (step.outcome !== 'skipped') {
-      entries.push({ kind: 'step', log: logs[position], step });
-    } else if (last?.kind === 'skipped') {
+    const skipped = step.outcome === 'skipped';
+    if (skipped && last?.kind === 'skipped') {
       last.steps.push(step);
-    } else {
+    } else if (skipped && steps[position + 1]?.outcome === 'skipped') {
       entries.push({ kind: 'skipped', steps: [step] });
+    } else {
+      entries.push({ kind: 'step', log: logs[position], step });
     }
   }
   return entries;
@@ -319,6 +320,7 @@ function finishedPage(
 
 function runningPage(record: RunRecord, now: Date): RenderedPage {
   const refreshing = now.getTime() - Date.parse(record.startedAt) < RUNNING_REFRESH_LIMIT_MS;
+  const heading = refreshing ? 'Still running.' : 'Not finished.';
   const lede = refreshing
     ? `Its record has not finished, so there are no steps or logs to show yet. This page reloads every ${RUNNING_REFRESH_SECONDS} seconds.`
     : 'Its record has not finished, though the run started more than 6 hours ago: it was probably stopped before it could finish. This page no longer reloads.';
@@ -327,7 +329,7 @@ function runningPage(record: RunRecord, now: Date): RenderedPage {
       `${record.lane.statusName}: running`,
       html`<header>
           ${contextOf(record)}
-          <h1 class="verdict none">Still running.</h1>
+          <h1 class="verdict none">${heading}</h1>
           <p class="lede">${lede}</p>
           ${factsOf(record)}
         </header>

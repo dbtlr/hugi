@@ -296,7 +296,7 @@ describe('the steps', () => {
     );
     const rows = rowsOf(markup);
     expect(rows).toHaveLength(4);
-    expect(rows[1]).toContain('1 later step did not run');
+    expect(rows[1]).toContain('Two');
     expect(rows[2]).toContain('Always upload');
     expect(rows[3]).toContain('2 later steps did not run');
   });
@@ -304,11 +304,27 @@ describe('the steps', () => {
   test('steps that did not run before any failure are not called later', () => {
     const markup = body(
       finished({
-        steps: [{ index: 1, name: 'One', outcome: 'skipped' }, step(2, 'success')],
+        steps: [
+          { index: 1, name: 'One', outcome: 'skipped' },
+          { index: 2, name: 'Two', outcome: 'skipped' },
+          step(3, 'success'),
+        ],
         verdict: 'pass',
       }),
     );
-    expect(rowsOf(markup)[0]).toContain('1 step did not run');
+    expect(rowsOf(markup)[0]).toContain('>2 steps did not run<');
+  });
+
+  test('a lone step that did not run is an ordinary row, not a fold', () => {
+    const markup = body(
+      finished({
+        steps: [step(1, 'failure'), { index: 2, name: 'Two', outcome: 'skipped' }],
+      }),
+    );
+    const [, row = ''] = rowsOf(markup);
+    expect(row).not.toContain('skips');
+    expect(row).toContain('class="name">Two<');
+    expect(row).toContain('>did not run</span>');
   });
 });
 
@@ -360,10 +376,15 @@ describe('a run in progress', () => {
     expect(shown.html).toContain('reloads every 30 seconds');
   });
 
-  test('stops reloading once it started 6 hours ago', () => {
+  test('a fresh run is headed as still running', () => {
+    expect(verdictOf(page(running).html)).toBe('Still running.');
+  });
+
+  test('stops reloading once it started 6 hours ago, and is headed as not finished', () => {
     const shown = page(running, new Date(Date.parse('2026-11-19T10:00:00.000Z') + 6 * HOUR));
     expect(shown.refreshSeconds).toBeUndefined();
     expect(shown.html).not.toContain('reloads every 30 seconds');
+    expect(verdictOf(shown.html)).toBe('Not finished.');
   });
 });
 
