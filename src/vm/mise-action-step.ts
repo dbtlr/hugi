@@ -506,9 +506,7 @@ async function runAction(step: Step): Promise<Verdict> {
   if (typeof installed !== 'number') {
     return installed;
   }
-  const overlap = checksOverlap(settings)
-    ? await checkOverlap(step, workflowBins)
-    : undefined;
+  const overlap = checksOverlap(settings) ? await checkOverlap(step, workflowBins) : undefined;
   if (overlap) {
     return overlap;
   }

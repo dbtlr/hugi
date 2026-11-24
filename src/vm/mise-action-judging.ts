@@ -74,7 +74,9 @@ export function hasLockFile(places: readonly LockFilePlace[], listing: string): 
     const patterns = places
       .filter((candidate) => candidate.path === path)
       .flatMap((place) => place.patterns);
-    return isTextList(files) && files.some((name) => patterns.some((pattern) => pattern.test(name)));
+    return (
+      isTextList(files) && files.some((name) => patterns.some((pattern) => pattern.test(name)))
+    );
   });
 }
 

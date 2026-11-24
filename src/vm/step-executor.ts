@@ -245,7 +245,8 @@ async function applyCommandFiles(
   files: StepFiles,
   carried: CarriedState,
 ): Promise<
-  { readonly carried: CarriedState; readonly refused: readonly string[] } | { readonly error: string }
+  | { readonly carried: CarriedState; readonly refused: readonly string[] }
+  | { readonly error: string }
 > {
   const envText = await readCommandFile(ctx, step, files.env);
   const pathText = await readCommandFile(ctx, step, files.path);

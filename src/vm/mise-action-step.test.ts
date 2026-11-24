@@ -595,13 +595,7 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check'],
       'the install check',
     ],
-    [
-      'a probe Hugi cannot read',
-      { probe: 'not json' },
-      {},
-      ['probe'],
-      'the mise probe',
-    ],
+    ['a probe Hugi cannot read', { probe: 'not json' }, {}, ['probe'], 'the mise probe'],
     [
       'a loaded config file outside the workspace',
       { configListing: listing(`${WORKSPACE}/mise.toml`, '/Users/admin/.config/mise/config.toml') },
