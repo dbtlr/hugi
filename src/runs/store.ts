@@ -34,7 +34,7 @@ export class RunLookupError extends Error {
 }
 
 /** Whether `path` is a real directory: a symlink to one is not. */
-async function isRealDirectory(path: string): Promise<boolean> {
+export async function isRealDirectory(path: string): Promise<boolean> {
   try {
     return (await lstat(path)).isDirectory();
   } catch {

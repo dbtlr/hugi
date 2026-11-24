@@ -20,6 +20,7 @@ import type { RunRequest, RunResult } from '../vm';
 import { advanceUntilSettled, FakeClock, FakeSpawn, settle } from '../vm/fake-tart';
 import type { FakeCommand } from '../vm/fake-tart';
 import type { RunDeps } from '../vm/lifecycle';
+import { isMapping } from '../yaml/strict';
 import {
   perRepositoryReader,
   serveDeps,
@@ -219,9 +220,14 @@ async function startCoordinator(git: FakeCommand) {
   const setup = await deps.checkSetup(config);
   const progress = { ended: false };
   const coordinate = async () => {
-    await deps.coordinate(config, setup, async (event) => {
-      events.push(event);
-    });
+    await deps.coordinate(
+      config,
+      setup,
+      async (event) => {
+        events.push(event);
+      },
+      undefined,
+    );
     progress.ended = true;
   };
   const ended = coordinate();
@@ -368,6 +374,7 @@ async function runFirstCandidate(
   pull: boolean,
   withLanes: readonly string[],
   github: ServePorts['fetch'] = laneGitHub(pull),
+  detailsOrigin?: string,
 ) {
   const stop = new AbortController();
   const seen: { request: RunRequest; deps: RunDeps }[] = [];
@@ -385,11 +392,16 @@ async function runFirstCandidate(
   const admitting = { ...config, allowlist: ['dbtlr'] };
   const setup = await deps.checkSetup(admitting);
   let polled = -1;
-  const ended = deps.coordinate(admitting, setup, async (event) => {
-    if (polled === -1 && (event as { kind: string }).kind === 'poll-ended') {
-      polled = started.length;
-    }
-  });
+  const ended = deps.coordinate(
+    admitting,
+    setup,
+    async (event) => {
+      if (polled === -1 && (event as { kind: string }).kind === 'poll-ended') {
+        polled = started.length;
+      }
+    },
+    detailsOrigin,
+  );
   await until(() => seen.length > 0);
   const [first] = seen;
   if (first === undefined) {
@@ -452,6 +464,60 @@ describe('the coordinator after a run', () => {
     await runFirstCandidate(false, [BRANCH_HEAD], rejecting);
     // One token for the poll and the pending post, and a fresh one for the final post after its 401.
     expect(mints).toBe(2);
+  });
+});
+
+/** GitHub for one push lane, recording the body of each status posted. */
+function postsRecorded() {
+  const posts: Readonly<Record<string, unknown>>[] = [];
+  const fetch: ServePorts['fetch'] = async (url, init) => {
+    if (init?.method === 'POST' && new URL(url).pathname.includes('/statuses/')) {
+      const body: unknown = JSON.parse(init.body ?? '{}');
+      posts.push(isMapping(body) ? body : {});
+    }
+    return laneGitHub(false)(url, init);
+  };
+  return { fetch, posts };
+}
+
+describe('Details links', () => {
+  test("with a run page, the pending and the final status link to the run's page", async () => {
+    const { fetch, posts } = postsRecorded();
+    const run = await runFirstCandidate(false, [BRANCH_HEAD], fetch, 'https://hugi.example.ts.net');
+    const [runId] = await readdir(run.paths.runsDir);
+    expect(posts.map((post) => [post.state, post.target_url])).toEqual([
+      ['pending', `https://hugi.example.ts.net/runs/${runId}`],
+      ['success', `https://hugi.example.ts.net/runs/${runId}`],
+    ]);
+  });
+
+  test('without a run page, no status has a Details link', async () => {
+    const { fetch, posts } = postsRecorded();
+    await runFirstCandidate(false, [BRANCH_HEAD], fetch);
+    expect(posts.map((post) => post.state)).toEqual(['pending', 'success']);
+    expect(posts.filter((post) => 'target_url' in post)).toEqual([]);
+  });
+});
+
+describe('the run page', () => {
+  test("serves the service's runs directory on 127.0.0.1 at web.port", async () => {
+    const { ports } = portsOf();
+    const id = '2026-11-19T100000Z-aaaaaaaaa-abc123';
+    await mkdir(join(ports.paths.runsDir, id), { recursive: true });
+    const probe = Bun.serve({ fetch: () => new Response(), hostname: '127.0.0.1', port: 0 });
+    const port = probe.port ?? 0;
+    await probe.stop(true);
+    const listener = await serveDeps(ports).openRunPage({
+      port,
+      url: 'https://hugi.example.ts.net',
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/runs/${id}`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('a run that did not finish');
+    } finally {
+      listener.close();
+    }
   });
 });
 

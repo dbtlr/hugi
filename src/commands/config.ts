@@ -26,6 +26,9 @@ export function renderConfigReport({ config, path }: ConfigReport): string {
     config.githubApp === undefined
       ? 'github_app: not configured'
       : `github_app: ${config.githubApp.appId}, key ${config.githubApp.privateKeyPath}`,
+    config.web === undefined
+      ? 'web: not configured'
+      : `web: port ${config.web.port}, url ${config.web.url}`,
   ].join('\n')}\n`;
 }
 

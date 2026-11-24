@@ -249,3 +249,27 @@ export function createStatusReporter(options: StatusReporterOptions): StatusRepo
       }),
   };
 }
+
+/** The run page of run `runId`, reached through `origin` (`web.url`). */
+export function runPageUrl(origin: string, runId: string): string {
+  return `${origin}/runs/${runId}`;
+}
+
+/**
+ * `reporter`, with a Details link to the run's page on each lane status that carries a run id:
+ * the `pending` status and the final one alike. A status with no run id, and the declaration
+ * refusal, are posted as they are.
+ */
+export function withDetailsLinks(reporter: StatusReporter, origin: string): StatusReporter {
+  return {
+    reportLane: (target, lane, status) =>
+      reporter.reportLane(
+        target,
+        lane,
+        status.runId === undefined
+          ? status
+          : { ...status, targetUrl: runPageUrl(origin, status.runId) },
+      ),
+    reportRefusal: (target, cause) => reporter.reportRefusal(target, cause),
+  };
+}

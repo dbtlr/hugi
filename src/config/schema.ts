@@ -26,6 +26,16 @@ export type HugiConfig = {
   readonly runs: { readonly maxAgeDays: number; readonly maxSizeGb: number };
   /** The GitHub App that posts statuses; absent when none is configured (`hugi run` needs none). */
   readonly githubApp?: GitHubAppConfig;
+  /** The run page `hugi serve` serves; absent when there is none, and then no Details link either. */
+  readonly web?: WebConfig;
+};
+
+/** Where the run page listens, and the origin that reaches it from outside the host. */
+export type WebConfig = {
+  /** The loopback port the run page listens on. */
+  readonly port: number;
+  /** An `http` or `https` origin with no trailing `/`, such as `https://hugi.example.ts.net`. */
+  readonly url: string;
 };
 
 /** Which GitHub App Hugi authenticates as, and where its private key lives on the host. */
@@ -49,6 +59,7 @@ const CPUS_RANGE = [1, 16] as const;
 const MEMORY_GB_RANGE = [2, 64] as const;
 const MAX_AGE_DAYS_RANGE = [1, 3650] as const;
 const MAX_SIZE_GB_RANGE = [1, 100_000] as const;
+const WEB_PORT_RANGE = [1024, 65_535] as const;
 
 const LOGIN = /^[A-Za-z0-9]+([-_][A-Za-z0-9]+)*$/u;
 const LOGIN_MAX = 39;
@@ -211,6 +222,75 @@ function readGitHubApp(value: unknown): GitHubAppConfig | undefined {
   return { appId, privateKeyPath: path };
 }
 
+/** A URL as written: its scheme, its authority, and whatever follows the authority. */
+const URL_PARTS = /^https?:\/\/(?<authority>[^/?#]*)(?<rest>.*)$/isu;
+
+/** What `rest`, the text after a URL's authority, holds that an origin may not, if anything. */
+function extraOf(rest: string): string | undefined {
+  const path = rest.replace(/[?#].*$/su, '');
+  if (path !== '' && path !== '/') {
+    return 'path';
+  }
+  const query = rest.indexOf('?');
+  const fragment = rest.indexOf('#');
+  if (query !== -1 && (fragment === -1 || query < fragment)) {
+    return 'query';
+  }
+  return fragment === -1 ? undefined : 'fragment';
+}
+
+/** `web.url` as an origin: http or https, a host and an optional port, a lone trailing `/` dropped. */
+function webUrlOf(value: unknown): string {
+  const path = 'web.url';
+  if (value === undefined) {
+    refuse(path, 'is required: the http or https origin that reaches the run page');
+  }
+  const expected = `must be an http or https origin, such as https://hugi.example.ts.net, not ${describe(value)}`;
+  const parts = typeof value === 'string' ? URL_PARTS.exec(value)?.groups : undefined;
+  if (typeof value !== 'string' || parts === undefined) {
+    refuse(path, expected);
+  }
+  const { authority = '', rest = '' } = parts;
+  if (authority.includes('@')) {
+    refuse(path, `must have no credentials, not ${describe(value)}`);
+  }
+  const extra = extraOf(rest);
+  if (extra !== undefined) {
+    refuse(path, `must have no ${extra}: give the origin alone, not ${describe(value)}`);
+  }
+  if (!URL.canParse(value)) {
+    refuse(path, expected);
+  }
+  const url = new URL(value);
+  if (url.port === '0') {
+    refuse(path, `must not have port 0, not ${describe(value)}`);
+  }
+  // The origin must be the url as written, up to letter case and a lone trailing `/`, so a
+  // backslash, a short IPv4 form or a default port is never quietly rewritten.
+  if (url.origin !== value.replace(/\/$/u, '').toLowerCase()) {
+    const defaultPort = url.port === '' && /:\d+$/u.test(authority);
+    refuse(
+      path,
+      defaultPort
+        ? `must not name the default port: drop it, as in ${url.origin}, not ${describe(value)}`
+        : `must be written as the origin it names, ${url.origin}, not ${describe(value)}`,
+    );
+  }
+  return url.origin;
+}
+
+function readWeb(value: unknown): WebConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const web = mappingOf(value, 'web', ['port', 'url']);
+  if (web.port === undefined) {
+    refuse('web.port', 'is required: the loopback port the run page listens on');
+  }
+  const port = integerOf(web.port, 'web.port', WEB_PORT_RANGE, 0);
+  return { port, url: webUrlOf(web.url) };
+}
+
 /** Validate the parsed configuration text; throws a `ConfigError` for the first problem found. */
 export function validateConfig(parsed: unknown): HugiConfig {
   const top = mappingOf(parsed, 'configuration', [
@@ -220,6 +300,7 @@ export function validateConfig(parsed: unknown): HugiConfig {
     'vm',
     'runs',
     'github_app',
+    'web',
   ]);
   if (top.repositories === undefined) {
     refuse('repositories', 'is required: list the repositories to enrol as owner/name');
@@ -238,8 +319,10 @@ export function validateConfig(parsed: unknown): HugiConfig {
   }
   const allowlist = distinctStrings(top.allowlist, 'allowlist', 'a GitHub login', isLogin);
   const githubApp = readGitHubApp(top.github_app);
+  const web = readWeb(top.web);
   return Object.freeze({
     ...(githubApp === undefined ? {} : { githubApp: Object.freeze(githubApp) }),
+    ...(web === undefined ? {} : { web: Object.freeze(web) }),
     allowlist: Object.freeze(allowlist),
     pollIntervalSeconds: integerOf(
       top.poll_interval,

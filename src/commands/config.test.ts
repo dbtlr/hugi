@@ -42,7 +42,23 @@ test('a valid file exits 0 and prints the effective configuration', async () => 
   expect(stdout).toContain('vm: 4 cpus, 4 GB memory');
   expect(stdout).toContain('runs: keep 30 days, up to 5 GB');
   expect(stdout).toContain('github_app: not configured');
+  expect(stdout).toContain('web: not configured');
   expect(stdout).not.toContain('path');
+});
+
+test('a configured web prints its port and the origin, a trailing slash dropped', async () => {
+  const { stdout } = await hugi(['config', 'check', '--config', '/c.yaml'], {
+    '/c.yaml': `${VALID}web:\n  port: 8470\n  url: https://hugi.example.ts.net/\n`,
+  });
+  expect(stdout).toContain('web: port 8470, url https://hugi.example.ts.net\n');
+});
+
+test('a refused web fails the check, naming the key', async () => {
+  const { exitCode, stderr } = await hugi(['config', 'check', '--config', '/c.yaml'], {
+    '/c.yaml': `${VALID}web:\n  port: 80\n  url: https://hugi.example.ts.net\n`,
+  });
+  expect(exitCode).toBe(1);
+  expect(stderr).toContain('web.port: must be between 1024 and 65535');
 });
 
 test('a configured github_app prints its id and key path', async () => {

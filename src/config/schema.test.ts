@@ -227,3 +227,105 @@ test.each(refusals)('refuses %s', (_name, input, message) => {
   expect(() => validateConfig(input)).toThrow(ConfigError);
   expect(() => validateConfig(input)).toThrow(message);
 });
+
+const WEB = { port: 8470, url: 'https://hugi.example.ts.net' };
+
+test('a web block is read, its url as an origin', () => {
+  expect(validateConfig({ ...MINIMAL, web: WEB }).web).toEqual({
+    port: 8470,
+    url: 'https://hugi.example.ts.net',
+  });
+});
+
+test('without web the configuration has none', () => {
+  expect('web' in validateConfig(MINIMAL)).toBe(false);
+});
+
+test.each([
+  [
+    'a lone trailing slash is dropped',
+    'https://hugi.example.ts.net/',
+    'https://hugi.example.ts.net',
+  ],
+  ['an http origin with a port is kept', 'http://valhalla:8470', 'http://valhalla:8470'],
+  ['an upper-case host is lowered', 'https://Hugi.Example.TS.net', 'https://hugi.example.ts.net'],
+  ['an IPv6 host is kept', 'http://[::1]:9000', 'http://[::1]:9000'],
+  ['an upper-case scheme is lowered', 'HTTPS://hugi.example.ts.net', 'https://hugi.example.ts.net'],
+])('web.url: %s', (_name, url, origin) => {
+  expect(validateConfig({ ...MINIMAL, web: { port: 8470, url } }).web?.url).toBe(origin);
+});
+
+test.each([1024, 65_535])('web.port %d is admitted', (port) => {
+  expect(validateConfig({ ...MINIMAL, web: { ...WEB, port } }).web?.port).toBe(port);
+});
+
+const webRefusals: readonly [string, unknown, string][] = [
+  ['a web that is not a mapping', 'https://x', 'web: must be a mapping'],
+  ['an unknown web key', { ...WEB, host: '0.0.0.0' }, 'web.host: is not a known key'],
+  ['a web without a port', { url: WEB.url }, 'web.port: is required'],
+  ['a web without a url', { port: 8470 }, 'web.url: is required'],
+  ['a port under 1024', { ...WEB, port: 1023 }, 'web.port: must be between 1024 and 65535'],
+  ['a port over 65535', { ...WEB, port: 65_536 }, 'web.port: must be between 1024 and 65535'],
+  ['a string port', { ...WEB, port: '8470' }, 'web.port: must be an integer'],
+  ['a url that is not a string', { ...WEB, url: 8470 }, 'web.url: must be an http or https origin'],
+  ['a url that does not parse', { ...WEB, url: 'not a url' }, 'web.url: must be an http or https'],
+  ['a url with another scheme', { ...WEB, url: 'ftp://hugi.example' }, 'web.url: must be an http'],
+  ['a url with a path', { ...WEB, url: 'https://x.example/hugi' }, 'web.url: must have no path'],
+  [
+    'a url with a deeper path',
+    { ...WEB, url: 'https://x.example/a/' },
+    'web.url: must have no path',
+  ],
+  [
+    'a url with two trailing slashes',
+    { ...WEB, url: 'https://x.example//' },
+    'web.url: must have no path',
+  ],
+  ['a url with a query', { ...WEB, url: 'https://x.example?a=1' }, 'web.url: must have no query'],
+  [
+    'a url with an empty query',
+    { ...WEB, url: 'https://x.example/?' },
+    'web.url: must have no query',
+  ],
+  [
+    'a url with a fragment',
+    { ...WEB, url: 'https://x.example#top' },
+    'web.url: must have no fragment',
+  ],
+  [
+    'a url with a user',
+    { ...WEB, url: 'https://me@x.example' },
+    'web.url: must have no credentials',
+  ],
+  [
+    'a url with a password',
+    { ...WEB, url: 'https://me:pw@x.example' },
+    'web.url: must have no credentials',
+  ],
+  [
+    'a url a backslash would cut short',
+    { ...WEB, url: String.raw`https://x.example\evil` },
+    'web.url: must be written as the origin it names',
+  ],
+  [
+    'a url whose IPv4 host would be rewritten',
+    { ...WEB, url: 'https://1.2.3' },
+    'web.url: must be written as the origin it names',
+  ],
+  ['a url with port 0', { ...WEB, url: 'https://x.example:0' }, 'web.url: must not have port 0'],
+  [
+    'a url with the default https port',
+    { ...WEB, url: 'https://x.example:443' },
+    'web.url: must not name the default port',
+  ],
+  [
+    'a url with the default http port',
+    { ...WEB, url: 'http://x.example:80/' },
+    'web.url: must not name the default port',
+  ],
+];
+
+test.each(webRefusals)('refuses %s', (_name, web, message) => {
+  expect(() => validateConfig({ ...MINIMAL, web })).toThrow(ConfigError);
+  expect(() => validateConfig({ ...MINIMAL, web })).toThrow(message);
+});
