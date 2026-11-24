@@ -1,7 +1,7 @@
 /**
  * The run page's one stylesheet, inlined in every page: the Content-Security-Policy allows inline
  * styles and nothing else, so the page uses system fonts and loads nothing. The values are the
- * reviewed design's (HUGI-22, variant A): a serif verdict sentence, 44px step rows with a chevron
+ * reviewed design's: a serif verdict sentence, 44px step rows with a chevron
  * column, the step that explains the verdict tinted and barred in the failure colour, logs that
  * open at their last line, and a full-bleed layout below 600px.
  */
