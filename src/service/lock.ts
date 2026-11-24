@@ -1,6 +1,7 @@
 /**
  * The single-instance lock of `hugi serve` (`resolveServeLockPath`): the lock file opened with
- * the kernel's exclusive lock (`../file-lock`), so there is never a stale lock to judge. The file records the holder's pid, for a refusal and for `hugi service status`.
+ * the kernel's exclusive lock (`../file-lock`), so there is never a stale lock to judge. The file
+ * records the holder's pid, for a refusal and for `hugi service status`.
  *
  * `hugi service status` takes the lock for an instant to see whether it is free, so a start that
  * finds it held tries again for a moment before it refuses; and it reads a holder only when the

@@ -5,7 +5,7 @@
  * read in place, with lazy fetching off, and reaches the guest as a snapshot (`./snapshot`). A pull
  * request is read at GitHub's merge commit, only after checking the merge is current (ADR-0005).
  */
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, unlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { Host } from '@loomcli/core';
@@ -114,7 +114,7 @@ export type OpenedSource = HostSource & CommitMessageReader;
 
 export type HostSourceOptions = {
   readonly cacheDir: string;
-  /** An optional deadline for each host git call. */
+  /** An optional deadline for each host git call, and for the wait for a cached clone's lock. */
   readonly deadlineMs?: number;
   /** The clock that deadline is measured on; the system clock unless a test replaces it. */
   readonly clock?: Clock;
@@ -194,9 +194,15 @@ async function lockClone(
   }
   const clock = options.clock ?? systemClock;
   const started = clock.now();
+  const lockPath = `${gitDir}.hugi-lock`;
   for (;;) {
-    // oxlint-disable-next-line no-await-in-loop -- each try waits for the one before it
-    const handle = await openExclusiveLock(`${gitDir}.hugi-lock`);
+    let handle;
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- each try waits for the one before it
+      handle = await openExclusiveLock(lockPath);
+    } catch (error) {
+      throw new SourceError(`Cannot open the cached clone's lock ${lockPath}: ${messageOf(error)}`);
+    }
     if (handle !== undefined) {
       return async () => handle.close();
     }
@@ -211,51 +217,59 @@ async function lockClone(
   }
 }
 
-/** The prefix of the temporary directories a first clone of `gitDir` is built in. */
-const partialPrefix = (gitDir: string) => `${basename(gitDir)}.partial-`;
+/**
+ * The directory the first clones of `gitDir` are built in, `repos/.partial/<owner>__<name>.git`.
+ * No clone is named `.partial`, since every clone's name holds `__` and ends in `.git`.
+ */
+const partialsDirOf = (reposDir: string, gitDir: string) =>
+  join(reposDir, '.partial', basename(gitDir));
 
 /**
- * Delete what a killed clone or fetch left behind, while the clone's lock is held, so no other Hugi
- * process can be writing: every temporary directory a first clone of `gitDir` was being built in,
- * and every git lock file (`*.lock`) inside the clone. git leaves those when it is killed, and any
- * one of them fails every later fetch of the repository.
+ * Delete what a killed clone or fetch left behind: every temporary directory a first clone of
+ * `gitDir` was being built in, and every git lock file (`*.lock`) inside the clone. git leaves
+ * those when it is killed, and any one of them fails every later fetch of the repository. On macOS
+ * the clone's lock is held, so no other Hugi process can be writing; where no lock exists, this
+ * runs unlocked.
  */
 async function removeLeftovers(reposDir: string, gitDir: string, cloned: boolean): Promise<void> {
-  const partials = (await readdir(reposDir)).filter((name) =>
-    name.startsWith(partialPrefix(gitDir)),
-  );
-  await Promise.all(
-    partials.map(async (name) => rm(join(reposDir, name), { force: true, recursive: true })),
-  );
-  if (!cloned) {
-    return;
-  }
-  const lockFiles = (await readdir(gitDir, { recursive: true })).filter((path) =>
-    path.endsWith('.lock'),
-  );
-  await Promise.all(lockFiles.map(async (path) => removeLockFile(join(gitDir, path))));
-}
-
-/** Delete a git lock file; one already gone, or a directory that only ends in `.lock`, is left. */
-async function removeLockFile(file: string): Promise<void> {
-  try {
-    if ((await lstat(file)).isFile()) {
-      await unlink(file);
-    }
-  } catch (error) {
-    if (errnoCode(error) !== 'ENOENT') {
-      throw error;
-    }
+  await rm(partialsDirOf(reposDir, gitDir), { force: true, recursive: true });
+  if (cloned) {
+    await removeLockFiles(gitDir);
   }
 }
 
 /**
- * The first clone of `spec`: built in a temporary directory beside `gitDir` and moved into place
- * only once git has finished, so a clone killed partway never leaves a `gitDir` a later open reads.
+ * Delete every git lock file under `dir`: the regular files whose names end in `.lock`. It descends
+ * only into real directories, never through a symlink, so nothing outside the clone is touched.
+ */
+async function removeLockFiles(dir: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await removeLockFiles(path);
+      } else if (entry.isFile() && entry.name.endsWith('.lock')) {
+        await unlink(path).catch((error: unknown) => {
+          if (errnoCode(error) !== 'ENOENT') {
+            throw error;
+          }
+        });
+      }
+    }),
+  );
+}
+
+/**
+ * The first clone of `spec`: built in a temporary directory under `partialsDirOf` and moved into
+ * place only once git has finished, so a clone killed partway never leaves a `gitDir` a later open
+ * reads.
  */
 async function cloneInto(git: Git, spec: GitHubRepositorySpec, reposDir: string, gitDir: string) {
-  const building = await mkdtemp(join(reposDir, partialPrefix(gitDir)));
+  const partialsDir = partialsDirOf(reposDir, gitDir);
   try {
+    await mkdir(partialsDir, { mode: 0o700, recursive: true });
+    const building = await mkdtemp(join(partialsDir, 'clone-'));
     await gitOrThrow(git, undefined, [
       'clone',
       '--bare',
@@ -266,12 +280,28 @@ async function cloneInto(git: Git, spec: GitHubRepositorySpec, reposDir: string,
     ]);
     await rename(building, gitDir);
   } catch (error) {
-    await rm(building, { force: true, recursive: true });
     throw error instanceof SourceError
       ? error
       : new SourceError(`Cannot clone ${spec.name} into the cache: ${messageOf(error)}`);
+  } finally {
+    await rm(partialsDir, { force: true, recursive: true });
   }
 }
+
+/**
+ * git's own housekeeping of the clone, such as packing the many small packs that lazy reads leave,
+ * run to the end while the lock is held. Every git call has automatic maintenance off (`./git`), so
+ * none starts a detached one that outlives the lock. A failed run is only housekeeping missed, so
+ * it does not fail the read.
+ */
+const MAINTENANCE_ARGS = [
+  '-c',
+  'maintenance.autoDetach=false',
+  'maintenance',
+  'run',
+  '--auto',
+  '--quiet',
+];
 
 /**
  * Open the bare, blob-less clone of `spec` in the cache and run `work` on it while holding the
@@ -314,6 +344,7 @@ async function withCachedClone<T>(
     }
     if (cloned) {
       await gitOrThrow(git, gitDir, ['rev-parse', '--git-dir']);
+      await git(gitDir, MAINTENANCE_ARGS);
     } else {
       await cloneInto(git, spec, reposDir, gitDir);
     }
