@@ -304,7 +304,7 @@ const webRefusals: readonly [string, unknown, string][] = [
   ],
   [
     'a url a backslash would cut short',
-    { ...WEB, url: 'https://x.example\\evil' },
+    { ...WEB, url: String.raw`https://x.example\evil` },
     'web.url: must be written as the origin it names',
   ],
   [

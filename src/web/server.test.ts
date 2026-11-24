@@ -81,7 +81,11 @@ test.each([
   ['a Host with a space', 'GET /runs/x HTTP/1.1\r\nHost: a b\r\nConnection: close\r\n\r\n', 421],
   ['a Host with a slash', 'GET /runs/x HTTP/1.1\r\nHost: x/y\r\nConnection: close\r\n\r\n', 421],
   ['an HTTP/1.0 request with no Host', 'GET /runs/x HTTP/1.0\r\n\r\n', 421],
-  ['a CONNECT to the page itself', 'CONNECT PAGE HTTP/1.1\r\nHost: PAGE\r\nConnection: close\r\n\r\n', 404],
+  [
+    'a CONNECT to the page itself',
+    'CONNECT PAGE HTTP/1.1\r\nHost: PAGE\r\nConnection: close\r\n\r\n',
+    404,
+  ],
 ])('%s is answered without a logged error', async (_name, text, status) => {
   const errors: string[] = [];
   const listener = await start(async () => ({ kind: 'not-found' }), 0, errors);
