@@ -85,7 +85,7 @@ The overlap check makes that order irrelevant. After the install, the step lists
 
 ### Hugi's own failures
 
-A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed. A check whose own commands fail, or print output that Hugi cannot read, fails as Hugi's own, because the check cannot pass. So does a check that the step's `timeout-minutes` or an interrupt ends before it returns, because it is unfinished. A timeout during one of the action's own commands, such as `mise --version`, `mise install`, `mise ls`, or `mise env`, stays an ordinary timeout that `continue-on-error` covers. So does a step `PATH` that does not reach the guest's mise, and a failure to read the guest's mise version when `version` is set.
+A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed. A check whose own commands fail, or print output that Hugi cannot read, fails as Hugi's own, because the check cannot pass. So does a step `PATH` that does not reach the guest's mise, a failure to read the guest's mise version when `version` is set, and a check that the step's `timeout-minutes` or an interrupt ends before it returns, because it is unfinished. A timeout during one of the action's own commands, such as step 6's `mise --version`, `mise install`, `mise ls`, or `mise env`, stays an ordinary timeout that `continue-on-error` covers.
 
 ### Later steps
 

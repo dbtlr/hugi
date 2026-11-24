@@ -469,7 +469,7 @@ function overlapLines(step: Step, workflowBins: readonly string[]): string[] {
     `  jq -nc --arg role "$1" --arg dir "$2" --arg real "$real" '{role: $role, dir: $dir, real: $real, executables: ${UNPREFIXED}}' --args "\${names[@]}"; }`,
     `mise env --paths > ${shellQuote(step.files.paths)}`,
     '{',
-    '  while IFS= read -r dir; do',
+    '  while IFS= read -r dir || [ -n "$dir" ]; do',
     '    if [ -n "$dir" ]; then executables config "$dir"; fi',
     `  done < ${shellQuote(step.files.paths)}`,
     `  for dir in ${workflowBins.map(shellQuote).join(' ')}; do executables workflow "$dir"; done`,
