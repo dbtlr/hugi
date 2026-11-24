@@ -514,6 +514,12 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(passed.reason).toBe('passed');
   });
 
+  test('runs mise ls in the working directory, as the action does', async () => {
+    const h = harness();
+    await h.run(requestOf({ settings: { workingDirectory: 'pkg' } }));
+    expect(h.script('ls')).toMatch(new RegExp(`^cd '${WORKSPACE}/pkg'\\nmise ls$`, 'm'));
+  });
+
   test('a matching version passes the check', async () => {
     const h = harness();
     expect((await h.run(requestOf({ settings: { version: '2026.11.12' } }))).reason).toBe('passed');
@@ -555,6 +561,55 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       {},
       ['probe', 'bins'],
       '0 directories for 1 pinned workflow tools',
+    ],
+    [
+      'a config listing that exits non-zero',
+      { exitCodes: { listing: 1 } },
+      {},
+      ['probe', 'bins', 'prepare', 'listing'],
+      'mise config ls exited with code 1',
+    ],
+    [
+      'a config listing Hugi cannot read',
+      { configListing: 'not json\n' },
+      {},
+      ['probe', 'bins', 'prepare', 'listing'],
+      'listing',
+    ],
+    [
+      'a mise ls --current that exits non-zero',
+      { exitCodes: { requests: 1 } },
+      {},
+      ['probe', 'bins', 'prepare', 'listing', 'requests'],
+      'mise ls --current exited with code 1',
+    ],
+    [
+      'a mise ls --current Hugi cannot read',
+      { configRequests: 'not json' },
+      {},
+      ['probe', 'bins', 'prepare', 'listing', 'requests'],
+      'mise ls --current',
+    ],
+    [
+      'a lock file search that exits non-zero',
+      { exitCodes: { 'install-check': 1 } },
+      {},
+      ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check'],
+      'the lock file search exited with code 1',
+    ],
+    [
+      'a lock file search Hugi cannot read',
+      { installCheck: 'not json\n' },
+      {},
+      ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check'],
+      'the install check',
+    ],
+    [
+      'a probe Hugi cannot read',
+      { probe: 'not json' },
+      {},
+      ['probe'],
+      'the mise probe',
     ],
     [
       'a loaded config file outside the workspace',

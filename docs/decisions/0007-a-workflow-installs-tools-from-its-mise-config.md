@@ -83,7 +83,7 @@ The overlap check makes that order irrelevant. After the install, the step lists
 
 ### Hugi's own failures
 
-A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed.
+A failure marked *Hugi's own* is one that GitHub's runner would not have: Hugi stops because it cannot promise GitHub's result. It fails the lane even when the step sets `continue-on-error`, so the loud failure that the repository rule asks for is never swallowed. A check whose own commands fail, or print output that Hugi cannot read, fails as Hugi's own, because the check cannot pass.
 
 ### Later steps
 
