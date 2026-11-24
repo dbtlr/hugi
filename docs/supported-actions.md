@@ -52,6 +52,8 @@ Any other input fails resolution. The lane reader already refuses `steps.<id>.ou
 
 **Known gap:** Hugi's mise is the golden image's unless `version` pins it, and GitHub's runner downloads the newest release older than `minimum_release_age`.
 
+**Known gap:** Hugi does not read `cache_key`. A value that is not a valid Handlebars template fails the action on GitHub when `cache` is true, and passes in Hugi.
+
 **Known gap:** Hugi passes no GitHub token, so a tool install that calls GitHub's API can meet a rate limit under Hugi that it does not meet on GitHub.
 
 ## Versions and repository files
