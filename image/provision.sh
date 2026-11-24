@@ -12,7 +12,21 @@ export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:$PATH"
 
 # fish is a program loomcli's tests start; its workflow runs `brew install fish`, which is a
 # no-op when the formula is already here.
+# HOMEBREW_NO_AUTO_UPDATE keeps `brew install` from refreshing the formula index, so a mise the
+# base image already holds would stay at the base image's release. Refresh it and upgrade mise.
+brew update --quiet
 brew install mise fish
+brew upgrade mise
+
+# A jdx/mise-action step needs these flags and reproduces none of the action's fallbacks for older
+# releases (ADR-0007), so an image whose mise lacks one fails here instead of in every such lane.
+for need in 'env --paths' 'env --json' 'install --locked'; do
+  set -- $need
+  if ! mise "$1" --help | grep -qE -- "(^|[[:space:]])$2([[:space:],]|$)"; then
+    echo "mise $(mise --version) lacks mise $need, which a jdx/mise-action step needs" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "$HOME/.config/mise"
 cp "$SHARE/tools.toml" "$HOME/.config/mise/config.toml"

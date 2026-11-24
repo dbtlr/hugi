@@ -21,7 +21,7 @@ The first build downloads the base image (about 33 GB) and takes roughly 15 to 3
 | Part | Source |
 | --- | --- |
 | macOS 15 base | `ghcr.io/cirruslabs/macos-sequoia-base`, pinned by digest in `build.sh` |
-| mise, fish | Homebrew, in the base image or installed during the build |
+| mise, fish | Homebrew, in the base image or installed during the build. The build refreshes Homebrew's formula index and upgrades mise to its newest release, and fails when mise lacks a flag that a `jdx/mise-action` step needs ([ADR-0007](../docs/decisions/0007-a-workflow-installs-tools-from-its-mise-config.md)). |
 | Node, pnpm, Bun, Rust (with clippy and rustfmt), PowerShell | [`tools.toml`](tools.toml), installed by mise as the global config |
 | Warm package caches | [`warm.tsv`](warm.tsv): one install per enrolled lane, then the clone is deleted |
 
