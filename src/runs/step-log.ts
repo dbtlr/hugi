@@ -42,6 +42,37 @@ function refusedFor(error: unknown): StepLogRead {
   return refused(code === 'ENOENT' ? 'missing' : 'unreadable', messageOf(error));
 }
 
+type ReadAt = {
+  readonly read: (
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => Promise<{ bytesRead: number }>;
+};
+
+/**
+ * Fill `buffer` from `position`, reading again after a short read, as a single read may return
+ * fewer bytes than asked. Returns what was read, shorter only when the file ended first.
+ */
+export async function readFully(handle: ReadAt, buffer: Buffer, position: number): Promise<Buffer> {
+  let filled = 0;
+  while (filled < buffer.length) {
+    // oxlint-disable-next-line no-await-in-loop -- each read continues where the last one ended
+    const { bytesRead } = await handle.read(
+      buffer,
+      filled,
+      buffer.length - filled,
+      position + filled,
+    );
+    if (bytesRead === 0) {
+      break;
+    }
+    filled += bytesRead;
+  }
+  return buffer.subarray(0, filled);
+}
+
 /**
  * Read the step log at `path`: all of it, or only its last `tailBytes`. The file is opened without
  * following a link and without waiting on a pipe, then checked again as opened, so one swapped in
@@ -70,8 +101,7 @@ export async function readStepLog(
       }
       const start = Math.max(0, opened.size - tailBytes);
       const buffer = Buffer.alloc(opened.size - start);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-      return { bytes: buffer.subarray(0, bytesRead), kind: 'read', start };
+      return { bytes: await readFully(handle, buffer, start), kind: 'read', start };
     } finally {
       await handle.close();
     }

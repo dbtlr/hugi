@@ -73,6 +73,13 @@ describe('the text the page shows of a log', () => {
     expect(logTextOf(read, 10)).toEqual({ cut: true, text: 'last\n' });
   });
 
+  test('a log read whole that is one byte over the limit is still cut', () => {
+    // A file of exactly LOG_READ_BYTES is read from byte 0, look-behind byte included.
+    const read = Buffer.from(`y${'x'.repeat(LOG_LIMIT_BYTES - 6)}\nlast\n`);
+    expect(read.length).toBe(LOG_LIMIT_BYTES + 1);
+    expect(logTextOf(read, 0)).toEqual({ cut: true, text: 'last\n' });
+  });
+
   test('a tail whose first byte begins a line keeps that line', () => {
     const tail = `first\n${'x'.repeat(LOG_LIMIT_BYTES - 6)}`;
     const read = Buffer.concat([Buffer.from('\n'), Buffer.from(tail)]);
