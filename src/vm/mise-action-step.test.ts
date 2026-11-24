@@ -597,6 +597,20 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
   });
 });
 
+test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
+  "a step environment that sets %s, which Hugi's isolation replaces, fails the step as Hugi's own",
+  async (name) => {
+    const h = harness();
+    const result = await h.run(
+      requestOf({ step: { continueOnError: true, env: { [name]: '/repo/mise' } } }),
+    );
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain(name);
+    expect(result.steps[2]).not.toHaveProperty('continuedOnError');
+    expect(h.phases()).toEqual([]);
+  },
+);
+
 /** The scripts a run of the step with `settings` and no workflow tools generated. */
 async function scriptsOf(
   settings: Partial<MiseActionSettings>,

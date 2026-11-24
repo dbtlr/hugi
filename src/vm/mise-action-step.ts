@@ -110,6 +110,9 @@ const workingDirectory = (settings: MiseActionSettings): string =>
     ? GUEST_RUNNER_PATHS.workspace
     : `${GUEST_RUNNER_PATHS.workspace}/${settings.workingDirectory}`;
 
+/** The variables of the isolation below, which a step environment that sets them would lose. */
+const ISOLATION_VARIABLES = ['MISE_CEILING_PATHS', 'MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE'];
+
 /**
  * The environment of the step's own commands: the step's, then what it has written, then the
  * isolation that keeps every config outside the workspace from loading.
@@ -458,7 +461,14 @@ async function exportEnvironment(step: Step): Promise<Verdict | undefined> {
 
 /** The action's steps 1 to 11, in its order (ADR-0007). */
 async function runAction(step: Step): Promise<Verdict> {
-  const { settings } = step.input;
+  const { env, settings } = step.input;
+  const replaced = ISOLATION_VARIABLES.find((name) => env[name] !== undefined);
+  if (replaced !== undefined) {
+    return hugisOwn(
+      step,
+      `the step's environment sets ${replaced}, which Hugi replaces to keep the image's mise config out of the step, so the step cannot run as it would on GitHub's runner`,
+    );
+  }
   if (settings.miseEnv !== undefined) {
     exportVariable(step, 'MISE_ENV', settings.miseEnv);
   }
