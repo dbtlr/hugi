@@ -261,7 +261,22 @@ function webUrlOf(value: unknown): string {
   if (!URL.canParse(value)) {
     refuse(path, expected);
   }
-  return new URL(value).origin;
+  const url = new URL(value);
+  if (url.port === '0') {
+    refuse(path, `must not have port 0, not ${describe(value)}`);
+  }
+  // The origin must be the url as written, up to letter case and a lone trailing `/`, so a
+  // backslash, a short IPv4 form or a default port is never quietly rewritten.
+  if (url.origin !== value.replace(/\/$/u, '').toLowerCase()) {
+    const defaultPort = url.port === '' && /:\d+$/u.test(authority);
+    refuse(
+      path,
+      defaultPort
+        ? `must not name the default port: drop it, as in ${url.origin}, not ${describe(value)}`
+        : `must be written as the origin it names, ${url.origin}, not ${describe(value)}`,
+    );
+  }
+  return url.origin;
 }
 
 function readWeb(value: unknown): WebConfig | undefined {

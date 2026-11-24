@@ -250,6 +250,7 @@ test.each([
   ['an http origin with a port is kept', 'http://valhalla:8470', 'http://valhalla:8470'],
   ['an upper-case host is lowered', 'https://Hugi.Example.TS.net', 'https://hugi.example.ts.net'],
   ['an IPv6 host is kept', 'http://[::1]:9000', 'http://[::1]:9000'],
+  ['an upper-case scheme is lowered', 'HTTPS://hugi.example.ts.net', 'https://hugi.example.ts.net'],
 ])('web.url: %s', (_name, url, origin) => {
   expect(validateConfig({ ...MINIMAL, web: { port: 8470, url } }).web?.url).toBe(origin);
 });
@@ -300,6 +301,27 @@ const webRefusals: readonly [string, unknown, string][] = [
     'a url with a password',
     { ...WEB, url: 'https://me:pw@x.example' },
     'web.url: must have no credentials',
+  ],
+  [
+    'a url a backslash would cut short',
+    { ...WEB, url: 'https://x.example\\evil' },
+    'web.url: must be written as the origin it names',
+  ],
+  [
+    'a url whose IPv4 host would be rewritten',
+    { ...WEB, url: 'https://1.2.3' },
+    'web.url: must be written as the origin it names',
+  ],
+  ['a url with port 0', { ...WEB, url: 'https://x.example:0' }, 'web.url: must not have port 0'],
+  [
+    'a url with the default https port',
+    { ...WEB, url: 'https://x.example:443' },
+    'web.url: must not name the default port',
+  ],
+  [
+    'a url with the default http port',
+    { ...WEB, url: 'http://x.example:80/' },
+    'web.url: must not name the default port',
   ],
 ];
 
