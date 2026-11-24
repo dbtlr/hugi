@@ -9,7 +9,7 @@ Hugi runs a repository's macOS CI lanes in throwaway VMs on its own host and rep
 ## Running
 
 **Lane**:
-One job, with its matrix values fixed, that a repository's lane declaration names for Hugi to run on macOS. The job's workflow file, GitHub's or a Hugi workflow, is the lane's only definition, except that a lane declared with `tools: mise` also takes tools from the repository's mise config.
+One job, with its matrix values fixed, that a repository's lane declaration names for Hugi to run on macOS. The job's workflow file, GitHub's or a Hugi workflow, is the lane's only definition, except that a lane declared with `tools: mise` also takes tools from the repository's mise config. A job that runs `jdx/mise-action` declares that source itself.
 _Avoid_: Job (when Hugi's unit is meant), pipeline, check
 
 **Step plan**:
