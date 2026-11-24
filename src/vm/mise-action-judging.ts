@@ -167,8 +167,6 @@ export type Probe = {
     readonly envPaths: boolean;
     readonly installLocked: boolean;
   };
-  /** `mise bin-paths` of the workflow tools' pinned specs. */
-  readonly workflowBins: readonly string[];
 };
 
 export function parseProbe(text: string): Probe {
@@ -178,15 +176,14 @@ export function parseProbe(text: string): Probe {
   } catch {
     throw new ToolOutputError('the mise probe is not JSON');
   }
-  const { dataDir, supports, version, workflowBins } = isMapping(parsed) ? parsed : {};
+  const { dataDir, supports, version } = isMapping(parsed) ? parsed : {};
   const { envJson, envPaths, installLocked } = isMapping(supports) ? supports : {};
   if (
     typeof version !== 'string' ||
     typeof dataDir !== 'string' ||
     typeof envJson !== 'boolean' ||
     typeof envPaths !== 'boolean' ||
-    typeof installLocked !== 'boolean' ||
-    !isTextList(workflowBins)
+    typeof installLocked !== 'boolean'
   ) {
     throw new ToolOutputError('the mise probe has an unknown shape');
   }
@@ -195,7 +192,6 @@ export function parseProbe(text: string): Probe {
     dataDir,
     supports: { envJson, envPaths, installLocked },
     version: (firstLine.trim().split(/\s+/u)[0] ?? '').replace(/^v/u, ''),
-    workflowBins,
   };
 }
 

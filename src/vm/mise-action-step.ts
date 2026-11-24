@@ -53,6 +53,8 @@ export type MiseActionInput = {
   readonly settings: MiseActionSettings;
   /** The workflow tools' specs. */
   readonly tools: readonly string[];
+  /** The environment the tool environment was computed with, where the workflow tools' bins are found. */
+  readonly workflowEnv: Environment;
   /**
    * The step's environment, without Hugi's runner value of `MISE_IGNORED_CONFIG_PATHS` and the
    * workflow tools' per-tool version variables, which GitHub's runner does not set.
@@ -124,19 +126,26 @@ function scriptEnvironment(step: Step): Environment {
 }
 
 /** Run one guest script of the step in `directory`; its exit code, unless the step was cut short. */
-async function runScript(
+function runScript(
   step: Step,
   phase: string,
   directory: string,
   lines: readonly string[],
 ): Promise<number> {
   const extraPath = prependPaths(step.input.extraPath, parsePathFile(step.writes.path.join('\n')));
-  const script = guestScript(
-    `mise-action ${step.input.index} ${phase}`,
-    scriptEnvironment(step),
-    [`mkdir -p ${shellQuote(step.files.configDir)}`, `cd ${shellQuote(directory)}`, ...lines],
-    extraPath,
+  return execScript(
+    step,
+    guestScript(
+      `mise-action ${step.input.index} ${phase}`,
+      scriptEnvironment(step),
+      [`mkdir -p ${shellQuote(step.files.configDir)}`, `cd ${shellQuote(directory)}`, ...lines],
+      extraPath,
+    ),
   );
+}
+
+/** Run `script` in the guest; its exit code, unless the step was cut short. */
+async function execScript(step: Step, script: string): Promise<number> {
   const exitCode = await step.tools.exec(script);
   // A deadline, an interrupt, or a lost VM ends the step where it is; the caller reports which.
   if (step.tools.signal.aborted) {
@@ -170,13 +179,8 @@ function addPath(step: Step, directory: string): void {
 const checksOverlap = (settings: MiseActionSettings): boolean =>
   settings.addShimsToPath || (settings.env && settings.exportPath);
 
-/** The guest's mise version, data directory and capabilities, and the workflow tools' bin directories. */
+/** The guest's mise version, data directory and capabilities. */
 async function probeMise(step: Step): Promise<Probe | Verdict> {
-  const pinned = pinnedSpecs(step.input.tools);
-  const bins =
-    pinned.length > 0 && checksOverlap(step.input.settings)
-      ? `"$(mise bin-paths ${pinned.map(shellQuote).join(' ')})"`
-      : "''";
   const exitCode = await runScript(step, 'probe', GUEST_RUNNER_PATHS.temp, [
     'version="$(mise --version)"',
     `if [ -n "\${MISE_DATA_DIR:-}" ]; then data="$MISE_DATA_DIR"`,
@@ -185,17 +189,49 @@ async function probeMise(step: Step): Promise<Probe | Verdict> {
     // The action's own test for `--locked`, on the help text, which is held whole before grep.
     'supports() { local help; help="$(NO_COLOR=1 mise "$1" --help 2>&1 || true)"',
     String.raw`  if grep -Eq -- "(^|[[:space:]])$2([[:space:],]|\$)" <<< "$help"; then echo true; else echo false; fi; }`,
-    `bins=${bins}`,
-    'jq -n --arg version "$version" --arg dataDir "$data" --arg bins "$bins" \\',
+    'jq -n --arg version "$version" --arg dataDir "$data" \\',
     '  --argjson envJson "$(supports env --json)" --argjson envPaths "$(supports env --paths)" \\',
     '  --argjson installLocked "$(supports install --locked)" \\',
-    `  '{version: $version, dataDir: $dataDir, workflowBins: ($bins | split("\\n") | map(select(. != ""))), supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}' \\`,
+    `  '{version: $version, dataDir: $dataDir, supports: {envJson: $envJson, envPaths: $envPaths, installLocked: $installLocked}}' \\`,
     `  > ${shellQuote(step.files.probe)}`,
   ]);
   if (exitCode !== 0) {
     return failed(`mise --version exited with code ${exitCode}`, exitCode);
   }
   return parseProbe(await step.tools.readFile(step.files.probe));
+}
+
+/**
+ * The workflow tools' bin directories, which the step puts ahead of the shims and checks for
+ * overlap: `mise bin-paths` for their pinned specs, in the environment the tool environment was
+ * computed with (ADR-0006), so the step's own mise variables cannot hide them. Hugi's own failure
+ * when mise cannot list one directory for each spec, since the overlap check would then pass
+ * without checking them.
+ */
+async function findWorkflowBins(step: Step): Promise<string[] | Verdict> {
+  const pinned = pinnedSpecs(step.input.tools);
+  if (pinned.length === 0 || !checksOverlap(step.input.settings)) {
+    return [];
+  }
+  const output = step.files.workflowBins;
+  const exitCode = await execScript(
+    step,
+    guestScript(`mise-action ${step.input.index} bins`, step.input.workflowEnv, [
+      `cd ${shellQuote(GUEST_RUNNER_PATHS.temp)}`,
+      `mise bin-paths ${pinned.map(shellQuote).join(' ')} > ${shellQuote(output)}`,
+    ]),
+  );
+  if (exitCode !== 0) {
+    return hugisOwn(step, `mise bin-paths for the workflow tools exited with code ${exitCode}`);
+  }
+  const bins = managedPaths(await step.tools.readFile(output));
+  if (bins.length < pinned.length) {
+    return hugisOwn(
+      step,
+      `mise bin-paths printed ${bins.length} directories for ${pinned.length} pinned workflow tools, so the overlap check cannot cover them`,
+    );
+  }
+  return bins;
 }
 
 /** Step 2: the guest's mise must be the version the step names, and have what the step needs. */
@@ -222,7 +258,7 @@ function checkMise(step: Step, probe: Probe): Verdict | undefined {
 }
 
 /** Steps 3 and 4: the action's defaults, then the shims and the workflow tools' bins on `PATH`. */
-function writeDefaultsAndShims(step: Step, probe: Probe): void {
+function writeDefaultsAndShims(step: Step, probe: Probe, workflowBins: readonly string[]): void {
   const { settings, toolPath } = step.input;
   if (settings.experimental) {
     exportDefault(step, 'MISE_EXPERIMENTAL', '1');
@@ -235,7 +271,7 @@ function writeDefaultsAndShims(step: Step, probe: Probe): void {
   if (settings.addShimsToPath) {
     addPath(step, posix.join(probe.dataDir, 'shims'));
     // Added last-first, so the first comes first on PATH, ahead of the shims.
-    for (const bin of orderedWorkflowBins(probe.workflowBins, toolPath).toReversed()) {
+    for (const bin of orderedWorkflowBins(workflowBins, toolPath).toReversed()) {
       addPath(step, bin);
     }
   }
@@ -434,7 +470,11 @@ async function runAction(step: Step): Promise<Verdict> {
   if (stop) {
     return stop;
   }
-  writeDefaultsAndShims(step, probe);
+  const workflowBins = await findWorkflowBins(step);
+  if (!Array.isArray(workflowBins)) {
+    return workflowBins;
+  }
+  writeDefaultsAndShims(step, probe, workflowBins);
   const early = (await prepare(step)) ?? (await checkConfig(step));
   if (early) {
     return early;
@@ -444,7 +484,7 @@ async function runAction(step: Step): Promise<Verdict> {
     return installed;
   }
   const overlap = checksOverlap(settings)
-    ? await checkOverlap(step, probe.workflowBins)
+    ? await checkOverlap(step, workflowBins)
     : undefined;
   if (overlap) {
     return overlap;

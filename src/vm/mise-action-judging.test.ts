@@ -25,7 +25,6 @@ const probe = (version: string) =>
     dataDir: '/Users/admin/.local/share/mise',
     supports: { envJson: true, envPaths: true, installLocked: false },
     version,
-    workflowBins: ['/wf/node/bin'],
   });
 
 describe('the lock file search', () => {
@@ -156,12 +155,11 @@ describe('the probe', () => {
     expect(parseProbe(probe('v2026.1.0 linux-x64')).version).toBe('2026.1.0');
   });
 
-  test('keeps the data directory, the capabilities and the workflow bins', () => {
+  test('keeps the data directory and the capabilities', () => {
     expect(parseProbe(probe('2026.11.12'))).toEqual({
       dataDir: '/Users/admin/.local/share/mise',
       supports: { envJson: true, envPaths: true, installLocked: false },
       version: '2026.11.12',
-      workflowBins: ['/wf/node/bin'],
     });
   });
 

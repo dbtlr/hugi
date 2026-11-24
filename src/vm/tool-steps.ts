@@ -56,7 +56,7 @@ export function guestScript(
 }
 
 /** The environment of the tool environment's computation and of the workflow's tools. */
-function workflowEnvironment(request: RunRequest): Environment {
+export function workflowEnvironment(request: RunRequest): Environment {
   return { ...githubEnvironment(request.event), ...toolVersionEnvironment(request.tools) };
 }
 

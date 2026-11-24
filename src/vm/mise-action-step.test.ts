@@ -167,6 +167,7 @@ const outcomes = (result: { steps: readonly { name: string; outcome: string }[] 
 
 const ALL_PHASES: MiseActionPhase[] = [
   'probe',
+  'bins',
   'prepare',
   'listing',
   'requests',
@@ -176,6 +177,8 @@ const ALL_PHASES: MiseActionPhase[] = [
   'ls',
   'env',
 ];
+/** The scripts that run with the step's environment and isolation: all but the workflow bins'. */
+const STEP_PHASES = ALL_PHASES.filter((phase) => phase !== 'bins');
 
 describe('a jdx/mise-action step (ADR-0007)', () => {
   test("runs at its own place after the checkout, doing the action's steps in order", async () => {
@@ -189,7 +192,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
       ['Step 3', 'success'],
     ]);
     const materialized = h.tart.events.indexOf('materialize');
-    expect(h.tart.events.slice(materialized, materialized + 11)).toEqual([
+    expect(h.tart.events.slice(materialized, materialized + 12)).toEqual([
       'materialize',
       ...ALL_PHASES.map((phase) => `mise action ${phase}`),
       'step 3',
@@ -200,7 +203,6 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     const h = harness({
       environment: JSON.stringify({ FOO: 'bar', PATH: '/ignored' }),
       paths: '/cfg/nu/bin\n/cfg/bin\n',
-      probe: probe({ workflowBins: ['/wf/node'] }),
     });
     await h.run(requestOf());
     const later = h.tart.launcherFor(3);
@@ -217,7 +219,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
   test("its own mise commands see only the repository's config, without Hugi's runner mise variables", async () => {
     const h = harness();
     await h.run(requestOf());
-    for (const phase of ALL_PHASES) {
+    for (const phase of STEP_PHASES) {
       const script = h.script(phase);
       expect(script).toContain("export MISE_CEILING_PATHS='/Users/admin/hugi'");
       expect(script).toContain(
@@ -231,9 +233,28 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
       expect(script).toContain('export PATH="');
     }
     expect(h.script('probe')).toContain("cd '/Users/admin/hugi/temp'");
-    for (const phase of ALL_PHASES.slice(1)) {
+    for (const phase of STEP_PHASES.slice(1)) {
       expect(h.script(phase)).toContain(`cd '${WORKSPACE}'`);
     }
+  });
+
+  test('finds the workflow tools bins in the tool environment, not the step environment', async () => {
+    const h = harness();
+    await h.run(
+      requestOf({
+        planEnv: { MISE_DATA_DIR: '/plan/mise' },
+        step: { env: { HOME: '/step/home', XDG_DATA_HOME: '/step/data' } },
+      }),
+    );
+    const bins = h.script('bins');
+    expect(bins).toContain("cd '/Users/admin/hugi/temp'");
+    expect(bins).toContain("mise bin-paths 'node@22.23.2'");
+    expect(bins).toContain("export MISE_NODE_VERSION='22.23.2'");
+    for (const name of ['MISE_DATA_DIR', 'XDG_DATA_HOME', 'HOME', 'MISE_CONFIG_DIR']) {
+      expect(bins).not.toContain(`export ${name}=`);
+    }
+    // The shims directory still follows the step's environment, by the action's rule.
+    expect(h.script('probe')).toContain("export MISE_DATA_DIR='/plan/mise'");
   });
 
   test('a value of those names that the workflow, the step or an earlier step gives stays', async () => {
@@ -275,9 +296,9 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
   });
 
   test('puts the workflow tools ahead of the shims, in the tool environment order', async () => {
-    const h = harness({ probe: probe({ workflowBins: ['/img/bun', '/wf/node'] }) });
+    const h = harness({ workflowBins: '/img/bun\n/wf/node\n' });
     await h.run(requestOf({ settings: { env: false }, tools: ['bun@1.4.4', 'node@22.23.2'] }));
-    expect(h.script('probe')).toContain("mise bin-paths 'bun@1.4.4' 'node@22.23.2'");
+    expect(h.script('bins')).toContain("mise bin-paths 'bun@1.4.4' 'node@22.23.2'");
     expect(h.tart.launcherFor(3)).toContain(
       `export PATH="/wf/node:/img/bun:${SHIMS}:/wf/node:/img/bun:/usr/bin"`,
     );
@@ -289,6 +310,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     const h = harness();
     await h.run(requestOf({ settings: { addShimsToPath: false, exportPath: false } }));
     expect(h.phases()).not.toContain('overlap');
+    expect(h.phases()).not.toContain('bins');
     expect(h.tart.launcherFor(3)).not.toContain('shims');
     expect(h.script('env')).not.toContain('--paths');
   });
@@ -305,7 +327,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     const prepare = h.script('prepare');
     expect(prepare).toContain(`cd '${WORKSPACE}/pkg/app'`);
     expect(prepare.indexOf('mise reshim -f')).toBeLessThan(prepare.indexOf('mise --version'));
-    for (const phase of ALL_PHASES.slice(1)) {
+    for (const phase of STEP_PHASES.slice(1)) {
       expect(h.script(phase)).toContain(`cd '${WORKSPACE}/pkg/app'`);
     }
   });
@@ -316,7 +338,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
       requestOf({ later: [runStep(3, { when: 'always' })], settings: { miseEnv: 'ci' } }),
     );
     expect(result.reason).toBe('step-failed');
-    expect(h.phases()).toEqual(['probe', 'prepare']);
+    expect(h.phases()).toEqual(['probe', 'bins', 'prepare']);
     const later = h.tart.launcherFor(3);
     expect(later).toContain("export MISE_ENV='ci'");
     expect(later).toContain("export MISE_YES='1'");
@@ -366,6 +388,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(result.detail).toContain('mise install exited with code 2');
     expect(h.phases()).toEqual([
       'probe',
+      'bins',
       'prepare',
       'listing',
       'requests',
@@ -376,7 +399,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
   });
 
   test('lists the config directories and the workflow tools bins for the overlap check', async () => {
-    const h = harness({ probe: probe({ workflowBins: ['/wf/node'] }) });
+    const h = harness();
     await h.run(requestOf());
     const overlap = h.script('overlap');
     expect(overlap).toContain('mise env --paths');
@@ -405,7 +428,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     expect(log).not.toContain('secret-value');
     expect(h.script('env')).toContain('mise env --json >');
     expect(result.steps[2]?.note).toBe(
-      'wrote 5 variables to GITHUB_ENV and 1 directories to GITHUB_PATH',
+      'wrote 5 variables to GITHUB_ENV and 2 directories to GITHUB_PATH',
     );
   });
 
@@ -502,24 +525,38 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       'mise env --paths',
     ],
     [
+      'workflow tools bins mise cannot find',
+      { exitCodes: { bins: 1 } },
+      {},
+      ['probe', 'bins'],
+      'mise bin-paths',
+    ],
+    [
+      'fewer workflow tools bins than pinned tools',
+      { workflowBins: '' },
+      {},
+      ['probe', 'bins'],
+      '0 directories for 1 pinned workflow tools',
+    ],
+    [
       'a loaded config file outside the workspace',
       { configListing: listing(`${WORKSPACE}/mise.toml`, '/Users/admin/.config/mise/config.toml') },
       {},
-      ['probe', 'prepare', 'listing'],
+      ['probe', 'bins', 'prepare', 'listing'],
       '/Users/admin/.config/mise/config.toml',
     ],
     [
       'a config request that differs from a workflow pin',
       { configListing: listing(`${WORKSPACE}/mise.toml`), configRequests: pinnedNode },
       {},
-      ['probe', 'prepare', 'listing', 'requests'],
+      ['probe', 'bins', 'prepare', 'listing', 'requests'],
       'node: the workflow pins 22.23.2',
     ],
     [
       'a monorepo config',
       { installCheck: lines({ monorepo: true }) },
       {},
-      ['probe', 'prepare', 'listing', 'requests', 'install-check'],
+      ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check'],
       'monorepo',
     ],
     [
@@ -532,14 +569,14 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
         ),
       },
       {},
-      ['probe', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
+      ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
       'pnpm',
     ],
     [
       'directories the overlap check cannot list',
       { exitCodes: { overlap: 1 } },
       {},
-      ['probe', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
+      ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
       'overlap',
     ],
     [
@@ -561,9 +598,13 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
 });
 
 /** The scripts a run of the step with `settings` and no workflow tools generated. */
-async function scriptsOf(settings: Partial<MiseActionSettings>, fake: FakeMiseAction = {}) {
+async function scriptsOf(
+  settings: Partial<MiseActionSettings>,
+  fake: FakeMiseAction = {},
+  tools: string[] = [],
+) {
   const h = harness(fake);
-  await h.run(requestOf({ settings, tools: [] }));
+  await h.run(requestOf({ settings, tools }));
   return h.script;
 }
 
@@ -629,7 +670,6 @@ describe.skipIf(mise === null || jq === null)(
         dataDir: join(root, 'home/.local/share/mise'),
         supports: { envJson: true, envPaths: true, installLocked: true },
         version: version!.replace(/^v/, ''),
-        workflowBins: [],
       });
     });
 
@@ -660,8 +700,8 @@ describe.skipIf(mise === null || jq === null)(
     });
 
     test('the overlap listing resolves links, so the same directory passes and another one fails', async () => {
-      const workflowBins = ['/Users/admin/hugi/wf/link', '/Users/admin/hugi/wf/other'];
-      onHost((await scriptsOf({}, { probe: probe({ workflowBins }) }))('overlap'));
+      const workflowBins = '/Users/admin/hugi/wf/link\n/Users/admin/hugi/wf/other\n';
+      onHost((await scriptsOf({}, { workflowBins }, ['node@22', 'bun@1']))('overlap'));
       const conflicts = overlapConflicts(output('mise-overlap.txt'));
       expect(conflicts).toHaveLength(1);
       expect(conflicts[0]).toStartWith('node: ');

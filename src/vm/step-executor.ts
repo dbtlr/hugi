@@ -48,7 +48,12 @@ import type { RunRequest, StepResult } from './run-request';
 import { shellQuote } from './shell';
 import { buildStepLauncher } from './step-launcher';
 import type { Clock, Tart } from './tart';
-import { runMiseConfigStep, runToolEnvironment, MISE_CONFIG_STEP_NAME } from './tool-steps';
+import {
+  runMiseConfigStep,
+  runToolEnvironment,
+  MISE_CONFIG_STEP_NAME,
+  workflowEnvironment,
+} from './tool-steps';
 
 export type StepTuning = {
   /** How often the host asks whether the running step has exited. */
@@ -583,6 +588,7 @@ async function runMiseAction(
       name: step.name,
       settings: action.settings,
       tools: ctx.request.tools,
+      workflowEnv: workflowEnvironment(ctx.request),
       ...(carried.toolEnvironment?.PATH === undefined
         ? {}
         : { toolPath: carried.toolEnvironment.PATH }),

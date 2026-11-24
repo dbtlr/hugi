@@ -143,6 +143,7 @@ export type FakeMise = {
 /** The guest scripts of a `jdx/mise-action` step (ADR-0007), in the order the step runs them. */
 export type MiseActionPhase =
   | 'probe'
+  | 'bins'
   | 'prepare'
   | 'listing'
   | 'requests'
@@ -154,8 +155,10 @@ export type MiseActionPhase =
 
 /** What the guest's `mise` does for a `jdx/mise-action` step's scripts. */
 export type FakeMiseAction = {
-  /** The probe's JSON; the default is mise 2026.11.12 with every capability and no workflow bins. */
+  /** The probe's JSON; the default is mise 2026.11.12 with every capability. */
   readonly probe?: string;
+  /** `mise bin-paths` of the workflow tools; the default is `/wf/node`. */
+  readonly workflowBins?: string;
   /** The config listing; the default names the workspace and no file. */
   readonly configListing?: string;
   /** `mise ls --current --json`; the default is `{}`. */
@@ -177,7 +180,6 @@ export const FAKE_MISE_PROBE = {
   dataDir: '/Users/admin/.local/share/mise',
   supports: { envJson: true, envPaths: true, installLocked: true },
   version: '2026.11.12 macos-arm64 (2026-11-21)',
-  workflowBins: [] as string[],
 };
 
 export type FakeGuest = {
@@ -369,6 +371,7 @@ export class FakeTart implements Tart {
     this.events.push(`mise action ${phase}`);
     options.onOutput?.(`mise action ${phase}\n`);
     const writes: Partial<Record<MiseActionPhase, [string, string][]>> = {
+      bins: [[files.workflowBins, fake.workflowBins ?? '/wf/node\n']],
       env: [
         [files.environment, fake.environment ?? '{}'],
         [files.paths, fake.paths ?? ''],
