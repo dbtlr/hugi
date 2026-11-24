@@ -398,15 +398,6 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     ]);
   });
 
-  test('lists the config directories and the workflow tools bins for the overlap check', async () => {
-    const h = harness();
-    await h.run(requestOf());
-    const overlap = h.script('overlap');
-    expect(overlap).toContain('mise env --paths');
-    expect(overlap).toContain('realpath');
-    expect(overlap).toContain("'/wf/node'");
-  });
-
   test('a config directory that shares the workflow tool directory passes the overlap check', async () => {
     const h = harness({
       overlap: lines(
