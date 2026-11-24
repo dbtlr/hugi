@@ -147,10 +147,19 @@ function checkRefused(inputs: Inputs): void {
   }
 }
 
-/** Tool names separated by whitespace, each without a version or a flag. */
+/**
+ * Tool names separated by spaces, each without a version or a flag. The action splits them with
+ * @actions/exec's argStringToArray, on spaces only, stripping double quotes; any other whitespace,
+ * quote, or backslash would split differently there, so it is refused.
+ */
 function installArgsOf(inputs: Inputs): string[] {
   const value = inputOf(inputs, 'install_args');
-  const names = value === '' ? [] : value.split(/\s+/u);
+  if (/[^\S ]|["'\\]/u.test(value)) {
+    throw new Error(
+      'install_args must be tool names separated by spaces, without tabs, line breaks, quotes, or backslashes',
+    );
+  }
+  const names = value === '' ? [] : value.split(/ +/u);
   for (const name of names) {
     if (name.includes('@') || name.startsWith('-')) {
       throw new Error(

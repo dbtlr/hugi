@@ -159,6 +159,15 @@ test.each(['node@22', '--locked', 'nushell -v', 'bun --dry-run'])(
   },
 );
 
+// The action splits `mise install <args>` with @actions/exec's argStringToArray, which splits on
+// spaces only and strips double quotes, so any other separator or quoting would split differently.
+test.each(['nushell\tpnpm', 'nushell\npnpm', '"nushell"', "'nushell'", String.raw`nu\shell`])(
+  'install_args %j, which the action would split differently, fails resolution',
+  async (value) => {
+    expect(await refusal({ install_args: value })).toContain('separated by spaces');
+  },
+);
+
 test.each([
   ['sub', 'sub'],
   ['./sub/dir/', 'sub/dir'],
