@@ -25,6 +25,7 @@ import type { MiseActionResolution } from '../toolchain/types';
 import { buildWorkspaceScript, checkoutStepIndex } from './checkout';
 import { withDeadline } from './deadline';
 import {
+  carriedGithubEnv,
   githubEnvironment,
   parseEnvFile,
   parseOutputFile,
@@ -230,14 +231,17 @@ async function readCommandFile(ctx: StepRunContext, step: RunStep, path: string)
 
 /**
  * Parse the step's `GITHUB_ENV` and `GITHUB_PATH` into the carried state and check its
- * `GITHUB_OUTPUT`, or say why one of them is invalid.
+ * `GITHUB_OUTPUT`, or say why one of them is invalid. The errors GitHub's runner logs for the
+ * `GITHUB_ENV` writes it refuses come back for the step's log.
  */
 async function applyCommandFiles(
   ctx: StepRunContext,
   step: RunStep,
   files: StepFiles,
   carried: CarriedState,
-): Promise<{ readonly carried: CarriedState } | { readonly error: string }> {
+): Promise<
+  { readonly carried: CarriedState; readonly refused: readonly string[] } | { readonly error: string }
+> {
   const envText = await readCommandFile(ctx, step, files.env);
   const pathText = await readCommandFile(ctx, step, files.path);
   const outputError = parseOutputFile(await readCommandFile(ctx, step, files.output));
@@ -248,12 +252,14 @@ async function applyCommandFiles(
   if (outputError !== undefined) {
     return { error: outputError };
   }
+  const kept = carriedGithubEnv(env.env);
   return {
     carried: {
       ...carried,
       extraPath: prependPaths(carried.extraPath, parsePathFile(pathText)),
-      fromGithubEnv: { ...carried.fromGithubEnv, ...env.env },
+      fromGithubEnv: { ...carried.fromGithubEnv, ...kept.env },
     },
+    refused: kept.refused,
   };
 }
 
@@ -398,7 +404,8 @@ async function runOneStep(
       result: { ...base, error: applied.error, exitCode, logFile, outcome: 'failure' },
     };
   }
-  const logFile = await copyLog(ctx, step, files);
+  const refusals = applied.refused.map((message) => `Error: ${message}\n`).join('');
+  const logFile = await copyLog(ctx, step, files, refusals);
   return {
     carried: applied.carried,
     end: 'exited',

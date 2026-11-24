@@ -218,6 +218,17 @@ test('an invalid GITHUB_ENV fails its step as on GitHub, and later steps see non
   expect(h.tart.launcherFor(2)).not.toContain('GOOD');
 });
 
+test("a GITHUB_ENV write of NODE_OPTIONS is refused as on GitHub's runner, and the step's log says so", async () => {
+  const h = harness({ steps: { 1: { appendsEnv: 'KEPT=1\nNode_Options=--inspect\n' } } });
+  const result = await run(h, requestOf([runStep(1), runStep(2)]));
+  expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
+  expect(h.tart.launcherFor(2)).toContain("export KEPT='1'");
+  expect(h.tart.launcherFor(2)).not.toMatch(/node_options/i);
+  expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
+    "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
+  );
+});
+
 test("an invalid GITHUB_OUTPUT fails its step with GitHub's wording", async () => {
   const h = harness({
     steps: { 1: { appendsOutput: 'files=a\nb\n' }, 2: { appendsOutput: 'ok=1\n' } },

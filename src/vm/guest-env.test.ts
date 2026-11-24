@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 
 import {
+  carriedGithubEnv,
   githubEnvironment,
   parseEnvFile,
   parseOutputFile,
@@ -123,6 +124,20 @@ test('malformed GITHUB_ENV content is an error, as on GitHub', () => {
   });
   expect(parseEnvFile('A<<\nx\n')).toMatchObject({
     error: expect.stringContaining('delimiter must not be empty'),
+  });
+});
+
+test("GitHub's runner refuses NODE_OPTIONS from GITHUB_ENV in any case, with its message for each", () => {
+  expect(carriedGithubEnv({ A: '1', NODE_OPTIONS: '--x', node_options: '--y' })).toEqual({
+    env: { A: '1' },
+    refused: [
+      "Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
+      "Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
+    ],
+  });
+  expect(carriedGithubEnv({ NODE_OPTIONS_EXTRA: '1' })).toEqual({
+    env: { NODE_OPTIONS_EXTRA: '1' },
+    refused: [],
   });
 });
 

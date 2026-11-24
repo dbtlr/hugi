@@ -16,7 +16,7 @@
 import { posix } from 'node:path';
 
 import type { MiseActionSettings } from '../toolchain/types';
-import { parsePathFile, prependPaths } from './guest-env';
+import { carriedGithubEnv, parsePathFile, prependPaths } from './guest-env';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS, miseActionFiles } from './guest-paths';
 import type { MiseActionFiles } from './guest-paths';
@@ -64,7 +64,10 @@ export type MiseActionInput = {
   readonly toolPath?: string;
 };
 
-/** What the step wrote to `GITHUB_ENV` and `GITHUB_PATH`, in order, up to where it stopped. */
+/**
+ * What the step wrote to `GITHUB_ENV` and `GITHUB_PATH`, in order, up to where it stopped. The run
+ * returns the `GITHUB_ENV` part that later steps get, without what GitHub's runner refuses.
+ */
 export type MiseActionWrites = {
   readonly env: Record<string, string>;
   /** Lines appended to `GITHUB_PATH`: the last one comes first on `PATH`. */
@@ -473,6 +476,7 @@ export async function runMiseActionStep(
 ): Promise<MiseActionRun> {
   const writes: MiseActionWrites = { env: {}, path: [] };
   let own = false;
+  let carried: Environment = {};
   const run = await runHostStep<undefined>(
     ctx,
     { index: input.index, name: input.name },
@@ -495,8 +499,14 @@ export async function runMiseActionStep(
         throw error;
       } finally {
         own = step.hugisOwn;
+        // GitHub's runner reads the action's GITHUB_ENV once it ends, refusing some names.
+        const kept = carriedGithubEnv(writes.env);
+        for (const message of kept.refused) {
+          tools.log.write(`Error: ${message}\n`);
+        }
+        carried = kept.env;
       }
     },
   );
-  return { ...run, hugisOwn: own, writes };
+  return { ...run, hugisOwn: own, writes: { env: { ...carried }, path: writes.path } };
 }

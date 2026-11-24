@@ -409,6 +409,16 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     );
   });
 
+  test("a NODE_OPTIONS it exports is refused for later steps, as GitHub's runner refuses it", async () => {
+    const h = harness({ environment: JSON.stringify({ FOO: 'bar', NODE_OPTIONS: '--inspect' }) });
+    await h.run(requestOf());
+    expect(h.tart.launcherFor(3)).toContain("export FOO='bar'");
+    expect(h.tart.launcherFor(3)).not.toContain('NODE_OPTIONS');
+    expect(readFileSync(join(logDir, '02-set-up-mise.log'), 'utf8')).toContain(
+      "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
+    );
+  });
+
   test('a step its if: skips changes nothing, and later steps keep ignoring the config', async () => {
     const h = harness();
     const result = await h.run(requestOf({ step: { when: 'failure' } }));
