@@ -15,7 +15,7 @@ Hosted macOS runners are slow to arrive and sometimes do not arrive at all. In o
 ## Principles
 
 - **GitHub supplies commits and receives verdicts; it never schedules.** No run waits on a GitHub runner.
-- **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them. A lane takes its tools from the workflow, and also from the repository's mise config when its declaration opts in ([ADR-0006](docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md)).
+- **The workflow file is the only definition of a lane.** Hugi executes a job's `run:` steps as written and never restates them. A lane takes its tools from the workflow, and also from the repository's mise config when its declaration opts in ([ADR-0006](docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md)) or its job runs `jdx/mise-action` ([ADR-0007](docs/decisions/0007-a-workflow-installs-tools-from-its-mise-config.md)).
 - **Nothing from a pull request runs on the host.** The host reads a commit's files only as data. Every run happens in a VM cloned for that run and deleted afterwards.
 - **The repository says what to run; Hugi's configuration says who may run.** A repository lists its lanes in `.github/hugi.yaml` ([ADR-0004](docs/decisions/0004-lanes-declared-in-hugi-yaml.md)). Enrolled repositories and allowlisted authors live outside the repositories.
 - **Verification only.** The VM holds no secret and publishes nothing.
@@ -101,6 +101,8 @@ lanes:
 ```
 
 With `mise`, a step named "Install tools from mise config" runs straight after the plan's `actions/checkout` step. It reads the config files at the workspace root, fails the lane when a workflow tool and the config request different versions (naming the tool, both versions and the file), installs the config's tools with mise's lockfile off, and gives the later steps a `PATH` of the workflow tools' bin directories, then the config environment's `PATH`, then the rest. A `tools: mise` lane whose job has no `actions/checkout` step fails before the VM boots. [ADR-0006](docs/decisions/0006-a-lane-chooses-where-its-tools-come-from.md) has the rules and their limits.
+
+A job can instead install from its mise config itself, with a `jdx/mise-action` step, so GitHub's runner and Hugi read the same file. That needs no `tools` key. Hugi runs the step at its own place in the job and does what the action does on GitHub's runner: it checks the config against the workflow tools as above, runs `mise install` (with `--locked` when the repository has a mise lock file), and exports mise's variables, `PATH` entries and shims directory to the later steps, which also stop ignoring the repository's config. A lane with `tools: mise` that also uses the action fails. [ADR-0007](docs/decisions/0007-a-workflow-installs-tools-from-its-mise-config.md) has the rules, and [supported actions](docs/supported-actions.md#jdxmise-action) lists the inputs Hugi accepts.
 
 A pull request runs on its merge commit:
 

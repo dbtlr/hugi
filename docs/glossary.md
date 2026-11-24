@@ -45,11 +45,11 @@ A workflow-syntax file under `.github/hugi/` that holds a repository's promoted 
 _Avoid_: Shadow workflow, private workflow
 
 **Workflow tools**:
-The tools Hugi resolves for a lane from its job's setup actions and the repository's Rust toolchain files, installed before the job's steps run. Under `tools: mise`, the repository's mise config adds to them and must agree with them.
+The tools Hugi resolves for a lane from its job's setup actions and the repository's Rust toolchain files, installed before the job's steps run. Under `tools: mise`, the repository's mise config adds to them and must agree with them. A `jdx/mise-action` step adds no workflow tools: it installs from the config at its own step, and the config must agree with them too.
 _Avoid_: Toolchain (for the whole set), setup tools
 
 **Tool environment**:
-The `PATH` and tool variables every step of a run gets, computed once by Hugi from the installed tools, so a step runs its tools directly and never through mise's shims.
+The `PATH` and tool variables every step of a run gets, computed once by Hugi from the installed tools, so a step runs its tools directly and not through mise's shims. After a `jdx/mise-action` step, the action's `PATH` additions, shims included, come before it, as on GitHub's runner.
 _Avoid_: Shims, toolchain environment
 
 **Golden image**:

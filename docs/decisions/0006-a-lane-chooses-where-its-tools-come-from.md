@@ -4,7 +4,7 @@ title: ADR-0006 - A lane chooses where its tools come from
 description: A lane entry in .github/hugi.yaml takes an optional tools key. With workflow, the default, only the workflow's setup actions and toolchain files supply tools, and the guest ignores the repository's mise config. With mise, mise in the guest installs from the repository's mise config, and a tool Hugi also resolved from the workflow at a different version fails the lane.
 status: accepted
 created: 2026-11-19
-modified: 2026-11-19
+modified: 2026-11-24
 ---
 # ADR-0006 - A lane chooses where its tools come from
 
@@ -44,9 +44,9 @@ Under either value, Hugi resolves the workflow's tools as before: from the job's
 
 ### How a step finds its tools
 
-A step no longer finds its tools through mise's shims, which resolve a version again on every call from the directory the step runs in, and so read the repository's config. Instead, Hugi computes the **tool environment** once, after "Install tools": `mise env --json` run in a directory outside the workspace, against the guest's base `PATH` without the shims directory, with the workflow tools' per-tool version variables set and with `MISE_NO_ENV=1`, so no config's `[env]` table, `_.path` included, enters it. Every step then runs with that environment's `PATH` and the variables it exports, such as `RUSTUP_TOOLCHAIN` for Rust, and keeps the per-tool version variables, so a step's own call to `mise` agrees with them. A tool on that `PATH` runs directly, and mise is not consulted again. The tool environment holds the workflow tools and the image's default tools, as a GitHub runner's `PATH` holds what its setup actions installed and what the runner image ships, though the defaults' versions are the image's, not the runner's.
+A step no longer finds its tools through mise's shims, which resolve a version again on every call from the directory the step runs in, and so read the repository's config. Instead, Hugi computes the **tool environment** once, after "Install tools": `mise env --json` run in a directory outside the workspace, against the guest's base `PATH` without the shims directory, with the workflow tools' per-tool version variables set and with `MISE_NO_ENV=1`, so no config's `[env]` table, `_.path` included, enters it. Every step then runs with that environment's `PATH` and the variables it exports, such as `RUSTUP_TOOLCHAIN` for Rust, and keeps the per-tool version variables, so a step's own call to `mise` agrees with them. A tool on that `PATH` runs directly, and mise is not consulted again. [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) amends this for the steps after a `jdx/mise-action` step, which can also find tools through mise's shims. The tool environment holds the workflow tools and the image's default tools, as a GitHub runner's `PATH` holds what its setup actions installed and what the runner image ships, though the defaults' versions are the image's, not the runner's.
 
-Each step also runs with `MISE_IGNORED_CONFIG_PATHS` set to the workspace and without `MISE_TRUSTED_CONFIG_PATHS`, so a step that runs `mise` itself does not read the repository's config files. A workspace `.miserc.toml` can still select a profile of the image's global config for such a step. The guarantees here are about the tools on `PATH`; what a step that runs `mise` gets is the workflow's own doing. This variable is a runner variable, the lowest layer of a step's environment, so a workflow or step can override it. GitHub's runner has no mise, so no workflow sets it for GitHub's sake, and a step that runs `mise` would fail there.
+Each step also runs with `MISE_IGNORED_CONFIG_PATHS` set to the workspace and without `MISE_TRUSTED_CONFIG_PATHS`, so a step that runs `mise` itself does not read the repository's config files. A workspace `.miserc.toml` can still select a profile of the image's global config for such a step. The guarantees here are about the tools on `PATH`; what a step that runs `mise` gets is the workflow's own doing. This variable is a runner variable, the lowest layer of a step's environment, so a workflow or step can override it. [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) amends this: steps after a `jdx/mise-action` step run without it. GitHub's runner has no mise, so no workflow sets it for GitHub's sake, and a step that runs `mise` would fail there.
 
 ### `tools: workflow`
 
@@ -74,7 +74,7 @@ These guarantees have limits, which are accepted:
 - A tool that the config requests under another backend, such as `npm:pnpm` beside the workflow's `pnpm`, is a different tool to mise. Its executables come later on `PATH` than the workflow tool's, and the check does not compare them.
 - On GitHub, the same job installs its tools with setup actions. So in shadow, a `tools: mise` lane differs from the hosted job in any tool that only the mise config names. That is a choice the repository makes.
 
-`jdx/mise-action` stays an unsupported action under both values.
+`jdx/mise-action` stays an unsupported action under both values. [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) amends this: a lane with `tools: workflow` runs the action, and a lane with `tools: mise` that uses it fails.
 
 ## Considered options
 
