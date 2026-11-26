@@ -225,13 +225,19 @@ describe('the generated launcher, run by a real bash', () => {
     const seen = join(dir, 'seen');
     const ran = runLauncher(
       dir,
-      { GITHUB_OUTPUT: '/wf/out' },
+      { GITHUB_ENV: '/wf/env', GITHUB_OUTPUT: '/wf/out', GITHUB_PATH: '/wf/path' },
       `/usr/bin/env > ${shellQuote(seen)}`,
     );
     expect(ran.status, ran.log).toBe('0');
     const lines = readFileSync(seen, 'utf8').split('\n');
-    expect(lines).toContain(`GITHUB_OUTPUT=${join(dir, 'control/step-07/github_output')}`);
-    expect(lines).not.toContain('GITHUB_OUTPUT=/wf/out');
+    for (const [name, file] of [
+      ['GITHUB_ENV', 'github_env'],
+      ['GITHUB_OUTPUT', 'github_output'],
+      ['GITHUB_PATH', 'github_path'],
+    ] as const) {
+      expect(lines).toContain(`${name}=${join(dir, `control/step-07/${file}`)}`);
+    }
+    expect(lines.filter((line) => line.includes('=/wf/'))).toEqual([]);
   });
 
   test('a SHELLOPTS of errexit reaches only the step shell, so a failing step writes its status', () => {
