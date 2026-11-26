@@ -330,6 +330,52 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test(
+    'a host-driven step the job timeout cuts short leaves no guest process, SIGTERM-proof or disowned',
+    async () => {
+      await waitForFreeSlot();
+      const req = request('host-step-timeout', [checkout(1)], {}, 0.75);
+      const deps = realDeps();
+      // Hugi kills only its own `tart exec` when a host-driven step is cut short; the guest agent
+      // ends the script's processes once that exec ends. Pin it, since a step after a cut-short
+      // `jdx/mise-action` step would otherwise run beside its install.
+      const survivors = async (): Promise<number> =>
+        (await deps.tart.exec(deps.vm, ['pgrep', '-f', 'sleep 60(07|08|09)'])).exitCode;
+      const seen: { whileRunning?: number; afterCutShort?: number } = {};
+      // The checkout's workspace script becomes one that outlives the job timeout.
+      const stdin = [
+        "trap '' TERM HUP",
+        'sleep 6007 &',
+        "(trap '' TERM HUP; exec sleep 6009) & disown",
+        'sleep 6008',
+        '',
+      ].join('\n');
+      const tart = {
+        ...deps.tart,
+        exec: async (...args: Parameters<typeof deps.tart.exec>) => {
+          const [vm, argv, options] = args;
+          if (!options?.stdin?.startsWith('# hugi-workspace')) {
+            return deps.tart.exec(...args);
+          }
+          const noteWhileRunning = async (): Promise<void> => {
+            seen.whileRunning = await survivors();
+          };
+          setTimeout(() => void noteWhileRunning(), 10_000);
+          const cutShort = await deps.tart.exec(vm, argv, { ...options, stdin });
+          // `pgrep` exits 0 when a process matches, 1 when none does.
+          seen.afterCutShort = await survivors();
+          return cutShort;
+        },
+      };
+      const result = await runInVm(req, { ...deps, tart });
+      expect(result).toMatchObject({ reason: 'timeout', verdict: 'fail' });
+      expect(result.steps.map((s) => s.outcome)).toEqual(['timeout']);
+      expect(seen).toEqual({ afterCutShort: 1, whileRunning: 0 });
+      expect(vmRemains(deps.vm)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
     'an interrupt mid-step ends the run as interrupted and leaves no VM',
     async () => {
       await waitForFreeSlot();
