@@ -872,14 +872,7 @@ test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
   },
 );
 
-test.each([
-  'SHELLOPTS',
-  'BASHOPTS',
-  'POSIXLY_CORRECT',
-  'POSIX_PEDANTIC',
-  'TMOUT',
-  'BASH_FUNC_mise%%',
-])(
+test.each(['SHELLOPTS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT', 'BASH_FUNC_mise%%'])(
   "a step environment that sets %s, which would change the bash of the step's mise commands, fails the step as Hugi's own before its first command",
   async (name) => {
     const h = harness();
@@ -892,6 +885,13 @@ test.each([
     expect(h.phases()).toEqual([]);
   },
 );
+
+test("a step environment's BASHOPTS, which the guest's bash 3.2 ignores, reaches the step's mise commands", async () => {
+  const h = harness();
+  const result = await h.run(requestOf({ step: { env: { BASHOPTS: 'nullglob' } } }));
+  expect(result).toMatchObject({ verdict: 'pass' });
+  expect(h.script('probe')).toContain("'BASHOPTS=nullglob'");
+});
 
 test("a step environment's BASH_ENV and ENV reach the step's mise commands as exports inside their bash, as on GitHub", async () => {
   const h = harness();
