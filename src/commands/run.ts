@@ -47,7 +47,7 @@ Exit codes:
 - 0: pass. The lane's steps succeeded.
 - 1: fail. A step failed or timed out, or the lane could not be read or its tools resolved.
 - 2: usage error, including a lane selection that picks nothing to run: a missing job, --matrix values that select no single combination, a needed upstream output not given with --needs, a --needs entry for a job outside the job's needs, or a job whose if: makes it skipped for the event (no verdict).
-- 3: no verdict. The VM failed to clone or boot or was lost mid-run, or the source could not be fetched or read. For pull/<n>: the pull request does not exist, GitHub's API failed or is rate-limited, or the pull request has no current merge (it is closed, has a merge conflict, GitHub has not computed the merge for its head yet, or it moved while Hugi read it).
+- 3: no verdict. The VM failed to clone or boot or was lost mid-run, the source could not be fetched or read, or the VM run failed unexpectedly, a fault in Hugi itself. For pull/<n>: the pull request does not exist, GitHub's API failed or is rate-limited, or the pull request has no current merge (it is closed, has a merge conflict, GitHub has not computed the merge for its head yet, or it moved while Hugi read it).
 - 130 (143 for SIGTERM): interrupted. The VM is deleted and the report, with no verdict, is printed before Hugi exits. A second Ctrl-C exits at once, and Hugi exits anyway if cleanup takes more than three minutes; either can leave the VM behind. Remove a leftover \`hugi-run-*\` VM with \`tart delete\`.`;
 
 /** Exit 1, raised after the report is printed: the lane's verdict is fail. */

@@ -71,6 +71,8 @@ export type RunLaneDeps = {
   readonly runStarted?: (start: RunStart) => Promise<void>;
   /** Where non-fatal trouble, such as a snapshot left behind, is reported. */
   readonly warn: (message: string) => void;
+  /** Where a fault in Hugi itself, a bug, is reported; `warn` when absent. */
+  readonly fault?: (message: string) => void;
 };
 
 /** What a run's record needs to say when its directory is created. */
@@ -434,16 +436,27 @@ async function runInGuest(
     // Inside the try, so a log directory that cannot be made still releases the snapshot.
     logDir = request.logDir ?? (await deps.newLogDir(source.sha));
     await deps.runStarted?.({ lane: plan.lane, logDir, sha: source.sha, ...pullRequestOf(event) });
-    result = await deps.runInVm({
-      event,
-      image: request.image,
-      logDir,
-      plan,
-      source: guest.location,
-      toolSource: request.toolSource,
-      tools: toolchain.tools,
-      ...(miseActions.length === 0 ? {} : { miseActions }),
-    });
+    try {
+      result = await deps.runInVm({
+        event,
+        image: request.image,
+        logDir,
+        plan,
+        source: guest.location,
+        toolSource: request.toolSource,
+        tools: toolchain.tools,
+        ...(miseActions.length === 0 ? {} : { miseActions }),
+      });
+    } catch (error) {
+      // `runInVm` never throws, so this is a bug. The run record is already `running`: report it as
+      // finished with no verdict, so the caller stores it instead of leaving it `running`.
+      (deps.fault ?? deps.warn)(`the VM run threw: ${messageOf(error)}`);
+      return {
+        ...noVm('infrastructure', 'none', `the VM run threw: ${messageOf(error)}`, source.sha),
+        lane: plan.lane,
+        logDir,
+      };
+    }
   } finally {
     await release(guest, deps.warn);
   }

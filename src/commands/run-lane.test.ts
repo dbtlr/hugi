@@ -21,7 +21,7 @@ import {
 import type { RunRequest, RunResult } from '../vm';
 import { RunUsageError } from './run-args';
 import { exitCodeForVerdict, runLane } from './run-lane';
-import type { PushRunRequest, RunLaneDeps, RunLaneRequest } from './run-lane';
+import type { PushRunRequest, RunLaneDeps, RunLaneRequest, RunStart } from './run-lane';
 
 const SHA = 'a'.repeat(40);
 const WORKFLOW = `
@@ -172,18 +172,72 @@ test('a local repository reaches the VM as its snapshot, released after the run'
   expect(events).toEqual(['prepared', 'ran', 'released']);
 });
 
-test('the snapshot is released when the VM runner throws', async () => {
-  const events: string[] = [];
-  const { deps } = harness({});
-  const failure = await runLane(localRequest, {
-    ...deps,
-    openSource: async () => snapshotSource(events),
-    runInVm: async () => {
-      throw new Error('tart vanished');
-    },
-  }).catch((error: unknown) => error);
-  expect(messageOf(failure)).toBe('tart vanished');
-  expect(events).toEqual(['prepared', 'released']);
+const throwing = async (): Promise<RunResult> => {
+  throw new Error('tart vanished');
+};
+
+describe('a VM run that throws after it started', () => {
+  test('is a no-verdict report with the run identity, and the snapshot is released', async () => {
+    const events: string[] = [];
+    const started: RunStart[] = [];
+    const { deps, warnings } = harness({});
+    const report = await runLane(localRequest, {
+      ...deps,
+      openSource: async () => snapshotSource(events),
+      runInVm: throwing,
+      runStarted: async (start) => {
+        started.push(start);
+      },
+    });
+    expect(report).toMatchObject({
+      logDir: '/logs/aaaaaaa',
+      reason: 'infrastructure',
+      sha: SHA,
+      steps: [],
+      verdict: 'none',
+    });
+    expect(report.lane).toEqual(started[0]!.lane);
+    expect(report.detail).toContain('tart vanished');
+    expect(report.detail).toContain('VM run');
+    expect(warnings.some((warning) => warning.includes('tart vanished'))).toBe(true);
+    expect(events).toEqual(['prepared', 'released']);
+  });
+
+  test('reports the throw as a fault in Hugi, not a warning, when a fault sink is given', async () => {
+    const faults: string[] = [];
+    const { deps, warnings } = harness({});
+    await runLane(localRequest, {
+      ...deps,
+      fault: (message) => faults.push(message),
+      openSource: async () => snapshotSource([]),
+      runInVm: throwing,
+    });
+    expect(faults).toEqual([expect.stringContaining('tart vanished')]);
+    expect(warnings.some((warning) => warning.includes('tart vanished'))).toBe(false);
+  });
+
+  test('keeps the pull request, so its status has a head to go on', async () => {
+    const { deps } = harness({
+      '.github/workflows/ci.yml': WORKFLOW.replace('on: push', 'on: pull_request'),
+    });
+    const pullRequestRequest: RunLaneRequest = {
+      event: 'pull_request',
+      image: 'hugi-golden',
+      lane: request.lane,
+      matrix: {},
+      needs: {},
+      pullRequest: PULL_REQUEST.number,
+      repository: {
+        cloneUrl: 'https://github.com/example/project.git',
+        kind: 'github',
+        name: 'example/project',
+      },
+      toolSource: 'workflow',
+    };
+    const report = await runLane(pullRequestRequest, { ...deps, runInVm: throwing });
+    expect(report.verdict).toBe('none');
+    expect(report.pullRequest).toEqual({ headSha: HEAD_SHA, number: PULL_REQUEST.number });
+  });
 });
 
 test('a run whose start cannot be recorded never boots its VM', async () => {

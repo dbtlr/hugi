@@ -117,6 +117,7 @@ function harness(overrides: Overrides = {}) {
   const opened: string[] = [];
   const deps: RunCandidateDeps = {
     configPath: join(runsDir, 'no-config.yaml'),
+    fault: () => {},
     newVmId: () => 'vm123456',
     now: () => new Date('2026-11-20T10:00:00.000Z'),
     openPullRequestSource: async (spec, facts) => {
@@ -182,6 +183,22 @@ test('a run with no verdict finishes with no status and says why', async () => {
   const { deps, hooks } = harness({ result: lost });
   const outcome = await createRunCandidate(deps)(pushCandidate(), hooks);
   expect(outcome).toMatchObject({ cause: 'the VM went away', kind: 'finished', status: undefined });
+});
+
+test('a VM run that throws is logged as a fault in Hugi, and its record is finished with no verdict', async () => {
+  const faults: string[] = [];
+  const { deps, hooks, starts } = harness({
+    fault: (message) => faults.push(message),
+    runInVm: async () => {
+      throw new Error('tart vanished');
+    },
+  });
+  const outcome = await createRunCandidate(deps)(pushCandidate(), hooks);
+  expect(outcome).toMatchObject({ kind: 'finished', status: undefined });
+  expect(faults).toEqual([expect.stringContaining('tart vanished')]);
+  expect(faults[0]).toContain(`hugi / build at ${PUSH_SHA}`);
+  const record = await readRunRecord(join(runsDir, starts[0]!.runId));
+  expect(record).toMatchObject({ state: 'finished', verdict: 'none' });
 });
 
 test('a lane that cannot be read fails with its cause and no run id, and boots no VM', async () => {

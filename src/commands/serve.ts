@@ -256,6 +256,7 @@ async function coordinate(
     reporter: reporterFor(detailsOrigin),
     runCandidate: createRunCandidate({
       configPath: ports.paths.configPath,
+      fault: (message) => log.error(message),
       newVmId: ports.newVmId,
       now: ports.now,
       openPullRequestSource: openPullRequest,
