@@ -1,6 +1,6 @@
 /* oxlint-disable promise/avoid-new -- guest work that settles only on abort */
-import { expect, test } from 'bun:test';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { afterEach, expect, test } from 'bun:test';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,12 @@ class HangingTart extends FakeTart {
   }
 }
 
+/** The log directories this file's contexts made, removed after each test. */
+const logDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(logDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })));
+});
+
 async function context(): Promise<{
   readonly ctx: HostStepContext;
   readonly clock: FakeClock;
@@ -31,11 +37,13 @@ async function context(): Promise<{
   const clock = new FakeClock();
   const interrupt = new AbortController();
   const vmLost = new AbortController();
+  const logDir = await mkdtemp(join(tmpdir(), 'hugi-host-step-'));
+  logDirs.push(logDir);
   const ctx: HostStepContext = {
     clock,
     housekeepingMs: 1000,
     interrupt: interrupt.signal,
-    logDir: await mkdtemp(join(tmpdir(), 'hugi-host-step-')),
+    logDir,
     tart: new HangingTart(clock),
     vm: 'hugi-run-test',
     vmLost: vmLost.signal,
