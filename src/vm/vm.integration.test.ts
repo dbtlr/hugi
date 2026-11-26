@@ -251,6 +251,30 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test(
+    'a key that is not a shell name reaches the step and its children, from env: and from GITHUB_ENV',
+    async () => {
+      await waitForFreeSlot();
+      const req = request('odd-env-keys', [
+        checkout(1),
+        step(2, 'echo "FROM-FILE=file value" >> "$GITHUB_ENV"', {
+          env: { 'A;touch hacked': 'q', 'FOO-BAR': "it's x" },
+        }),
+        step(
+          3,
+          'test "$(/usr/bin/env | grep -c \'^FOO-BAR=\')" = 1 && /usr/bin/env | grep -F "FROM-FILE=file value" && ! test -e hacked && echo odd-keys-ok',
+          { env: { 'FOO-BAR': "it's x" } },
+        ),
+      ]);
+      const deps = realDeps();
+      const result = await runInVm(req, deps);
+      expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
+      expect(readFileSync(join(req.logDir, '03-step-3.log'), 'utf8')).toContain('odd-keys-ok');
+      expect(vmRemains(deps.vm)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
     'the workspace is empty until the checkout step',
     async () => {
       await waitForFreeSlot();

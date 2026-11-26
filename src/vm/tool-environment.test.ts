@@ -55,8 +55,8 @@ describe('parseToolEnvironment', () => {
     expect(() => parseToolEnvironment(text)).toThrow(/tool environment/);
   });
 
-  test.each(['BAD-KEY', '1ST', 'A B', 'A=B', "A';rm -rf x;'", '', 'ünï'])(
-    'refuses the key %p, naming it',
+  test.each(['BAD-KEY', '1ST', 'A B', 'A=B', "A';rm -rf x;'", 'ünï'])(
+    'keeps the key %p, which is not a shell name',
     (key) => {
       const text = JSON.stringify(
         Object.fromEntries([
@@ -64,9 +64,10 @@ describe('parseToolEnvironment', () => {
           ['PATH', '/usr/bin'],
         ]),
       );
-      expect(() => parseToolEnvironment(text)).toThrow(
-        `the tool environment has ${JSON.stringify(key)}, which is not a valid variable name`,
-      );
+      expect(Object.entries(parseToolEnvironment(text))).toEqual([
+        [key, 'x'],
+        ['PATH', '/usr/bin'],
+      ]);
     },
   );
 

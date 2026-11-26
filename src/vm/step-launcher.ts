@@ -17,6 +17,7 @@ import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS } from './guest-paths';
 import type { StepFiles } from './guest-paths';
 import { shellQuote } from './shell';
+import { isVariableName } from './tool-environment';
 
 export type LauncherInput = {
   readonly step: RunStep;
@@ -108,18 +109,34 @@ function supervisorScript(step: RunStep, files: StepFiles): string {
   ].join('\n');
 }
 
-/** `export` lines for every variable but `PATH`, which `guestPath` sets. */
-export function environmentExports(env: Environment): string[] {
-  return Object.entries(env)
-    .filter(([key]) => key !== 'PATH')
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
+/**
+ * An environment split by how a guest shell can carry it. A key that is a shell name becomes an
+ * `export` line (`PATH` is left to `guestPath`). Any other key, such as `FOO-BAR`, which a workflow
+ * `env:` map or `GITHUB_ENV` may hold and GitHub's runner passes to the step, cannot be exported by
+ * a shell, so it becomes an `/usr/bin/env` assignment, shell-quoted whole, that starts the process
+ * which should inherit it. `envPrefix` is empty when there is no such key.
+ */
+export function splitEnvironment(env: Environment): {
+  readonly exports: string[];
+  readonly envPrefix: string;
+} {
+  const entries = Object.entries(env).filter(([key]) => key !== 'PATH');
+  const assignments = entries
+    .filter(([key]) => !isVariableName(key))
+    .map(([key, value]) => shellQuote(`${key}=${value}`));
+  return {
+    envPrefix: assignments.length === 0 ? '' : `/usr/bin/env ${assignments.join(' ')}`,
+    exports: entries
+      .filter(([key]) => isVariableName(key))
+      .map(([key, value]) => `export ${key}=${shellQuote(value)}`),
+  };
 }
 
 export function buildStepLauncher(input: LauncherInput): string {
   const { step, env, extraPath, files } = input;
   const directory = files.script.slice(0, files.script.lastIndexOf('/'));
   const supervisorPath = `${directory}/supervisor.sh`;
-  const exports = environmentExports(env);
+  const { envPrefix, exports } = splitEnvironment(env);
   return [
     `# hugi-step ${step.index}`,
     'set -e',
@@ -134,7 +151,7 @@ export function buildStepLauncher(input: LauncherInput): string {
     `export GITHUB_OUTPUT=${shellQuote(files.output)}`,
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
     // A failure to start the session lands in the step's log.
-    `${START_SESSION} /bin/bash ${shellQuote(supervisorPath)} >> ${shellQuote(files.log)} 2>&1 < /dev/null &`,
+    `${envPrefix === '' ? '' : `${envPrefix} `}${START_SESSION} /bin/bash ${shellQuote(supervisorPath)} >> ${shellQuote(files.log)} 2>&1 < /dev/null &`,
     '',
   ].join('\n');
 }

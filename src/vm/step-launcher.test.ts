@@ -1,9 +1,14 @@
-import { expect, test } from 'bun:test';
+/* oxlint-disable node/no-sync -- test support: runs a generated script on the host in a throwaway directory */
+import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { RunStep } from '../lane/step-plan';
 import { stepFiles } from './guest-paths';
 import { stepLogName } from './logs';
-import { buildStepLauncher, guestPath, shellCommand } from './step-launcher';
+import { shellQuote } from './shell';
+import { buildStepLauncher, guestPath, shellCommand, splitEnvironment } from './step-launcher';
 
 const step: RunStep = {
   continueOnError: false,
@@ -116,4 +121,47 @@ test('each step starts with fresh, empty GITHUB_ENV, GITHUB_PATH, and GITHUB_OUT
 test('a missing working directory fails the step rather than the launcher', () => {
   const launcher = launch({ step: { ...step, workingDirectory: 'pkg' } });
   expect(launcher).toContain("if cd '/Users/admin/hugi/workspace/pkg'; then");
+});
+
+describe('an env key that is not a shell name', () => {
+  const env = { 'A;touch hacked': 'y=z', FOO: 'plain', 'FOO-BAR': "it's x" };
+
+  test('splits into export lines for shell names and env assignments for the rest', () => {
+    expect(splitEnvironment({ ...env, PATH: '/p' })).toEqual({
+      envPrefix: `/usr/bin/env 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x'`,
+      exports: [`export FOO='plain'`],
+    });
+    expect(splitEnvironment({ FOO: 'a' })).toEqual({ envPrefix: '', exports: [`export FOO='a'`] });
+  });
+
+  test('the launcher starts the supervisor under env, and exports only shell names', () => {
+    const launcher = launch({ env });
+    expect(launcher).toContain(`export FOO='plain'`);
+    expect(launcher).not.toContain('export FOO-BAR');
+    expect(launcher).not.toContain('export A;touch');
+    expect(launcher).toContain(
+      `\n/usr/bin/env 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x' /usr/bin/perl `,
+    );
+  });
+
+  test('a launcher without such keys has no env prefix', () => {
+    expect(launch({ env: { FOO: 'a' } })).toContain('\n/usr/bin/perl -e ');
+  });
+
+  test('a real bash passes the key to a child verbatim and runs nothing from it', () => {
+    const dir = mkdtempSync(join('.scratch', 'env-keys.'));
+    try {
+      const { envPrefix } = splitEnvironment(env);
+      const out = execFileSync(
+        '/bin/bash',
+        ['-c', `cd ${shellQuote(dir)} && ${envPrefix} /bin/bash -c '/usr/bin/env'`],
+        { encoding: 'utf8' },
+      );
+      expect(out).toContain("FOO-BAR=it's x\n");
+      expect(out).toContain('A;touch hacked=y=z\n');
+      expect(existsSync(join(dir, 'hacked'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });

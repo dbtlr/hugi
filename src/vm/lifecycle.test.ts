@@ -1293,19 +1293,6 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(h.tart.events).not.toContain('mise config listing');
   });
 
-  test.each([
-    ['toolEnvironment', 'Tool environment'],
-    ['configEnvironment', 'Install tools from mise config'],
-  ] as const)('a bad %s fails the lane, naming the key', async (field, stepName) => {
-    const bad = JSON.stringify({ 'BAD-KEY': 'x', PATH: '/usr/bin' });
-    const h = harness({ mise: { ...mise, [field]: bad }, steps: {} });
-    const result = await run(h, miseRequest([checkout(), runStep(2)]));
-    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
-    expect(result.detail).toContain(stepName);
-    expect(result.detail).toContain('"BAD-KEY"');
-    expect(result.detail).toContain('not a valid variable name');
-  });
-
   test('a checkout that fails stops the run before the step', async () => {
     const h = harness({ materializeExitCode: 1, mise, steps: {} });
     const result = await run(h, miseRequest([checkout(), runStep(2)]));

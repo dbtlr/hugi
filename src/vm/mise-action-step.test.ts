@@ -770,13 +770,6 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
       'overlap',
     ],
-    [
-      'a variable a later step cannot export',
-      { environment: JSON.stringify({ 'A-B': 'x' }) },
-      {},
-      ALL_PHASES,
-      '"A-B"',
-    ],
   ])('%s', async (_name, fake, settings, phases, detail) => {
     const h = harness(fake);
     const result = await h.run(requestOf({ settings, step: { continueOnError: true } }));

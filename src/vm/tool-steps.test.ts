@@ -1,6 +1,7 @@
 /* oxlint-disable node/no-sync -- test support: builds a throwaway workspace and runs the guest script on the host */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,12 +11,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { GUEST_CONTROL_DIR, GUEST_RUNNER_PATHS, GUEST_TOOL_FILES } from './guest-paths';
 import type { RunRequest } from './run-request';
 import { configFilesInWorkspace, parseConfigListing } from './tool-environment';
-import { configListingScript } from './tool-steps';
+import { configListingScript, guestScript } from './tool-steps';
 
 const mise = Bun.which('mise');
 const jq = Bun.which('jq');
@@ -112,4 +113,41 @@ describe.skipIf(!canRun)('the guest listing script, run on the host with real mi
 
 test('the listing script resolves each file with realpath', () => {
   expect(configListingScript(request)).toContain('realpath "$path"');
+});
+
+describe('guestScript with a key that is not a shell name', () => {
+  const lines = ['echo "$FOO"', 'touch ok'];
+
+  test('has no env prefix, and exports only shell names, when every key is one', () => {
+    const script = guestScript('x', { FOO: 'a' }, lines);
+    expect(script).toStartWith('# hugi-x\n');
+    expect(script).toContain("export FOO='a'");
+    expect(script).not.toContain('exec /usr/bin/env');
+    expect(script).toContain('\ntouch ok\n');
+  });
+
+  test('keeps the marker first and runs the lines under env, which a real bash carries to a child', () => {
+    mkdirSync('.scratch', { recursive: true });
+    const dir = mkdtempSync(join('.scratch', 'guest-script.'));
+    try {
+      const script = guestScript('x', { 'A;touch hacked': 'q', FOO: "it's", 'FOO-BAR': 'x' }, [
+        'echo "$FOO"',
+        "/usr/bin/env | grep -F 'FOO-BAR='",
+        `touch ${resolve(dir)}/ran`,
+      ]);
+      expect(script).toStartWith('# hugi-x\n');
+      expect(script).toContain(String.raw`export FOO='it'\''s'`);
+      const ran = Bun.spawnSync(['bash', '-s'], {
+        cwd: dir,
+        env: { PATH: '/usr/bin:/bin' },
+        stdin: new TextEncoder().encode(script),
+      });
+      expect(ran.exitCode, ran.stdout.toString()).toBe(0);
+      expect(ran.stdout.toString()).toContain("it's\nFOO-BAR=x\n");
+      expect(existsSync(join(dir, 'ran'))).toBe(true);
+      expect(existsSync(join(dir, 'hacked'))).toBe(false);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
 });

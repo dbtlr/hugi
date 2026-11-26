@@ -19,7 +19,7 @@ import { runHostStep } from './host-step';
 import type { HostStepContext, HostStepRun, HostStepTools, HostStepVerdict } from './host-step';
 import type { RunRequest } from './run-request';
 import { shellQuote } from './shell';
-import { environmentExports, guestPath } from './step-launcher';
+import { guestPath, splitEnvironment } from './step-launcher';
 import {
   configFilesInWorkspace,
   mergeToolEnvironments,
@@ -37,7 +37,8 @@ export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 
 /**
  * The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`, or the
- * `PATH` that `env` sets, with `extraPath` in front of it.
+ * `PATH` that `env` sets, with `extraPath` in front of it. A key that is not a shell name cannot be
+ * exported, so `lines` then run in a bash that `env` starts with those keys, as the step shell is.
  */
 export function guestScript(
   marker: string,
@@ -45,13 +46,18 @@ export function guestScript(
   lines: readonly string[],
   extraPath: readonly string[] = [],
 ): string {
+  const { envPrefix, exports } = splitEnvironment(env);
+  const body =
+    envPrefix === ''
+      ? lines
+      : [`exec ${envPrefix} /bin/bash -eo pipefail -c ${shellQuote(lines.join('\n'))}`];
   return [
     `# hugi-${marker}`,
     'set -eo pipefail',
     'exec 2>&1',
-    ...environmentExports(env),
+    ...exports,
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
-    ...lines,
+    ...body,
     '',
   ].join('\n');
 }

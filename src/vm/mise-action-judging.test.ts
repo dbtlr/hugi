@@ -206,8 +206,8 @@ describe('what the step exports', () => {
     expect(exportedVariables(json)).toEqual({ FOO: 'a\nb', RUSTUP_TOOLCHAIN: '1.97.1' });
   });
 
-  test('a name a shell cannot export is a ToolOutputError naming it', () => {
-    expect(() => exportedVariables(JSON.stringify({ 'A-B': 'x' }))).toThrow('"A-B"');
+  test('a name a shell cannot export is kept, for the step to pass on through env', () => {
+    expect(exportedVariables(JSON.stringify({ 'A-B': 'x' }))).toEqual({ 'A-B': 'x' });
   });
 
   test('managed paths keep their order and drop empty lines', () => {
