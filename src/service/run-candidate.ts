@@ -89,6 +89,8 @@ export type RunCandidateDeps = {
   readonly configPath: string;
   readonly now: () => Date;
   readonly warn: (message: string) => void;
+  /** Where a fault in Hugi itself, a bug, is reported: logged as an error. */
+  readonly fault: (message: string) => void;
 };
 
 const laneRefOf = ({ job, matrix, workflow }: LaneRef): LaneRef => ({ job, matrix, workflow });
@@ -159,6 +161,8 @@ export function createRunCandidate(deps: RunCandidateDeps): RunCandidate {
     try {
       report = await runLane(request, {
         ...laneDeps,
+        fault: (message) =>
+          deps.fault(`${laneStatusName(at.lane)} at ${at.target.sha}: ${message}`),
         newLogDir: (sha) => createRunDirectory(deps.runsDir, deps.now(), sha),
         runInVm: (vmRequest) => deps.runInVm(vmRequest, vmId),
         runStarted: async (start) => {
