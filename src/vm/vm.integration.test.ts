@@ -330,15 +330,16 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test(
-    'a host-driven step the job timeout cuts short leaves no process in its session, SIGTERM-proof ones too',
+    'a host-driven step the job timeout cuts short leaves no process in its group, SIGTERM-proof ones too',
     async () => {
       await waitForFreeSlot();
       const req = request('host-step-timeout', [checkout(1)], {}, 0.75);
       const deps = realDeps();
       // Hugi kills only its own `tart exec` when a host-driven step is cut short; the guest agent
-      // ends every process in the script's session once that exec ends, whatever its signal
-      // handling (a process that leaves the session survives). Pin it, since a step after a
-      // cut-short `jdx/mise-action` step would otherwise run beside its install.
+      // ends every process in the script's process group once that exec ends, whatever its signal
+      // handling. Only the group is pinned: a process that leaves it, as `setsid` does, survives.
+      // Pin it, since a step after a cut-short `jdx/mise-action` step would otherwise run beside
+      // its install.
       const survivors = async (): Promise<string> => {
         let printed = '';
         await deps.tart.exec(
