@@ -4,6 +4,7 @@ import {
   carriedGithubEnv,
   githubEnvironment,
   parseEnvFile,
+  parseExportedVariables,
   parseOutputFile,
   parsePathFile,
   prependPaths,
@@ -99,8 +100,23 @@ test('GITHUB_ENV parses the multiline KEY<<EOF form', () => {
 });
 
 test('GITHUB_ENV lets a later assignment win and skips empty lines', () => {
-  expect(parseEnvFile('A=1\n\r\n\nA=2\r\n')).toEqual({ env: { A: '2' } });
+  expect(parseEnvFile('A=1\n\nA=2\n')).toEqual({ env: { A: '2' } });
 });
+
+test(
+  String.raw`GITHUB_ENV ends a line at \n alone, keeping a \r, as GitHub's runner does outside Windows`,
+  () => {
+    // `EOF\r` does not close a block opened with `EOF`.
+    expect(parseEnvFile('A=1\r\nB<<EOF\nv\r\nEOF\r\nEOF\n')).toEqual({
+      env: { A: '1\r', B: 'v\r\nEOF\r' },
+    });
+    // A line holding only a \r is not empty, so it is a bad line.
+    expect(parseEnvFile('A=1\n\r\nB=2\n')).toEqual({
+      env: { A: '1' },
+      error: "Unable to process file command 'env' successfully. Invalid format '\r'",
+    });
+  },
+);
 
 test('GITHUB_ENV picks the form by whichever of = and << comes first', () => {
   expect(parseEnvFile('A=x<<y\nB<<E\nv=1\nE\n')).toEqual({ env: { A: 'x<<y', B: 'v=1' } });
@@ -113,16 +129,19 @@ test('an empty file and an empty multiline value both parse', () => {
 
 test('malformed GITHUB_ENV content is an error, as on GitHub', () => {
   expect(parseEnvFile('A=1\nB<<EOF\nnever ends\n')).toMatchObject({
-    error: "Invalid environment variable value. Matching delimiter not found 'EOF'",
+    error:
+      "Unable to process file command 'env' successfully. Invalid value. Matching delimiter not found 'EOF'",
   });
   expect(parseEnvFile('junk\n')).toMatchObject({
-    error: "Invalid environment variable format 'junk'",
+    error: "Unable to process file command 'env' successfully. Invalid format 'junk'",
   });
   expect(parseEnvFile('=value\n')).toMatchObject({
-    error: expect.stringContaining('name must not be empty'),
+    error:
+      "Unable to process file command 'env' successfully. Invalid format '=value'. Name must not be empty",
   });
   expect(parseEnvFile('<<EOF\nx\nEOF\n')).toMatchObject({
-    error: expect.stringContaining('delimiter must not be empty'),
+    error:
+      "Unable to process file command 'env' successfully. Invalid format '<<EOF'. Name must not be empty and delimiter must not be empty",
   });
   expect(parseEnvFile('A<<\nx\n')).toMatchObject({
     error: expect.stringContaining('delimiter must not be empty'),
@@ -132,11 +151,46 @@ test('malformed GITHUB_ENV content is an error, as on GitHub', () => {
 test('a malformed GITHUB_ENV keeps the assignments before the bad line, as GitHub does', () => {
   expect(parseEnvFile('A=1\nNOTE<<EOF\nx\nEOF\nB=2\njunk\nC=3\n')).toEqual({
     env: { A: '1', B: '2', NOTE: 'x' },
-    error: "Invalid environment variable format 'junk'",
+    error: "Unable to process file command 'env' successfully. Invalid format 'junk'",
   });
   expect(parseEnvFile('A=1\nB<<EOF\nnever ends\n')).toMatchObject({ env: { A: '1' } });
   expect(parseEnvFile('A=1\n=value\nB=2\n')).toMatchObject({ env: { A: '1' } });
   expect(parseEnvFile('A=1\nB<<\nx\n')).toMatchObject({ env: { A: '1' } });
+});
+
+test('exported variables read back from GITHUB_ENV keep a name like FOO-BAR and any value exactly', () => {
+  const variables = { '-x': '', 'A-B': 'v', 'FOO-BAR': 'x=y\nZ<<EOF\n' };
+  expect(parseExportedVariables(variables)).toEqual({ env: variables });
+});
+
+test.each([
+  ['A=B', "Invalid format 'v'"],
+  ['=X', 'Name must not be empty'],
+  ['C<<D', "Invalid value. Matching delimiter not found 'D<<ghadelimiter_"],
+  ['E\nF', "Invalid format 'E'"],
+])(
+  "an exported name %p GITHUB_ENV cannot carry is the runner's error, keeping the writes before it and dropping those after",
+  (name, message) => {
+    // In write order: the bad name between two good ones.
+    const read = parseExportedVariables(
+      Object.fromEntries([
+        ['EARLIER', 'kept'],
+        [name, 'v'],
+        ['LATER', 'x'],
+      ]),
+    );
+    expect(read.error).toStartWith("Unable to process file command 'env' successfully. ");
+    expect(read.error).toContain(message);
+    expect(read.env).toMatchObject({ EARLIER: 'kept' });
+    expect(read.env).not.toHaveProperty(name);
+    expect(read.env).not.toHaveProperty('LATER');
+  },
+);
+
+test("an exported A=B still sets A from its opening line, as GitHub's runner reads it", () => {
+  const read = parseExportedVariables({ 'A=B': 'v' });
+  expect(Object.keys(read.env)).toEqual(['A']);
+  expect(read.env.A).toMatch(/^B<<ghadelimiter_[\da-f-]{36}$/u);
 });
 
 test("GitHub's runner refuses NODE_OPTIONS from GITHUB_ENV in any case, with its message for each", () => {

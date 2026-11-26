@@ -38,12 +38,12 @@ export function workflowPins(specs: readonly string[]): ToolPin[] {
   return pins;
 }
 
-/** What a shell accepts as a variable name; a key becomes an `export KEY=...` line in every step's launcher. */
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export const isVariableName = (name: string): boolean => VARIABLE_NAME.test(name);
-
-/** A tool environment is `mise env --json`'s object of valid variable names, with a non-empty `PATH`. */
+/**
+ * A tool environment is `mise env --json`'s object of text values, with a non-empty `PATH`. Every
+ * step inherits it, and each step's process gets each key through `/usr/bin/env`, so a key that is
+ * not a shell name, such as `FOO-BAR`, is kept. An empty key or one holding `=` is refused: no
+ * process can carry it as written.
+ */
 export function parseToolEnvironment(text: string): Environment {
   let parsed: unknown;
   try {
@@ -56,9 +56,9 @@ export function parseToolEnvironment(text: string): Environment {
   }
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
-    if (!isVariableName(key)) {
+    if (key === '' || key.includes('=') || key.includes('\0')) {
       throw new ToolOutputError(
-        `the tool environment has ${JSON.stringify(key)}, which is not a valid variable name`,
+        `the tool environment has ${JSON.stringify(key)}, which no process can carry as a variable name`,
       );
     }
     if (typeof value !== 'string') {

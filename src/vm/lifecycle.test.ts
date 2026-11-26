@@ -6,7 +6,14 @@ import { join } from 'node:path';
 
 import { SHUTDOWN_BUDGET_MS } from '../app';
 import type { ActionStep, PlanStep, RunStep, StepPlan } from '../lane/step-plan';
-import { advanceUntilSettled, FakeClock, FakeSpawn, FakeTart, settle } from './fake-tart';
+import {
+  advanceUntilSettled,
+  FakeClock,
+  FakeSpawn,
+  FakeTart,
+  readableGuestScript,
+  settle,
+} from './fake-tart';
 import type { FakeGuest } from './fake-tart';
 import { stepFiles } from './guest-paths';
 import { KILL_GROUP_MARKER } from './housekeeping';
@@ -217,7 +224,7 @@ test("an invalid GITHUB_ENV fails its step as on GitHub, but the lines before th
   expect(result.steps[0]).toMatchObject({ exitCode: 0, outcome: 'failure' });
   expect(result.detail).toContain("Matching delimiter not found 'EOF'");
   expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
-    "Error: Invalid environment variable value. Matching delimiter not found 'EOF'",
+    "Error: Unable to process file command 'env' successfully. Invalid value. Matching delimiter not found 'EOF'",
   );
   const second = h.tart.launcherFor(2);
   expect(second).toContain("'GOOD=1'");
@@ -237,7 +244,9 @@ test("an invalid GITHUB_ENV still refuses the names GitHub's runner refuses, wit
   expect(log).toContain(
     "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
   );
-  expect(log).toContain("Error: Invalid environment variable format 'broken line'");
+  expect(log).toContain(
+    "Error: Unable to process file command 'env' successfully. Invalid format 'broken line'",
+  );
 });
 
 test("an invalid GITHUB_OUTPUT fails its step but keeps the step's GITHUB_ENV and GITHUB_PATH", async () => {
@@ -259,10 +268,12 @@ test('when both GITHUB_ENV and GITHUB_OUTPUT are invalid, both errors are report
   });
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   const error = result.steps[0]!.error!;
-  expect(error).toContain("Invalid environment variable format 'junk'");
+  expect(error).toContain(
+    "Unable to process file command 'env' successfully. Invalid format 'junk'",
+  );
   expect(error).toContain("Unable to process file command 'output' successfully.");
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
-  expect(log).toContain("Invalid environment variable format 'junk'");
+  expect(log).toContain("Unable to process file command 'env' successfully. Invalid format 'junk'");
   expect(log).toContain("Unable to process file command 'output' successfully.");
   expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
 });
@@ -943,11 +954,11 @@ describe('the tool environment (ADR-0006)', () => {
     await run(h, requestOf([runStep(1)], { tools }));
     expect(h.tart.events.indexOf('step 0')).toBeLessThan(h.tart.events.indexOf('tool environment'));
     expect(h.tart.events.indexOf('tool environment')).toBeLessThan(h.tart.events.indexOf('step 1'));
-    const script = h.tart.execs.find((call) => call.stdin?.startsWith('# hugi-tool-env'))!.stdin!;
+    const script = toolEnvScript(h);
     expect(script).toContain("cd '/Users/admin/hugi/temp'");
     expect(script).toContain('MISE_NO_ENV=1 mise env --json');
-    expect(script).toContain("export MISE_NODE_VERSION='22.23.2'");
-    expect(script).toContain("export MISE_RUST_VERSION='1.97.1'");
+    expect(script).toContain("'MISE_NODE_VERSION=22.23.2'");
+    expect(script).toContain("'MISE_RUST_VERSION=1.97.1'");
     expect(script).toContain('export PATH="/opt/homebrew/bin:');
     expect(script).not.toContain('shims');
   });
@@ -1036,7 +1047,9 @@ const listingOf = (...records: object[]) =>
 
 /** The "Tool environment" step's guest script of a run. */
 const toolEnvScript = (h: ReturnType<typeof harness>) =>
-  h.tart.execs.find((call) => call.stdin?.startsWith('# hugi-tool-env'))!.stdin!;
+  readableGuestScript(
+    h.tart.execs.find((call) => call.stdin?.startsWith('# hugi-tool-env'))!.stdin!,
+  );
 
 describe('tools from the mise config (ADR-0006)', () => {
   const WORKSPACE = '/Users/admin/hugi/workspace';
@@ -1091,18 +1104,20 @@ describe('tools from the mise config (ADR-0006)', () => {
     const h = harness({ mise, steps: {} });
     await run(h, miseRequest([checkout(), runStep(2)]));
     const script = (phase: string) =>
-      h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!;
+      readableGuestScript(
+        h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!,
+      );
     for (const phase of ['listing', 'requests']) {
       expect(script(phase)).toContain(`cd '${WORKSPACE}'`);
-      expect(script(phase)).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+      expect(script(phase)).toContain(`'MISE_TRUSTED_CONFIG_PATHS=${WORKSPACE}'`);
       expect(script(phase)).not.toContain('MISE_IGNORED_CONFIG_PATHS');
       expect(script(phase)).not.toContain('MISE_NODE_VERSION');
     }
     expect(script('listing')).toContain('mise config ls --json');
     expect(script('requests')).toContain('mise ls --current --json');
     const install = script('install');
-    expect(install).toContain("export MISE_LOCKFILE='false'");
-    expect(install).toContain("export MISE_NODE_VERSION='22.23.2'");
+    expect(install).toContain("'MISE_LOCKFILE=false'");
+    expect(install).toContain("'MISE_NODE_VERSION=22.23.2'");
     expect(install).toContain('mise install');
     expect(install).toContain('MISE_NO_ENV=1 mise env --json');
     expect(install).not.toContain('mise bin-paths');
@@ -1257,24 +1272,35 @@ describe('tools from the mise config (ADR-0006)', () => {
   test('every script of the step gets the plan\'s env, as "Install tools" does, and adjusts it', async () => {
     const h = harness({ mise, steps: {} });
     const env = {
+      // Not a shell name, and a value that reads like the wrapper's own words: both reach mise.
+      'FOO-BAR': 'dash',
       MISE_IGNORED_CONFIG_PATHS: '/elsewhere',
       MISE_NODE_VERSION: '18',
       PLAN_VAR: 'plan',
       QUOTED: "it's",
+      TRICKY: "x' /bin/bash -eo pipefail -c 'y\nexec /usr/bin/env -- z",
     };
-    await run(h, miseRequest([checkout(), runStep(2)], {}, { env }));
+    const result = await run(h, miseRequest([checkout(), runStep(2)], {}, { env }));
+    expect(result.reason).toBe('passed');
     const script = (phase: string) =>
-      h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!;
+      readableGuestScript(
+        h.tart.execs.find((call) => call.stdin?.startsWith(`# hugi-mise-config ${phase}`))!.stdin!,
+      );
     for (const phase of ['listing', 'requests', 'install']) {
-      expect(script(phase)).toContain("export PLAN_VAR='plan'");
-      expect(script(phase)).toContain(`export QUOTED='it'\\''s'`);
-      expect(script(phase)).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+      expect(script(phase)).toContain("'PLAN_VAR=plan'");
+      expect(script(phase)).toContain("'FOO-BAR=dash'");
+      expect(script(phase)).toContain(`'QUOTED=it'\\''s'`);
+      expect(script(phase)).toContain(
+        `${String.raw`'TRICKY=x'\'' /bin/bash -eo pipefail -c '\''y`}\nexec /usr/bin/env -- z' `,
+      );
+      expect(script(phase)).toContain(` /bin/bash -eo pipefail -c\ncd '${WORKSPACE}'\n`);
+      expect(script(phase)).toContain(`'MISE_TRUSTED_CONFIG_PATHS=${WORKSPACE}'`);
       expect(script(phase)).not.toContain('MISE_IGNORED_CONFIG_PATHS');
     }
     // The plan's own version variable is not read as the config's request; the pin is the install's.
     expect(script('listing')).not.toContain('MISE_NODE_VERSION');
     expect(script('requests')).not.toContain('MISE_NODE_VERSION');
-    expect(script('install')).toContain("export MISE_NODE_VERSION='22.23.2'");
+    expect(script('install')).toContain("'MISE_NODE_VERSION=22.23.2'");
   });
 
   test('is skipped when the checkout was skipped and nothing earlier failed', async () => {
@@ -1296,15 +1322,18 @@ describe('tools from the mise config (ADR-0006)', () => {
   test.each([
     ['toolEnvironment', 'Tool environment'],
     ['configEnvironment', 'Install tools from mise config'],
-  ] as const)('a bad %s fails the lane, naming the key', async (field, stepName) => {
-    const bad = JSON.stringify({ 'BAD-KEY': 'x', PATH: '/usr/bin' });
-    const h = harness({ mise: { ...mise, [field]: bad }, steps: {} });
-    const result = await run(h, miseRequest([checkout(), runStep(2)]));
-    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
-    expect(result.detail).toContain(stepName);
-    expect(result.detail).toContain('"BAD-KEY"');
-    expect(result.detail).toContain('not a valid variable name');
-  });
+  ] as const)(
+    'a %s key no process can carry fails the lane, naming the key',
+    async (field, stepName) => {
+      const bad = JSON.stringify({ 'A=B': 'x', PATH: '/usr/bin' });
+      const h = harness({ mise: { ...mise, [field]: bad }, steps: {} });
+      const result = await run(h, miseRequest([checkout(), runStep(2)]));
+      expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+      expect(result.detail).toContain(stepName);
+      expect(result.detail).toContain('"A=B"');
+      expect(result.detail).toContain('no process can carry');
+    },
+  );
 
   test('a checkout that fails stops the run before the step', async () => {
     const h = harness({ materializeExitCode: 1, mise, steps: {} });

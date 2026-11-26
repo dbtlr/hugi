@@ -15,7 +15,13 @@ import { dirname, join } from 'node:path';
 
 import type { ActionStep, PlanStep, RunStep } from '../lane/step-plan';
 import type { MiseActionSettings } from '../toolchain/types';
-import { advanceUntilSettled, FAKE_MISE_PROBE, FakeClock, FakeTart } from './fake-tart';
+import {
+  advanceUntilSettled,
+  FAKE_MISE_PROBE,
+  FakeClock,
+  FakeTart,
+  readableGuestScript,
+} from './fake-tart';
 import type { FakeGuest, FakeMiseAction, MiseActionPhase } from './fake-tart';
 import { runInVm } from './lifecycle';
 import {
@@ -145,7 +151,8 @@ function harness(miseAction: FakeMiseAction = {}, guest: Partial<FakeGuest> = {}
     );
   const phases = () =>
     tart.events.filter((event) => event.startsWith('mise action ')).map((event) => event.slice(12));
-  const script = (phase: MiseActionPhase) => tart.miseActionScript(2, phase);
+  // Read with its lines unquoted, so a test can match them as `guestScript` was given them.
+  const script = (phase: MiseActionPhase) => readableGuestScript(tart.miseActionScript(2, phase));
   return { phases, run, script, tart };
 }
 
@@ -223,12 +230,10 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     await h.run(requestOf());
     for (const phase of STEP_PHASES) {
       const script = h.script(phase);
-      expect(script).toContain("export MISE_CEILING_PATHS='/Users/admin/hugi'");
+      expect(script).toContain("'MISE_CEILING_PATHS=/Users/admin/hugi'");
+      expect(script).toContain("'MISE_CONFIG_DIR=/Users/admin/hugi/control/step-02/mise-config'");
       expect(script).toContain(
-        "export MISE_CONFIG_DIR='/Users/admin/hugi/control/step-02/mise-config'",
-      );
-      expect(script).toContain(
-        "export MISE_GLOBAL_CONFIG_FILE='/Users/admin/hugi/control/step-02/mise-config/config.toml'",
+        "'MISE_GLOBAL_CONFIG_FILE=/Users/admin/hugi/control/step-02/mise-config/config.toml'",
       );
       expect(script).not.toContain('MISE_IGNORED_CONFIG_PATHS');
       expect(script).not.toContain('MISE_NODE_VERSION');
@@ -251,12 +256,12 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     const bins = h.script('bins');
     expect(bins).toContain("cd '/Users/admin/hugi/temp'");
     expect(bins).toContain("mise bin-paths 'node@22.23.2'");
-    expect(bins).toContain("export MISE_NODE_VERSION='22.23.2'");
+    expect(bins).toContain("'MISE_NODE_VERSION=22.23.2'");
     for (const name of ['MISE_DATA_DIR', 'XDG_DATA_HOME', 'HOME', 'MISE_CONFIG_DIR']) {
-      expect(bins).not.toContain(`export ${name}=`);
+      expect(bins).not.toContain(`'${name}=`);
     }
     // The shims directory still follows the step's environment, by the action's rule.
-    expect(h.script('probe')).toContain("export MISE_DATA_DIR='/plan/mise'");
+    expect(h.script('probe')).toContain("'MISE_DATA_DIR=/plan/mise'");
   });
 
   test('a value of those names that the workflow, the step or an earlier step gives stays', async () => {
@@ -268,8 +273,8 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
         step: { env: { MISE_NODE_VERSION: '20' } },
       }),
     );
-    expect(h.script('probe')).toContain("export MISE_IGNORED_CONFIG_PATHS='/plan'");
-    expect(h.script('probe')).toContain("export MISE_NODE_VERSION='20'");
+    expect(h.script('probe')).toContain("'MISE_IGNORED_CONFIG_PATHS=/plan'");
+    expect(h.script('probe')).toContain("'MISE_NODE_VERSION=20'");
   });
 
   test('writes its defaults only where the step leaves them unset or empty, and each reaches its own later commands', async () => {
@@ -282,9 +287,9 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     );
     expect(h.script('probe')).not.toContain('MISE_EXPERIMENTAL');
     const prepare = h.script('prepare');
-    expect(prepare).toContain("export MISE_EXPERIMENTAL='1'");
-    expect(prepare).toContain("export MISE_YES='1'");
-    expect(prepare).toContain("export MISE_LOG_LEVEL='warn'");
+    expect(prepare).toContain("'MISE_EXPERIMENTAL=1'");
+    expect(prepare).toContain("'MISE_YES=1'");
+    expect(prepare).toContain("'MISE_LOG_LEVEL=warn'");
     const later = h.tart.launcherFor(3);
     expect(later).toContain("'MISE_YES=1'");
     expect(later).not.toContain('MISE_LOG_LEVEL');
@@ -293,7 +298,7 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
   test('writes mise_env first, over any value, so its first mise command sees it', async () => {
     const h = harness();
     await h.run(requestOf({ settings: { miseEnv: 'ci' }, step: { env: { MISE_ENV: 'dev' } } }));
-    expect(h.script('probe')).toContain("export MISE_ENV='ci'");
+    expect(h.script('probe')).toContain("'MISE_ENV=ci'");
     expect(h.tart.launcherFor(3)).toContain("'MISE_ENV=ci'");
   });
 
@@ -430,6 +435,78 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     );
   });
 
+  test('a step env key that is not a shell name reaches every one of its mise commands, and the step runs', async () => {
+    const h = harness();
+    const result = await h.run(requestOf({ step: { env: { 'FOO-BAR': 'dash' } } }));
+    expect(result.reason).toBe('passed');
+    for (const phase of STEP_PHASES) {
+      expect(h.script(phase)).toContain("'FOO-BAR=dash'");
+    }
+  });
+
+  test('a name it exports that GITHUB_ENV can carry, such as A-B, reaches later steps', async () => {
+    const h = harness({ environment: JSON.stringify({ 'A-B': 'v', FOO: 'bar' }) });
+    const result = await h.run(requestOf());
+    expect(result.reason).toBe('passed');
+    expect(h.tart.launcherFor(3)).toContain("'A-B=v'");
+    expect(h.tart.launcherFor(3)).toContain("'FOO=bar'");
+  });
+
+  test.each([
+    ['A=B', "Invalid format 'v'"],
+    ['C<<D', "Invalid value. Matching delimiter not found 'D<<ghadelimiter_"],
+    ['E\nF', "Invalid format 'E'"],
+  ])(
+    "a name %p it exports fails the step with GitHub's runner's message, as it reads the name back from GITHUB_ENV",
+    async (name, error) => {
+      const message = `Unable to process file command 'env' successfully. ${error}`;
+      const h = harness({
+        // oxlint-disable-next-line sort-keys -- in write order: the bad name between two good ones
+        environment: JSON.stringify({ EARLIER: 'kept', [name]: 'v', LATER: 'x' }),
+        paths: '/cfg/bin\n',
+      });
+      const result = await h.run(
+        requestOf({ later: [runStep(3), runStep(4, { when: 'always' })] }),
+      );
+      expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+      expect(outcomes(result).slice(2)).toEqual([
+        ['Set up mise', 'failure'],
+        ['Step 3', 'skipped'],
+        ['Step 4', 'success'],
+      ]);
+      expect(result.steps[2]?.error).toContain(message);
+      const log = readFileSync(join(logDir, '02-set-up-mise.log'), 'utf8');
+      expect(log.split('\n').filter((line) => line.startsWith(`Error: ${message}`))).toHaveLength(
+        1,
+      );
+      // As on GitHub, the writes before the bad one and the GITHUB_PATH entries still count, and
+      // the writes after it are lost.
+      const later = h.tart.launcherFor(4);
+      expect(later).toContain("'EARLIER=kept'");
+      expect(later).toContain('/cfg/bin');
+      expect(later).not.toContain('LATER=');
+    },
+  );
+
+  test('an exported name A=B still gives later steps A, from its opening line, as the runner reads it', async () => {
+    const h = harness({ environment: JSON.stringify({ 'A=B': 'v' }) });
+    await h.run(requestOf({ later: [runStep(3, { when: 'always' })] }));
+    expect(h.tart.launcherFor(3)).toMatch(/'A=B<<ghadelimiter_[\da-f-]{36}'/u);
+  });
+
+  test('an exported name with an empty part before =, such as =X, fails the step', async () => {
+    const h = harness({ environment: JSON.stringify({ '=X': 'v' }) });
+    const result = await h.run(requestOf());
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(outcomes(result)[2]).toEqual(['Set up mise', 'failure']);
+  });
+
+  test('continue-on-error covers a name GITHUB_ENV cannot carry, since the runner fails the step too', async () => {
+    const h = harness({ environment: JSON.stringify({ 'A=B': 'v' }) });
+    const result = await h.run(requestOf({ step: { continueOnError: true } }));
+    expect(result.reason).toBe('passed');
+  });
+
   test("a NODE_OPTIONS it exports is refused for later steps, as GitHub's runner refuses it", async () => {
     const h = harness({ environment: JSON.stringify({ FOO: 'bar', NODE_OPTIONS: '--inspect' }) });
     await h.run(requestOf());
@@ -493,9 +570,9 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     // The action's testMise sees the variables of steps 1 to 3 and the PATH of step 4.
     const prepare = h.script('prepare');
     expect(prepare).toContain(`cd '${WORKSPACE}/pkg'\nmise --version`);
-    expect(prepare).toContain("export MISE_ENV='ci'");
-    expect(prepare).toContain("export MISE_YES='1'");
-    expect(prepare).toContain(`export MISE_TRUSTED_CONFIG_PATHS='${WORKSPACE}'`);
+    expect(prepare).toContain("'MISE_ENV=ci'");
+    expect(prepare).toContain("'MISE_YES=1'");
+    expect(prepare).toContain(`'MISE_TRUSTED_CONFIG_PATHS=${WORKSPACE}'`);
     expect(prepare).toContain(`export PATH="/wf/node:${SHIMS}:`);
     const later = h.tart.launcherFor(3);
     expect(later).toContain("'MISE_YES=1'");
@@ -516,8 +593,8 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
     const version = h.script('version');
     expect(version).toContain("cd '/Users/admin/hugi/temp'");
     expect(version).toContain('mise --version >');
-    expect(version).toContain("export MISE_ENV='ci'");
-    expect(version).toContain("export MISE_CEILING_PATHS='/Users/admin/hugi'");
+    expect(version).toContain("'MISE_ENV=ci'");
+    expect(version).toContain("'MISE_CEILING_PATHS=/Users/admin/hugi'");
     expect(version).not.toContain('MISE_YES');
   });
 
@@ -770,13 +847,6 @@ describe("Hugi's own failures of a jdx/mise-action step fail the lane even under
       ['probe', 'bins', 'prepare', 'listing', 'requests', 'install-check', 'install', 'overlap'],
       'overlap',
     ],
-    [
-      'a variable a later step cannot export',
-      { environment: JSON.stringify({ 'A-B': 'x' }) },
-      {},
-      ALL_PHASES,
-      '"A-B"',
-    ],
   ])('%s', async (_name, fake, settings, phases, detail) => {
     const h = harness(fake);
     const result = await h.run(requestOf({ settings, step: { continueOnError: true } }));
@@ -802,7 +872,44 @@ test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
   },
 );
 
-/** The scripts a run of the step with `settings`, `tools` and `step` generated. */
+test.each(['SHELLOPTS', 'IFS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT', 'BASH_FUNC_mise%%'])(
+  "a step environment that sets %s, which would change the bash of the step's mise commands, fails the step as Hugi's own before its first command",
+  async (name) => {
+    const h = harness();
+    const result = await h.run(
+      requestOf({ planEnv: { [name]: '1' }, step: { continueOnError: true } }),
+    );
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain(`the step's environment sets ${name}, which would change`);
+    expect(result.steps[2]).not.toHaveProperty('continuedOnError');
+    expect(h.phases()).toEqual([]);
+  },
+);
+
+test("a step environment's BASHOPTS, which the guest's bash 3.2 ignores, reaches the step's mise commands", async () => {
+  const h = harness();
+  const result = await h.run(requestOf({ step: { env: { BASHOPTS: 'nullglob' } } }));
+  expect(result).toMatchObject({ verdict: 'pass' });
+  expect(h.script('probe')).toContain("'BASHOPTS=nullglob'");
+});
+
+test("a step environment's BASH_ENV and ENV reach the step's mise commands as exports inside their bash, as on GitHub", async () => {
+  const h = harness();
+  const result = await h.run(
+    requestOf({ step: { env: { BASH_ENV: '/repo/bash-env.sh', ENV: '/repo/env.sh' } } }),
+  );
+  expect(result.reason).toBe('passed');
+  for (const phase of STEP_PHASES) {
+    const script = h.tart.miseActionScript(2, phase);
+    expect(script).toContain('-u BASH_ENV -u ENV');
+    expect(script).not.toContain("'BASH_ENV=");
+    expect(readableGuestScript(script)).toContain(
+      "\nexport BASH_ENV='/repo/bash-env.sh'\nexport ENV='/repo/env.sh'\nmkdir -p ",
+    );
+  }
+});
+
+/** The scripts a run of the step with `settings`, `tools` and `step` generated, as the guest runs them. */
 async function scriptsOf(
   settings: Partial<MiseActionSettings>,
   fake: FakeMiseAction = {},
@@ -811,7 +918,7 @@ async function scriptsOf(
 ) {
   const h = harness(fake);
   await h.run(requestOf({ settings, step, tools }));
-  return h.script;
+  return (phase: MiseActionPhase) => h.tart.miseActionScript(2, phase);
 }
 
 const mise = Bun.which('mise');

@@ -181,12 +181,37 @@ export type FakeMiseAction = {
   readonly hangs?: MiseActionPhase;
 };
 
+/** One shell word as `guestScript` writes them: plain characters, `'...'` runs, and `\'`. */
+const SHELL_WORD = /(?:'[^']*'|\\'|[^\s'\\])+/gu;
+
+/**
+ * A `guestScript` as it reads before its lines are quoted into the wrapper bash's `-c` argument:
+ * the same text up to `-c`, then each line as written on a line of its own. The lines are the
+ * `exec` line's last shell word, so an assignment whose value holds `-c` or a quote cannot move
+ * the split. Any other script is returned unchanged.
+ */
+export function readableGuestScript(script: string): string {
+  const exec = script.indexOf('\nexec /usr/bin/env ');
+  if (exec === -1) {
+    return script;
+  }
+  const words = [...script.slice(exec + 1).matchAll(SHELL_WORD)];
+  const body = words.at(-1);
+  if (body === undefined) {
+    return script;
+  }
+  const lines = [...body[0].matchAll(/'([^']*)'|\\'|./gsu)]
+    .map(([piece, quoted]) => quoted ?? (piece === String.raw`\'` ? "'" : piece))
+    .join('');
+  return `${script.slice(0, exec + 1 + body.index).trimEnd()}\n${lines}\n`;
+}
+
 /**
  * The install check's default answer: each place its script searches holds no regular file. The
  * places are the loop's `shellQuote`d words, which write an apostrophe as `'\''`.
  */
 function emptyLockPlaces(script: string): string {
-  const places = /^for place in (.*); do/mu.exec(script)?.[1] ?? '';
+  const places = /^for place in (.*); do/mu.exec(readableGuestScript(script))?.[1] ?? '';
   return [...places.matchAll(/(?:'[^']*'|\\')+/gu)]
     .map(([word]) => word.replaceAll(String.raw`'\''`, "'").slice(1, -1))
     .map((path) => `${JSON.stringify({ files: [], path })}\n`)

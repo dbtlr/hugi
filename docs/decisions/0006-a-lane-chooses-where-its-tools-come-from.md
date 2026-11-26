@@ -4,7 +4,7 @@ title: ADR-0006 - A lane chooses where its tools come from
 description: A lane entry in .github/hugi.yaml takes an optional tools key. With workflow, the default, only the workflow's setup actions and toolchain files supply tools, and the guest ignores the repository's mise config. With mise, mise in the guest installs from the repository's mise config, and a tool Hugi also resolved from the workflow at a different version fails the lane.
 status: accepted
 created: 2026-11-19
-modified: 2026-11-25
+modified: 2026-11-26
 ---
 # ADR-0006 - A lane chooses where its tools come from
 
@@ -72,6 +72,7 @@ These guarantees have limits, which are accepted:
 - The check compares requested versions. Two equal partial requests, such as `22`, resolve at install time, so they can install different patch releases on Hugi and on GitHub's runner, as they could between two runs on GitHub.
 - An idiomatic version file that the config enables, such as `.nvmrc`, is not compared. A workflow tool's pin still wins over it on `PATH`.
 - A tool that the config requests under another backend, such as `npm:pnpm` beside the workflow's `pnpm`, is a different tool to mise. Its executables come later on `PATH` than the workflow tool's, and the check does not compare them.
+- The step's mise commands run without the workflow's `BASH_ENV`, `ENV`, `SHELLOPTS`, `IFS`, `POSIXLY_CORRECT`, `POSIX_PEDANTIC`, `TMOUT`, and `BASH_FUNC_` variables, so the workflow cannot make the bash that Hugi runs them in source a file, change its options, mode or word splitting, time out a `read`, or replace a command with a function. GitHub's runner has no such step to match. The job's own `run:` steps still get these variables.
 - On GitHub, the same job installs its tools with setup actions. So in shadow, a `tools: mise` lane differs from the hosted job in any tool that only the mise config names. That is a choice the repository makes.
 
 `jdx/mise-action` stays an unsupported action under both values. [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) amends this: a lane with `tools: workflow` runs the action, and a lane with `tools: mise` that uses it fails.
