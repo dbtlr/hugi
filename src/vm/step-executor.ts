@@ -203,7 +203,8 @@ async function waitForExit(
 
 /**
  * Stream the step's guest log into its host log file, followed by `epilogue`, a
- * note of Hugi's own; a failed copy adds a note after whatever had arrived.
+ * note of Hugi's own; a failed copy adds a note after whatever had arrived. Hugi's notes
+ * start on a line of their own, even after output with no final newline.
  */
 async function copyLog(
   ctx: StepRunContext,
@@ -212,13 +213,25 @@ async function copyLog(
   epilogue = '',
 ): Promise<string> {
   const log = await openLogFile(ctx.request.logDir, stepLogName(step.index, step.name));
+  let midLine = false;
+  const write = (chunk: string) => {
+    if (chunk !== '') {
+      midLine = !chunk.endsWith('\n');
+      log.write(chunk);
+    }
+  };
+  const note = (text: string) => {
+    if (text !== '') {
+      write(midLine ? `\n${text}` : text);
+    }
+  };
   try {
-    const copied = await copyGuestFile(guestCall(ctx), files.log, log.write);
+    const copied = await copyGuestFile(guestCall(ctx), files.log, write);
     if (!copied.ok) {
       ctx.warn(`could not copy the log of step ${step.index} from ${ctx.vm}: ${copied.why}`);
-      log.write(`hugi: could not copy this step's log from the VM (${copied.why})\n`);
+      note(`hugi: could not copy this step's log from the VM (${copied.why})\n`);
     }
-    log.write(epilogue);
+    note(epilogue);
   } finally {
     await log.close();
   }
@@ -394,11 +407,18 @@ async function runOneStep(
         throw error;
       });
   if (applied === undefined) {
-    const logFile = await copyLog(ctx, step, files);
+    // The step finished, so it is recorded by its exit code. The run still ends interrupted, so the
+    // result sets no verdict, and the log says why the command files went unread.
+    const logFile = await copyLog(
+      ctx,
+      step,
+      files,
+      "hugi: the run was interrupted, so this step's command files were not applied\n",
+    );
     return {
       carried,
       end: 'interrupted',
-      result: { ...base, exitCode, logFile, outcome: 'failure' },
+      result: { ...base, exitCode, logFile, outcome: exitCode === 0 ? 'success' : 'failure' },
     };
   }
   const messages = [...applied.refused, ...applied.errors];
@@ -552,7 +572,17 @@ function foldStep(
 ): void {
   const ranToEnd = run.end === 'exited' || run.end === 'step-timeout';
   const failedStep = ranToEnd && run.result.outcome !== 'success';
-  results.push(failedStep && tolerated ? { ...run.result, continuedOnError: true } : run.result);
+  // A step that exited just before the interrupt failed on its own terms, so continue-on-error
+  // marks it as for a step that ran to its end, though the interrupt still stops the run.
+  const exitedThenInterrupted =
+    run.end === 'interrupted' &&
+    run.result.exitCode !== undefined &&
+    run.result.outcome === 'failure';
+  results.push(
+    (failedStep || exitedThenInterrupted) && tolerated
+      ? { ...run.result, continuedOnError: true }
+      : run.result,
+  );
   if (!ranToEnd) {
     walk.stop = stopFor(ctx, run.end, run.result);
   } else if (failedStep && !tolerated) {
