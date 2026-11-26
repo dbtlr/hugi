@@ -4,7 +4,7 @@ title: ADR-0007 - A workflow installs tools from its mise config with jdx/mise-a
 description: Hugi runs a jdx/mise-action v5 step at its own place in the job, doing what the action does on GitHub's runner, after checking the repository's mise config against the workflow tools, and fails the step when a tool could resolve differently than on GitHub. The action needs no tools key, and a lane that sets tools mise and uses the action fails.
 status: accepted
 created: 2026-11-24
-modified: 2026-11-24
+modified: 2026-11-25
 ---
 # ADR-0007 - A workflow installs tools from its mise config with jdx/mise-action
 
@@ -115,7 +115,7 @@ These limits are accepted:
 - The step's own helper commands, such as `jq`, `realpath`, and `grep`, run with the step's `PATH`, which puts the shims directory and earlier `GITHUB_PATH` entries ahead of the image's programs. A version of one of them that the config pins can run in place of the image's.
 - Hugi passes no GitHub token into the VM ([ADR-0002](0002-verification-only.md)). The action passes the workflow's token to its own mise commands. A tool whose install calls GitHub's API can then meet a rate limit under Hugi that it would not meet on GitHub, and that fails the step.
 
-Under `tools: mise`, the tool environment's variables win over the config's, so an image default's variable, such as `RUSTUP_TOOLCHAIN`, can override a tool the config pins. That does not happen for a tool that the action installs, because the action's variables come through `GITHUB_ENV`, which outranks the tool environment.
+Under `tools: mise`, the tool environment's variables win over the config's, so an image default's variable, such as `RUSTUP_TOOLCHAIN`, can override a tool the config pins. That does not happen for a tool that the action installs, because the action's variables come through `GITHUB_ENV`, which outranks the tool environment. [ADR-0008](0008-a-config-pinned-tool-wins-over-the-image-default.md) amends this: an image default's variable no longer overrides a tool the config pins.
 
 ## Considered options
 

@@ -49,7 +49,7 @@ The tools Hugi resolves for a lane from its job's setup actions and the reposito
 _Avoid_: Toolchain (for the whole set), setup tools
 
 **Tool environment**:
-The `PATH` and tool variables every step of a run gets, computed once by Hugi from the installed tools, so a step runs its tools directly and not through mise's shims. After a `jdx/mise-action` step, the action's `PATH` additions, shims included, come before it, as on GitHub's runner.
+The `PATH` and tool variables every step of a run gets, computed once by Hugi from the installed tools, so a step runs its tools directly and not through mise's shims. Under `tools: mise`, the steps after "Install tools from mise config" get it merged with the tools the repository's mise config installs. After a `jdx/mise-action` step, the action's `PATH` additions, shims included, come before it, as on GitHub's runner.
 _Avoid_: Shims, toolchain environment
 
 **Golden image**:

@@ -4,6 +4,8 @@
  * step gets fresh, empty command files; the runner parses them once the step
  * exits, and a malformed file fails the step as it does on GitHub.
  */
+import { posix } from 'node:path';
+
 import { refValues } from '../lane/refs';
 import type { EventContext } from '../lane/step-plan';
 import { GUEST_COMMAND_FILES, GUEST_RUNNER_PATHS } from './guest-paths';
@@ -48,6 +50,19 @@ export function miseConfigEnvironment(event: EventContext, planEnv: Environment)
     ...planEnv,
   };
   return { ...rest, MISE_TRUSTED_CONFIG_PATHS: GUEST_RUNNER_PATHS.workspace };
+}
+
+/**
+ * The variables that keep every mise config outside the workspace from loading: `configDir`, an
+ * empty directory, as mise's config directory and the home of its global config, and a ceiling on
+ * the upward search at the workspace's parent (ADR-0007, ADR-0008).
+ */
+export function miseIsolation(configDir: string): Environment {
+  return {
+    MISE_CEILING_PATHS: posix.dirname(GUEST_RUNNER_PATHS.workspace),
+    MISE_CONFIG_DIR: configDir,
+    MISE_GLOBAL_CONFIG_FILE: `${configDir}/config.toml`,
+  };
 }
 
 /** The environment without mise's per-tool version variables (`MISE_NODE_VERSION`). */

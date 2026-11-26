@@ -1,7 +1,7 @@
 /**
  * The pure parts of how a lane's steps find their tools (ADR-0006): parsing what `mise` prints in
  * the guest, comparing the workflow's tool pins with the repository's mise config, and merging
- * the two tool environments. The guest scripts that produce the text live in `tool-steps.ts`.
+ * the tool environments. The guest scripts that produce the text live in `tool-steps.ts`.
  */
 import { isMapping } from '../yaml/strict';
 import type { Environment } from './guest-env';
@@ -213,22 +213,27 @@ function mergePath(parts: readonly (readonly string[])[]): string {
 }
 
 /**
- * The tool environment of a `tools: mise` lane's later steps: the first environment's variables win
- * over the config environment's, and `PATH` is the workflow tools' bin directories, then the
- * config environment's `PATH` in its own order, then the rest of the first one, without duplicates.
+ * The tool environment of a `tools: mise` lane's later steps (ADR-0008). `PATH` is the workflow
+ * tools' bin directories, then the config environment's `PATH` in its own order, then the rest of
+ * the first one, without duplicates. Every other variable is the config environment's, then the
+ * first one's, except a variable that `workflowOnly`, the environment of the workflow tools alone,
+ * sets: that one keeps the first environment's value, so nothing in the config moves a workflow
+ * tool's variables, and an image default's yields to a tool the config pins.
  */
 export function mergeToolEnvironments(input: {
   readonly first: Environment;
   readonly config: Environment;
+  readonly workflowOnly: Environment;
   readonly workflowBins: readonly string[];
 }): Environment {
+  const { config, first, workflowOnly } = input;
+  // PATH is set last, so it needs no exclusion here. A variable the first does not set has no
+  // value to keep, and the config's stands.
+  const workflowVariables = Object.keys(workflowOnly).filter((name) => Object.hasOwn(first, name));
   return {
-    ...input.config,
-    ...input.first,
-    PATH: mergePath([
-      input.workflowBins,
-      splitPath(input.config.PATH),
-      splitPath(input.first.PATH),
-    ]),
+    ...first,
+    ...config,
+    ...Object.fromEntries(workflowVariables.map((name) => [name, first[name]!])),
+    PATH: mergePath([input.workflowBins, splitPath(config.PATH), splitPath(first.PATH)]),
   };
 }
