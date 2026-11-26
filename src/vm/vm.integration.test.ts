@@ -330,25 +330,43 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test(
-    'a host-driven step the job timeout cuts short leaves no guest process, SIGTERM-proof or disowned',
+    'a host-driven step the job timeout cuts short leaves no process in its session, SIGTERM-proof ones too',
     async () => {
       await waitForFreeSlot();
       const req = request('host-step-timeout', [checkout(1)], {}, 0.75);
       const deps = realDeps();
       // Hugi kills only its own `tart exec` when a host-driven step is cut short; the guest agent
-      // ends the script's processes once that exec ends. Pin it, since a step after a cut-short
-      // `jdx/mise-action` step would otherwise run beside its install.
-      const survivors = async (): Promise<number> =>
-        (await deps.tart.exec(deps.vm, ['pgrep', '-f', 'sleep 60(07|08|09)'])).exitCode;
-      const seen: { whileRunning?: number; afterCutShort?: number } = {};
+      // ends every process in the script's session once that exec ends, whatever its signal
+      // handling (a process that leaves the session survives). Pin it, since a step after a
+      // cut-short `jdx/mise-action` step would otherwise run beside its install.
+      const survivors = async (): Promise<string> => {
+        let printed = '';
+        await deps.tart.exec(
+          deps.vm,
+          ['bash', '-c', 'pgrep -lf \'sleep 60(07|08|09)\'; echo "pgrep=$?"'],
+          {
+            onOutput: (chunk) => {
+              printed += chunk;
+            },
+          },
+        );
+        // The marker of each sleep still alive, then how pgrep exited: 0 for a match, 1 for none.
+        const alive = [...printed.matchAll(/sleep (60\d\d)/gu)]
+          .map((match) => match[1] ?? '')
+          .toSorted((a, b) => a.localeCompare(b));
+        return [...alive, /pgrep=\d+/u.exec(printed)?.[0] ?? 'pgrep did not run'].join(' ');
+      };
+      const seen: { whileRunning?: string; afterCutShort?: string } = {};
       // The checkout's workspace script becomes one that outlives the job timeout.
       const stdin = [
         "trap '' TERM HUP",
         'sleep 6007 &',
-        "(trap '' TERM HUP; exec sleep 6009) & disown",
+        "(trap '' TERM HUP; exec sleep 6009) &",
         'sleep 6008',
         '',
       ].join('\n');
+      let probing: Promise<void> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const tart = {
         ...deps.tart,
         exec: async (...args: Parameters<typeof deps.tart.exec>) => {
@@ -356,20 +374,26 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
           if (!options?.stdin?.startsWith('# hugi-workspace')) {
             return deps.tart.exec(...args);
           }
-          const noteWhileRunning = async (): Promise<void> => {
-            seen.whileRunning = await survivors();
-          };
-          setTimeout(() => void noteWhileRunning(), 10_000);
+          timer = setTimeout(() => {
+            probing = (async () => {
+              seen.whileRunning = await survivors();
+            })();
+          }, 10_000);
           const cutShort = await deps.tart.exec(vm, argv, { ...options, stdin });
-          // `pgrep` exits 0 when a process matches, 1 when none does.
           seen.afterCutShort = await survivors();
           return cutShort;
         },
       };
-      const result = await runInVm(req, { ...deps, tart });
+      let result: Awaited<ReturnType<typeof runInVm>>;
+      try {
+        result = await runInVm(req, { ...deps, tart });
+      } finally {
+        clearTimeout(timer);
+        await probing;
+      }
       expect(result).toMatchObject({ reason: 'timeout', verdict: 'fail' });
       expect(result.steps.map((s) => s.outcome)).toEqual(['timeout']);
-      expect(seen).toEqual({ afterCutShort: 1, whileRunning: 0 });
+      expect(seen).toEqual({ afterCutShort: 'pgrep=1', whileRunning: '6007 6008 6009 pgrep=0' });
       expect(vmRemains(deps.vm)).toBe(false);
     },
     TEST_TIMEOUT_MS,
