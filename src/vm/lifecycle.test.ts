@@ -880,6 +880,10 @@ const checkout = () => actionStep(1, 'actions/checkout@v7');
 const listingOf = (...records: object[]) =>
   `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
 
+/** The "Tool environment" step's guest script of a run. */
+const toolEnvScript = (h: ReturnType<typeof harness>) =>
+  h.tart.execs.find((call) => call.stdin?.startsWith('# hugi-tool-env'))!.stdin!;
+
 describe('tools from the mise config (ADR-0006)', () => {
   const WORKSPACE = '/Users/admin/hugi/workspace';
   const workspaceRecord = { kind: 'workspace', real: WORKSPACE };
@@ -947,7 +951,7 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(install).toContain("export MISE_NODE_VERSION='22.23.2'");
     expect(install).toContain('mise install');
     expect(install).toContain('MISE_NO_ENV=1 mise env --json');
-    expect(install).toContain("mise bin-paths 'node@22.23.2'");
+    expect(install).not.toContain('mise bin-paths');
     expect(install).not.toContain('MISE_IGNORED_CONFIG_PATHS');
   });
 
@@ -990,18 +994,37 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(h.tart.launcherFor(2)).toContain("export RUSTUP_TOOLCHAIN='1.97.1'");
   });
 
-  test('computes the workflow tools alone in an empty config directory, with every mise config kept out', async () => {
+  test('computes the workflow bins and the workflow tools alone with the tool environment, before the checkout, with every mise config kept out', async () => {
     const h = harness({ mise, steps: {} });
     await run(h, miseRequest([checkout(), runStep(2)]));
-    const install = h.tart.execs.find((call) =>
-      call.stdin?.startsWith('# hugi-mise-config install'),
-    )!.stdin!;
+    expect(h.tart.events.indexOf('tool environment')).toBeLessThan(
+      h.tart.events.indexOf('materialize'),
+    );
+    const script = toolEnvScript(h);
     const dir = '/Users/admin/hugi/control/mise-workflow-config';
-    expect(install).toContain(`mkdir -p '${dir}'`);
-    expect(install).toContain(`cd '${dir}'`);
-    expect(install).toContain(
+    expect(script).toContain("cd '/Users/admin/hugi/temp'");
+    expect(script).toContain("mise bin-paths 'node@22.23.2'");
+    expect(script).toContain(`mkdir -p '${dir}'`);
+    expect(script).toContain(`cd '${dir}'`);
+    expect(script).toContain(
       `MISE_CEILING_PATHS='/Users/admin/hugi' MISE_CONFIG_DIR='${dir}' MISE_GLOBAL_CONFIG_FILE='${dir}/config.toml' MISE_NO_ENV=1 mise env --json > '/Users/admin/hugi/control/mise-workflow-environment.json'`,
     );
+  });
+
+  test("the workflow tools alone take no version from the plan's env, as the first environment takes none", async () => {
+    const h = harness({ mise, steps: {} });
+    await run(
+      h,
+      miseRequest([checkout(), runStep(2)], {}, { env: { MISE_RUST_VERSION: '1.95.0' } }),
+    );
+    expect(toolEnvScript(h)).not.toContain('MISE_RUST_VERSION');
+  });
+
+  test('a tools: workflow lane computes neither', async () => {
+    const h = harness({ mise, steps: {} });
+    await run(h, requestOf([checkout(), runStep(2)], { tools: ['node@22.23.2'] }));
+    expect(toolEnvScript(h)).not.toContain('mise-workflow-environment');
+    expect(toolEnvScript(h)).not.toContain('mise bin-paths');
   });
 
   test('is absent under the default', async () => {

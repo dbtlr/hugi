@@ -8,8 +8,9 @@ modified: 2026-11-25
 ---
 # ADR-0008 - A tool the mise config pins wins over the image's default
 
-This record amends [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) in one place and [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) in one. It changes nothing else that either decides:
+This record amends [ADR-0006](0006-a-lane-chooses-where-its-tools-come-from.md) in two places and [ADR-0007](0007-a-workflow-installs-tools-from-its-mise-config.md) in one. It changes nothing else that either decides:
 
+- ADR-0006's "How a step finds its tools" computes the tool environment with one `mise env --json`. For a `tools: mise` lane, the same step now also writes the workflow tools' bin directories and an environment of the workflow tools alone, which step 4 of `tools: mise` used to compute after `mise install`.
 - In step 4 of ADR-0006's `tools: mise`, the first tool environment's variables win over the config environment's. This record lets the config environment's variables win, except those that a workflow tool sets. It also narrows the guarantee that ends the step: nothing in the config can move a workflow tool's place on `PATH` or the variables it sets.
 - ADR-0007 accepts as a limit that, under `tools: mise`, an image default's variable such as `RUSTUP_TOOLCHAIN` can override a tool the config pins. That limit no longer holds.
 
@@ -23,9 +24,11 @@ The workflow tools' variables have to keep winning. The config environment is co
 
 ## Decision
 
-The "Install tools from mise config" step computes one more environment after `mise install`, of the workflow tools alone. It is `mise env --json` run with the workflow tools' per-tool version variables and `MISE_NO_ENV=1`, and with every mise config kept from loading, by the isolation that ADR-0007 gives a `jdx/mise-action` step's own commands: an empty `MISE_CONFIG_DIR`, a `MISE_GLOBAL_CONFIG_FILE` inside it, and `MISE_CEILING_PATHS` above the workspace. It runs in that empty config directory, which is Hugi's own, under the ceiling and outside the workspace. With no config, mise sets only the variables of the tools that the version variables name, so this environment's variables, other than `PATH`, are the ones the workflow tools set. Only their names are used; the values come from the other two environments.
+For a `tools: mise` lane, the "Tool environment" step computes two more things after the first tool environment, from the same environment and before the checkout: the workflow tools' bin directories (`mise bin-paths`, in the same directory as the first), and an environment of the workflow tools alone. That environment is `mise env --json` run with the workflow tools' per-tool version variables and `MISE_NO_ENV=1`, and with every mise config kept from loading, by the isolation that ADR-0007 gives a `jdx/mise-action` step's own commands: an empty `MISE_CONFIG_DIR`, a `MISE_GLOBAL_CONFIG_FILE` inside it, and `MISE_CEILING_PATHS` above the workspace. It runs in that empty config directory, which is Hugi's own, under the ceiling and outside the workspace. With no config, mise sets only the variables of the tools that the version variables name, so this environment's variables, other than `PATH`, are the ones the workflow tools set. Only their names are used; the values come from the other two environments. A failure in either fails the "Tool environment" step, as a failure of `mise env --json` does.
 
-In step 4, the later steps' `PATH` keeps the order ADR-0006 gives it. Every other variable comes from the config's tool environment, then from the first tool environment when the config's does not set it. A variable that the environment of the workflow tools alone sets keeps the first tool environment's value, whatever the config's sets.
+Both are computed before any file of the repository reaches the guest, and from the same inputs as the first tool environment, the plan's `env` not among them. So a `[plugins]` entry in the config named after a workflow tool, which `mise install` would put in mise's data directory in place of that tool, cannot change them, and a variable in the plan's `env` cannot make a tool the workflow tools'.
+
+In step 4, the later steps' `PATH` keeps the order ADR-0006 gives it. Every other variable comes from the config's tool environment, then from the first tool environment when the config's does not set it. A variable that the environment of the workflow tools alone sets keeps the first tool environment's value, whatever the config's sets. When the first does not set it, there is no value to keep, and the config's stands.
 
 So a tool that the config pins and the workflow does not sets its variables, such as `RUSTUP_TOOLCHAIN` for Rust, in place of the image default's. Nothing in the config can move a workflow tool's place on `PATH` or the variables it sets, not a tool alias, `disable_tools`, or `[env]`.
 

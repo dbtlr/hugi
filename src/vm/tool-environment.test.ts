@@ -281,6 +281,16 @@ describe('mergeToolEnvironments', () => {
     expect(merged.RUSTUP_TOOLCHAIN).toBe('workflow');
   });
 
+  test("a variable the workflow tools alone set but the first does not keeps the config's value", () => {
+    const merged = mergeToolEnvironments({
+      config: { GOROOT: '/cfg/go', PATH: '/cfg/tool' },
+      first,
+      workflowBins: [],
+      workflowOnly: { GOROOT: '/wf/go', PATH: '/wf/go/bin' },
+    });
+    expect(merged.GOROOT).toBe('/cfg/go');
+  });
+
   test('a variable only the first environment sets stays', () => {
     const merged = mergeToolEnvironments({
       config: { PATH: '/cfg/tool' },

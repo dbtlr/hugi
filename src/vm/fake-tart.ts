@@ -136,7 +136,7 @@ export type FakeMise = {
   /** `mise env --json` of the config, written by the install script. */
   readonly configEnvironment?: string;
   readonly workflowBins?: string;
-  /** `mise env --json` of the workflow tools alone; the default is a `PATH` of `/usr/bin`. */
+  /** `mise env --json` of the workflow tools alone, written with the tool environment; the default is a `PATH` of `/usr/bin`. */
   readonly workflowOnly?: string;
   /** Exit codes of the mise-config step's scripts. */
   readonly exitCodes?: Partial<Record<'listing' | 'requests' | 'install', number>>;
@@ -353,6 +353,11 @@ export class FakeTart implements Tart {
       GUEST_TOOL_FILES.environment,
       mise.toolEnvironment ?? '{"PATH":"/fake/tools:/usr/bin"}',
     );
+    // A tools: mise lane's script also writes these (ADR-0008); a script without them leaves none.
+    if (options.stdin?.includes(GUEST_TOOL_FILES.workflowOnly)) {
+      this.files.set(GUEST_TOOL_FILES.workflowBins, mise.workflowBins ?? '');
+      this.files.set(GUEST_TOOL_FILES.workflowOnly, mise.workflowOnly ?? '{"PATH":"/usr/bin"}');
+    }
     options.onOutput?.('mise env\n');
     return { exitCode: mise.toolEnvironmentExitCode ?? 0 };
   }
@@ -371,8 +376,6 @@ export class FakeTart implements Tart {
         GUEST_TOOL_FILES.configEnvironment,
         mise.configEnvironment ?? '{"PATH":"/fake/config:/usr/bin"}',
       );
-      this.files.set(GUEST_TOOL_FILES.workflowBins, mise.workflowBins ?? '');
-      this.files.set(GUEST_TOOL_FILES.workflowOnly, mise.workflowOnly ?? '{"PATH":"/usr/bin"}');
     }
     const codes: Record<string, number | undefined> = { ...mise.exitCodes };
     return { exitCode: codes[phase] ?? 0 };

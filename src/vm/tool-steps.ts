@@ -63,13 +63,34 @@ export function workflowEnvironment(request: RunRequest): Environment {
 
 /**
  * Compute the workflow tools' environment: `mise env --json` outside the workspace, so no config
- * of the repository is read, with `MISE_NO_ENV=1` so no `[env]` table enters it.
+ * of the repository is read, with `MISE_NO_ENV=1` so no `[env]` table enters it. For a `tools: mise`
+ * lane, also write the workflow tools' bin directories and the environment of the workflow tools
+ * alone, computed in an empty config directory with every mise config kept out, so its variables
+ * are the ones the workflow tools set (ADR-0008). Both come from the same inputs as the first
+ * environment and before the checkout, so nothing in the repository can have changed them.
  */
 export function toolEnvironmentScript(request: RunRequest): string {
   return guestScript('tool-env', workflowEnvironment(request), [
     `cd ${shellQuote(GUEST_RUNNER_PATHS.temp)}`,
     `MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.environment)}`,
+    ...(request.toolSource === 'mise' ? workflowToolLines(request) : []),
   ]);
+}
+
+/** The lines that write the workflow tools' bin directories and their environment alone, from `runner.temp`. */
+function workflowToolLines(request: RunRequest): string[] {
+  const pinned = pinnedSpecs(request.tools);
+  const bins = ` > ${shellQuote(GUEST_TOOL_FILES.workflowBins)}`;
+  const dir = GUEST_TOOL_FILES.workflowConfigDir;
+  const isolation = Object.entries(miseIsolation(dir))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(' ');
+  return [
+    pinned.length === 0 ? `:${bins}` : `mise bin-paths ${pinned.map(shellQuote).join(' ')}${bins}`,
+    `mkdir -p ${shellQuote(dir)}`,
+    `cd ${shellQuote(dir)}`,
+    `${isolation} MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.workflowOnly)}`,
+  ];
 }
 
 /** The step that computes the tool environment; its value is the environment every step runs with. */
@@ -146,10 +167,8 @@ function configRequestsScript(request: RunRequest): string {
 }
 
 /**
- * Installs the config's tools with mise's lockfile off, then writes the config's tool environment
- * (computed in the workspace, the way the first one is), the workflow tools' bin directories, and
- * the environment of the workflow tools alone: computed in an empty config directory with every
- * mise config kept out, so its variables are the ones the workflow tools set (ADR-0008).
+ * Installs the config's tools with mise's lockfile off, then writes the config's tool environment,
+ * computed in the workspace the way the first one is.
  */
 function configInstallScript(request: RunRequest): string {
   const env = {
@@ -157,20 +176,10 @@ function configInstallScript(request: RunRequest): string {
     ...toolVersionEnvironment(request.tools),
     MISE_LOCKFILE: 'false',
   };
-  const pinned = pinnedSpecs(request.tools);
-  const bins = ` > ${shellQuote(GUEST_TOOL_FILES.workflowBins)}`;
-  const isolation = Object.entries(miseIsolation(GUEST_TOOL_FILES.workflowConfigDir))
-    .map(([name, value]) => `${name}=${shellQuote(value)}`)
-    .join(' ');
   return guestScript('mise-config install', env, [
     `cd ${shellQuote(GUEST_RUNNER_PATHS.workspace)}`,
     'mise install',
     `MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.configEnvironment)}`,
-    `cd ${shellQuote(GUEST_RUNNER_PATHS.temp)}`,
-    pinned.length === 0 ? `:${bins}` : `mise bin-paths ${pinned.map(shellQuote).join(' ')}${bins}`,
-    `mkdir -p ${shellQuote(GUEST_TOOL_FILES.workflowConfigDir)}`,
-    `cd ${shellQuote(GUEST_TOOL_FILES.workflowConfigDir)}`,
-    `${isolation} MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.workflowOnly)}`,
   ]);
 }
 
@@ -219,7 +228,10 @@ async function workspaceConfigFiles(
   return { files };
 }
 
-/** The four sub-steps of "Install tools from mise config", in order; its value is the merged tool environment. */
+/**
+ * The sub-steps of "Install tools from mise config", in order; its value is the merged tool
+ * environment, with the workflow tools' bin directories and environment that "Tool environment" wrote.
+ */
 async function installFromMiseConfig(
   tools: HostStepTools,
   request: RunRequest,

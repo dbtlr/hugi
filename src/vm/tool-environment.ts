@@ -227,9 +227,9 @@ export function mergeToolEnvironments(input: {
   readonly workflowBins: readonly string[];
 }): Environment {
   const { config, first, workflowOnly } = input;
-  const workflowVariables = Object.keys(workflowOnly).filter(
-    (name) => name !== 'PATH' && Object.hasOwn(first, name),
-  );
+  // PATH is set last, so it needs no exclusion here. A variable the first does not set has no
+  // value to keep, and the config's stands.
+  const workflowVariables = Object.keys(workflowOnly).filter((name) => Object.hasOwn(first, name));
   return {
     ...first,
     ...config,
