@@ -54,9 +54,13 @@ bun run build     # build the binary to dist/hugi
 ./dist/hugi --version
 ```
 
+A test fixture that makes a git commit must set an explicit author and committer identity, because CI runners have no git user configured. `host-source.test.ts` in `src/source/` does this with the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` variables. Run a test with `GIT_CONFIG_GLOBAL=/dev/null` to reproduce CI's git setup locally.
+
 ## Running a lane by hand
 
 `hugi run <repository> <commit> <workflow>:<job>` runs one lane at one commit in a throwaway VM and prints a verdict. `<repository>` is `owner/name` for a public GitHub repository, or a path to a local git repository (start it with `./`, `../`, `/`, or `~`). `<commit>` is a sha, a branch, or a tag. For an `owner/name` repository it can also be `pull/<n>`, pull request `<n>`, which runs as a `pull_request` event on GitHub's merge commit ([ADR-0005](docs/decisions/0005-pull-requests-run-on-the-merge-commit.md)). Step logs go to a new directory under `$XDG_STATE_HOME/hugi/runs` unless `--logs` names one; Hugi creates that directory when it is missing, and a leading `~/` in it means your home directory. Add `--format json` for the report as JSON. Each run is kept as described in [Run records and logs](#run-records-and-logs).
+
+`--matrix key=value` picks one row of the job's matrix. Each value matches the row's value as GitHub's `==` does: strings match without regard to case, and values of unlike types are compared as numbers, so `--matrix node=16` matches a numeric `16`. A boolean in the matrix also matches its exact text, so `--matrix enabled=true` matches `true` but `TRUE` does not. The entries together must select exactly one row, and must name every key of that row.
 
 The host reads the workflow and toolchain files as data with `git`; nothing from the repository runs on the host. An `owner/name` repository is read through a bare partial clone in `$XDG_CACHE_HOME/hugi` (override with `--cache-dir` or `HUGI_CACHE_DIR`). The cache is created private to you, and Hugi refuses a cached clone that another user owns or can write, or that is a symbolic link. A local repository is read in place, and never through the cache. It reaches the VM as a snapshot: before booting, Hugi builds a temporary bare repository that holds only the commit, at depth 1, with no config, remote URL, or other ref carried over, and shares it read-only. Untracked files such as `.env` never reach the VM, and a subdirectory or a linked worktree works as well as the repository root. The snapshot is deleted when the run ends. Every `git` call is hardened so that neither the repository nor your git setup can run a program or use a credential:
 
