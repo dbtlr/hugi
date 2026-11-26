@@ -349,6 +349,8 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
             onOutput: (chunk) => {
               printed += chunk;
             },
+            // Its own bound: a guest agent that stops answering fails the probe, not the suite.
+            signal: AbortSignal.timeout(60_000),
           },
         );
         // The marker of each sleep still alive, then how pgrep exited: 0 for a match, 1 for none.
