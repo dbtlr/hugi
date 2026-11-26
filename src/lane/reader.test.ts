@@ -1097,3 +1097,12 @@ describe("jobSelects decides a job's if: as readLane does", () => {
     expect(new Set(outcomes)).toEqual(new Set([true, false]));
   });
 });
+
+test.each([
+  ['workflow', (env: object) => workflow({}, { env })],
+  ['job', (env: object) => workflow({ env })],
+  ['step', (env: object) => workflow({ steps: [{ env, run: 'true' }] })],
+])('an empty %s env key is refused at lane read', (_level, build) => {
+  expect(() => read(build({ '': 'x' }))).toThrow(LaneReadError);
+  expect(() => read(build({ '': 'x' }))).toThrow(/env has an empty key/);
+});

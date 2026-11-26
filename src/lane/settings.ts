@@ -16,10 +16,13 @@ export function expandMapping(
     return {};
   }
   return Object.fromEntries(
-    Object.entries(mapping(value, field)).map(([key, item]) => [
-      key,
-      expand(item, ctx, `${field}.${key}`),
-    ]),
+    Object.entries(mapping(value, field)).map(([key, item]) => {
+      // No process can carry an empty variable name, so the step would never start.
+      if (field === 'env' && key === '') {
+        throw new Error('env has an empty key');
+      }
+      return [key, expand(item, ctx, `${field}.${key}`)];
+    }),
   );
 }
 

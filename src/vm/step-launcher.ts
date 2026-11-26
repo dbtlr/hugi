@@ -13,11 +13,11 @@
  * kills a timed-out step by signalling the whole process group.
  */
 import type { RunStep } from '../lane/step-plan';
+import { splitEnvironment } from './guest-env';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS } from './guest-paths';
 import type { StepFiles } from './guest-paths';
 import { shellQuote } from './shell';
-import { isVariableName } from './tool-environment';
 
 export type LauncherInput = {
   readonly step: RunStep;
@@ -107,29 +107,6 @@ function supervisorScript(step: RunStep, files: StepFiles): string {
     // Written then renamed, so the host never reads a half-written status.
     `echo "$code" > ${shellQuote(statusTemp)} && /bin/mv ${shellQuote(statusTemp)} ${shellQuote(files.status)}`,
   ].join('\n');
-}
-
-/**
- * An environment split by how a guest shell can carry it. A key that is a shell name becomes an
- * `export` line (`PATH` is left to `guestPath`). Any other key, such as `FOO-BAR`, which a workflow
- * `env:` map or `GITHUB_ENV` may hold and GitHub's runner passes to the step, cannot be exported by
- * a shell, so it becomes an `/usr/bin/env` assignment, shell-quoted whole, that starts the process
- * which should inherit it. `envPrefix` is empty when there is no such key.
- */
-export function splitEnvironment(env: Environment): {
-  readonly exports: string[];
-  readonly envPrefix: string;
-} {
-  const entries = Object.entries(env).filter(([key]) => key !== 'PATH');
-  const assignments = entries
-    .filter(([key]) => !isVariableName(key))
-    .map(([key, value]) => shellQuote(`${key}=${value}`));
-  return {
-    envPrefix: assignments.length === 0 ? '' : `/usr/bin/env ${assignments.join(' ')}`,
-    exports: entries
-      .filter(([key]) => isVariableName(key))
-      .map(([key, value]) => `export ${key}=${shellQuote(value)}`),
-  };
 }
 
 export function buildStepLauncher(input: LauncherInput): string {

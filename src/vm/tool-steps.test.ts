@@ -126,6 +126,17 @@ describe('guestScript with a key that is not a shell name', () => {
     expect(script).toContain('\ntouch ok\n');
   });
 
+  test('a name bash keeps read-only, such as UID, reaches a child instead of failing the export', () => {
+    const script = guestScript('x', { UID: '5' }, ['/usr/bin/env | grep -x UID=5']);
+    expect(script).not.toContain('export UID');
+    const ran = Bun.spawnSync(['bash', '-s'], {
+      env: { PATH: '/usr/bin:/bin' },
+      stdin: new TextEncoder().encode(script),
+    });
+    expect(ran.exitCode, ran.stdout.toString()).toBe(0);
+    expect(ran.stdout.toString()).toBe('UID=5\n');
+  });
+
   test('keeps the marker first and runs the lines under env, which a real bash carries to a child', () => {
     mkdirSync('.scratch', { recursive: true });
     const dir = mkdtempSync(join('.scratch', 'guest-script.'));

@@ -10,6 +10,7 @@ import {
   githubEnvironment,
   miseConfigEnvironment,
   miseIsolation,
+  splitEnvironment,
   toolVersionEnvironment,
   withoutToolVersions,
 } from './guest-env';
@@ -19,7 +20,7 @@ import { runHostStep } from './host-step';
 import type { HostStepContext, HostStepRun, HostStepTools, HostStepVerdict } from './host-step';
 import type { RunRequest } from './run-request';
 import { shellQuote } from './shell';
-import { guestPath, splitEnvironment } from './step-launcher';
+import { guestPath } from './step-launcher';
 import {
   configFilesInWorkspace,
   mergeToolEnvironments,

@@ -1,14 +1,14 @@
 /* oxlint-disable node/no-sync -- test support: runs a generated script on the host in a throwaway directory */
 import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { RunStep } from '../lane/step-plan';
-import { stepFiles } from './guest-paths';
+import { GUEST_RUNNER_PATHS, stepFiles } from './guest-paths';
 import { stepLogName } from './logs';
 import { shellQuote } from './shell';
-import { buildStepLauncher, guestPath, shellCommand, splitEnvironment } from './step-launcher';
+import { buildStepLauncher, guestPath, shellCommand } from './step-launcher';
 
 const step: RunStep = {
   continueOnError: false,
@@ -124,23 +124,22 @@ test('a missing working directory fails the step rather than the launcher', () =
 });
 
 describe('an env key that is not a shell name', () => {
-  const env = { 'A;touch hacked': 'y=z', FOO: 'plain', 'FOO-BAR': "it's x" };
+  const env = {
+    '-x': 'dash',
+    'A;touch hacked': 'y=z',
+    FOO: 'plain',
+    'FOO-BAR': "it's x",
+    UID: '5',
+  };
 
-  test('splits into export lines for shell names and env assignments for the rest', () => {
-    expect(splitEnvironment({ ...env, PATH: '/p' })).toEqual({
-      envPrefix: `/usr/bin/env 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x'`,
-      exports: [`export FOO='plain'`],
-    });
-    expect(splitEnvironment({ FOO: 'a' })).toEqual({ envPrefix: '', exports: [`export FOO='a'`] });
-  });
-
-  test('the launcher starts the supervisor under env, and exports only shell names', () => {
+  test('the launcher starts the supervisor under env, and exports only exportable names', () => {
     const launcher = launch({ env });
     expect(launcher).toContain(`export FOO='plain'`);
     expect(launcher).not.toContain('export FOO-BAR');
     expect(launcher).not.toContain('export A;touch');
+    expect(launcher).not.toContain('export UID');
     expect(launcher).toContain(
-      `\n/usr/bin/env 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x' /usr/bin/perl `,
+      `\n/usr/bin/env -- '-x=dash' 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x' 'UID=5' /usr/bin/perl `,
     );
   });
 
@@ -148,18 +147,36 @@ describe('an env key that is not a shell name', () => {
     expect(launch({ env: { FOO: 'a' } })).toContain('\n/usr/bin/perl -e ');
   });
 
-  test('a real bash passes the key to a child verbatim and runs nothing from it', () => {
-    const dir = mkdtempSync(join('.scratch', 'env-keys.'));
+  test('the generated launcher hands the keys to the step exactly and runs nothing from them', () => {
+    mkdirSync('.scratch', { recursive: true });
+    const dir = realpathSync(mkdtempSync(join('.scratch', 'launcher.')));
     try {
-      const { envPrefix } = splitEnvironment(env);
-      const out = execFileSync(
-        '/bin/bash',
-        ['-c', `cd ${shellQuote(dir)} && ${envPrefix} /bin/bash -c '/usr/bin/env'`],
-        { encoding: 'utf8' },
-      );
-      expect(out).toContain("FOO-BAR=it's x\n");
-      expect(out).toContain('A;touch hacked=y=z\n');
-      expect(existsSync(join(dir, 'hacked'))).toBe(false);
+      const guestRoot = dirname(GUEST_RUNNER_PATHS.workspace);
+      const local = (text: string): string => text.replaceAll(guestRoot, dir);
+      const files = stepFiles(7);
+      mkdirSync(local(GUEST_RUNNER_PATHS.workspace), { recursive: true });
+      mkdirSync(local(GUEST_RUNNER_PATHS.temp), { recursive: true });
+      const seen = join(dir, 'seen');
+      const launcher = launch({
+        env: { '-S/x=1 touch INJECTED': 'dash-s', '-x': 'dash', 'FOO-BAR': "it's x", UID: '5' },
+        step: { ...step, script: `/usr/bin/env > ${shellQuote(seen)}` },
+      });
+      execFileSync('/bin/bash', ['-s'], {
+        cwd: dir,
+        env: { PATH: '/usr/bin:/bin' },
+        input: local(launcher),
+      });
+      const status = local(files.status);
+      for (let waited = 0; !existsSync(status) && waited < 10_000; waited += 50) {
+        Bun.sleepSync(50);
+      }
+      expect(readFileSync(status, 'utf8').trim()).toBe('0');
+      const lines = readFileSync(seen, 'utf8').split('\n');
+      expect(lines).toContain("FOO-BAR=it's x");
+      expect(lines).toContain('-x=dash');
+      expect(lines).toContain('-S/x=1 touch INJECTED=dash-s');
+      expect(lines).toContain('UID=5');
+      expect(existsSync(join(dir, 'INJECTED'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true });
     }

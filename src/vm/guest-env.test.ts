@@ -1,4 +1,8 @@
-import { expect, test } from 'bun:test';
+/* oxlint-disable node/no-sync -- test support: runs a generated env split on the host in a throwaway directory */
+import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   carriedGithubEnv,
@@ -7,10 +11,12 @@ import {
   parseOutputFile,
   parsePathFile,
   prependPaths,
+  splitEnvironment,
   stepEnvironment,
   toolVersionEnvironment,
 } from './guest-env';
 import { GUEST_RUNNER_PATHS } from './guest-paths';
+import { shellQuote } from './shell';
 
 const event = {
   event: 'push',
@@ -187,4 +193,45 @@ test('a long file of heredoc entries parses in time linear in its length', () =>
   const parsed = parseEnvFile(`${records}\n`);
   expect(performance.now() - started).toBeLessThan(1000);
   expect(parsed.env.K59999).toBe('v59999');
+});
+
+describe('splitEnvironment', () => {
+  const env = {
+    '-x': 'dash',
+    'A;touch hacked': 'y=z',
+    FOO: 'plain',
+    'FOO-BAR': "it's x",
+    UID: '5',
+  };
+
+  test('exports exportable names and hands the rest to env after --', () => {
+    expect(splitEnvironment({ ...env, PATH: '/p' })).toEqual({
+      envPrefix: `/usr/bin/env -- '-x=dash' 'A;touch hacked=y=z' 'FOO-BAR=it'\\''s x' 'UID=5'`,
+      exports: [`export FOO='plain'`],
+    });
+    expect(splitEnvironment({ FOO: 'a' })).toEqual({ envPrefix: '', exports: [`export FOO='a'`] });
+  });
+
+  test('a real bash passes each key to a child verbatim and runs nothing from it', () => {
+    mkdirSync('.scratch', { recursive: true });
+    const dir = mkdtempSync(join('.scratch', 'env-keys.'));
+    try {
+      const { envPrefix } = splitEnvironment({ ...env, '-S/x=1 touch marker': 'v' });
+      const out = execFileSync(
+        '/bin/bash',
+        ['-c', `cd ${shellQuote(dir)} && ${envPrefix} /bin/bash -c '/usr/bin/env'`],
+        { encoding: 'utf8' },
+      );
+      const lines = out.split('\n');
+      expect(lines).toContain("FOO-BAR=it's x");
+      expect(lines).toContain('A;touch hacked=y=z');
+      expect(lines).toContain('-x=dash');
+      expect(lines).toContain('-S/x=1 touch marker=v');
+      expect(lines).toContain('UID=5');
+      expect(existsSync(join(dir, 'hacked'))).toBe(false);
+      expect(existsSync(join(dir, 'marker'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });

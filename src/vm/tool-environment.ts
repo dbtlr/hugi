@@ -38,11 +38,6 @@ export function workflowPins(specs: readonly string[]): ToolPin[] {
   return pins;
 }
 
-/** What a shell accepts as a variable name; only such a key can become an `export KEY=...` line. */
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export const isVariableName = (name: string): boolean => VARIABLE_NAME.test(name);
-
 /** A tool environment is `mise env --json`'s object of text values, with a non-empty `PATH`. */
 export function parseToolEnvironment(text: string): Environment {
   let parsed: unknown;
