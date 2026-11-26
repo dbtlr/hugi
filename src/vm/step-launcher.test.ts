@@ -261,7 +261,8 @@ describe('the generated launcher, run by a real bash', () => {
     expect(readFileSync(marker, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
-  test.each(['=LEAD', ''])(
+  // The guest's env is macOS's, which refuses these keys; GNU env on a Linux host accepts them.
+  test.skipIf(process.platform !== 'darwin').each(['=LEAD', ''])(
     "a key env cannot set (%p) fails the step promptly, with env's message in its log",
     (key) => {
       const ran = runLauncher(dir, { [key]: 'x' }, 'true');
