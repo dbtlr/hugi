@@ -9,6 +9,7 @@
 import {
   githubEnvironment,
   miseConfigEnvironment,
+  miseIsolation,
   toolVersionEnvironment,
   withoutToolVersions,
 } from './guest-env';
@@ -146,7 +147,9 @@ function configRequestsScript(request: RunRequest): string {
 
 /**
  * Installs the config's tools with mise's lockfile off, then writes the config's tool environment
- * (computed in the workspace, the way the first one is) and the workflow tools' bin directories.
+ * (computed in the workspace, the way the first one is), the workflow tools' bin directories, and
+ * the environment of the workflow tools alone: computed in an empty config directory with every
+ * mise config kept out, so its variables are the ones the workflow tools set (ADR-0008).
  */
 function configInstallScript(request: RunRequest): string {
   const env = {
@@ -156,12 +159,18 @@ function configInstallScript(request: RunRequest): string {
   };
   const pinned = pinnedSpecs(request.tools);
   const bins = ` > ${shellQuote(GUEST_TOOL_FILES.workflowBins)}`;
+  const isolation = Object.entries(miseIsolation(GUEST_TOOL_FILES.workflowConfigDir))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(' ');
   return guestScript('mise-config install', env, [
     `cd ${shellQuote(GUEST_RUNNER_PATHS.workspace)}`,
     'mise install',
     `MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.configEnvironment)}`,
     `cd ${shellQuote(GUEST_RUNNER_PATHS.temp)}`,
     pinned.length === 0 ? `:${bins}` : `mise bin-paths ${pinned.map(shellQuote).join(' ')}${bins}`,
+    `mkdir -p ${shellQuote(GUEST_TOOL_FILES.workflowConfigDir)}`,
+    `cd ${shellQuote(GUEST_TOOL_FILES.workflowConfigDir)}`,
+    `${isolation} MISE_NO_ENV=1 mise env --json > ${shellQuote(GUEST_TOOL_FILES.workflowOnly)}`,
   ]);
 }
 
@@ -244,7 +253,11 @@ async function installFromMiseConfig(
   const bins = (await tools.readFile(GUEST_TOOL_FILES.workflowBins))
     .split('\n')
     .filter((line) => line !== '');
-  return { ok: true, value: mergeToolEnvironments({ config, first, workflowBins: bins }) };
+  const workflowOnly = parseToolEnvironment(await tools.readFile(GUEST_TOOL_FILES.workflowOnly));
+  return {
+    ok: true,
+    value: mergeToolEnvironments({ config, first, workflowBins: bins, workflowOnly }),
+  };
 }
 
 /**

@@ -16,7 +16,7 @@
 import { posix } from 'node:path';
 
 import type { MiseActionSettings } from '../toolchain/types';
-import { carriedGithubEnv, parsePathFile, prependPaths } from './guest-env';
+import { carriedGithubEnv, miseIsolation, parsePathFile, prependPaths } from './guest-env';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS, miseActionFiles } from './guest-paths';
 import type { MiseActionFiles } from './guest-paths';
@@ -125,21 +125,14 @@ const workingDirectory = (settings: MiseActionSettings): string =>
     : `${GUEST_RUNNER_PATHS.workspace}/${settings.workingDirectory}`;
 
 /** The variables of the isolation below, which a step environment that sets them would lose. */
-const ISOLATION_VARIABLES = ['MISE_CEILING_PATHS', 'MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE'];
+const ISOLATION_VARIABLES = Object.keys(miseIsolation(''));
 
 /**
  * The environment of the step's own commands: the step's, then what it has written, then the
  * isolation that keeps every config outside the workspace from loading.
  */
 function scriptEnvironment(step: Step): Environment {
-  const configDir = step.files.configDir;
-  return {
-    ...step.input.env,
-    ...step.writes.env,
-    MISE_CEILING_PATHS: posix.dirname(GUEST_RUNNER_PATHS.workspace),
-    MISE_CONFIG_DIR: configDir,
-    MISE_GLOBAL_CONFIG_FILE: `${configDir}/config.toml`,
-  };
+  return { ...step.input.env, ...step.writes.env, ...miseIsolation(step.files.configDir) };
 }
 
 /** Run one guest script of the step in `directory`; its exit code, unless the step was cut short. */

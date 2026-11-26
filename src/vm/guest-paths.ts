@@ -80,6 +80,10 @@ export const GUEST_TOOL_FILES = {
   environment: `${GUEST_CONTROL_DIR}/tool-environment.json`,
   /** The workflow tools' bin directories, one per line. */
   workflowBins: `${GUEST_CONTROL_DIR}/workflow-bins.txt`,
+  /** An empty config directory, so the workflow tools alone make up `workflowOnly`. */
+  workflowConfigDir: `${GUEST_CONTROL_DIR}/mise-workflow-config`,
+  /** `mise env --json` of the workflow tools alone, with every mise config kept out (ADR-0008). */
+  workflowOnly: `${GUEST_CONTROL_DIR}/mise-workflow-environment.json`,
 } as const;
 
 /**

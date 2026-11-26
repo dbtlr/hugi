@@ -232,25 +232,62 @@ describe('versionConflicts', () => {
 });
 
 describe('mergeToolEnvironments', () => {
-  const first = { PATH: '/first/node:/base', RUSTUP_TOOLCHAIN: 'first' };
+  const first = { PATH: '/first/node:/base', RUSTUP_TOOLCHAIN: 'image' };
   const config = {
     CARGO_HOME: '/cfg/cargo',
     PATH: '/cfg/tool:/first/node:/base',
     RUSTUP_TOOLCHAIN: 'cfg',
   };
+  const noWorkflowRust = { PATH: '/first/node:/base' };
 
   test('orders the workflow bins, the config PATH, then the first PATH, without duplicates', () => {
     const merged = mergeToolEnvironments({
       config,
       first: { ...first, PATH: '/first/node:/first/extra:/base' },
       workflowBins: ['/first/node'],
+      workflowOnly: noWorkflowRust,
     });
     expect(merged.PATH).toBe('/first/node:/cfg/tool:/base:/first/extra');
   });
 
-  test('the first environment wins over the config environment, and the config adds the rest', () => {
-    const merged = mergeToolEnvironments({ config, first, workflowBins: [] });
-    expect(merged.RUSTUP_TOOLCHAIN).toBe('first');
+  test("the config's variables win over an image default's, so a Rust the config pins sets RUSTUP_TOOLCHAIN", () => {
+    const merged = mergeToolEnvironments({
+      config,
+      first,
+      workflowBins: [],
+      workflowOnly: noWorkflowRust,
+    });
+    expect(merged.RUSTUP_TOOLCHAIN).toBe('cfg');
     expect(merged.CARGO_HOME).toBe('/cfg/cargo');
+  });
+
+  test("a variable a workflow tool sets keeps the first environment's value over the config's", () => {
+    const merged = mergeToolEnvironments({
+      config,
+      first: { ...first, RUSTUP_TOOLCHAIN: 'workflow' },
+      workflowBins: [],
+      workflowOnly: { PATH: '/wf/rust', RUSTUP_TOOLCHAIN: 'workflow-alone' },
+    });
+    expect(merged.RUSTUP_TOOLCHAIN).toBe('workflow');
+  });
+
+  test('a variable a workflow tool sets stays when the config drops it, as disable_tools does', () => {
+    const merged = mergeToolEnvironments({
+      config: { PATH: '/cfg/tool:/base' },
+      first: { ...first, RUSTUP_TOOLCHAIN: 'workflow' },
+      workflowBins: [],
+      workflowOnly: { PATH: '/wf/rust', RUSTUP_TOOLCHAIN: 'workflow' },
+    });
+    expect(merged.RUSTUP_TOOLCHAIN).toBe('workflow');
+  });
+
+  test('a variable only the first environment sets stays', () => {
+    const merged = mergeToolEnvironments({
+      config: { PATH: '/cfg/tool' },
+      first: { ...first, GOROOT: '/image/go' },
+      workflowBins: [],
+      workflowOnly: noWorkflowRust,
+    });
+    expect(merged.GOROOT).toBe('/image/go');
   });
 });

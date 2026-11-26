@@ -951,6 +951,59 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(install).not.toContain('MISE_IGNORED_CONFIG_PATHS');
   });
 
+  test("a Rust the config pins sets RUSTUP_TOOLCHAIN over the image default's (ADR-0008)", async () => {
+    const h = harness({
+      mise: {
+        ...mise,
+        configEnvironment: JSON.stringify({
+          PATH: '/cfg/rust:/usr/bin',
+          RUSTUP_TOOLCHAIN: '1.95.0',
+        }),
+        toolEnvironment: JSON.stringify({ PATH: '/img/rust:/usr/bin', RUSTUP_TOOLCHAIN: '1.97.1' }),
+        workflowOnly: JSON.stringify({ PATH: '/wf/node:/usr/bin' }),
+      },
+      steps: {},
+    });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result.reason).toBe('passed');
+    expect(h.tart.launcherFor(2)).toContain("export RUSTUP_TOOLCHAIN='1.95.0'");
+  });
+
+  test("a workflow Rust pin keeps its RUSTUP_TOOLCHAIN over the config's (ADR-0008)", async () => {
+    const h = harness({
+      mise: {
+        ...mise,
+        configEnvironment: JSON.stringify({
+          PATH: '/cfg/rust:/usr/bin',
+          RUSTUP_TOOLCHAIN: '1.95.0',
+        }),
+        toolEnvironment: JSON.stringify({ PATH: '/wf/rust:/usr/bin', RUSTUP_TOOLCHAIN: '1.97.1' }),
+        workflowOnly: JSON.stringify({ PATH: '/wf/rust:/usr/bin', RUSTUP_TOOLCHAIN: '1.97.1' }),
+      },
+      steps: {},
+    });
+    const result = await run(
+      h,
+      miseRequest([checkout(), runStep(2)], { tools: ['node@22.23.2', 'rust@1.97.1'] }),
+    );
+    expect(result.reason).toBe('passed');
+    expect(h.tart.launcherFor(2)).toContain("export RUSTUP_TOOLCHAIN='1.97.1'");
+  });
+
+  test('computes the workflow tools alone in an empty config directory, with every mise config kept out', async () => {
+    const h = harness({ mise, steps: {} });
+    await run(h, miseRequest([checkout(), runStep(2)]));
+    const install = h.tart.execs.find((call) =>
+      call.stdin?.startsWith('# hugi-mise-config install'),
+    )!.stdin!;
+    const dir = '/Users/admin/hugi/control/mise-workflow-config';
+    expect(install).toContain(`mkdir -p '${dir}'`);
+    expect(install).toContain(`cd '${dir}'`);
+    expect(install).toContain(
+      `MISE_CEILING_PATHS='/Users/admin/hugi' MISE_CONFIG_DIR='${dir}' MISE_GLOBAL_CONFIG_FILE='${dir}/config.toml' MISE_NO_ENV=1 mise env --json > '/Users/admin/hugi/control/mise-workflow-environment.json'`,
+    );
+  });
+
   test('is absent under the default', async () => {
     const h = harness({ mise, steps: {} });
     const result = await run(h, requestOf([checkout(), runStep(2)], { tools: ['node@22.23.2'] }));
