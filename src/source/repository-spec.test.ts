@@ -22,6 +22,11 @@ test('explicit paths are local, resolved against the working directory and home'
   expect(parse('../repo')).toEqual({ kind: 'local', path: '/work/repo' });
   expect(parse('/abs/repo')).toEqual({ kind: 'local', path: '/abs/repo' });
   expect(parse('~/repo')).toEqual({ kind: 'local', path: '/home/u/repo' });
+  expect(parse('~')).toEqual({ kind: 'local', path: '/home/u' });
+});
+
+test('~user is left as written, so it never names a sibling of the home directory', () => {
+  expect(parse('~bob/repo')).toEqual({ kind: 'local', path: '/work/here/~bob/repo' });
 });
 
 test('an ambiguous bare word is refused', () => {

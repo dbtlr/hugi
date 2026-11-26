@@ -1,6 +1,8 @@
 /** What a `<repository>` argument names: a public GitHub repository, or a git repository on this host. */
 import { basename, resolve } from 'node:path';
 
+import { expandHome } from './locations';
+
 export type RepositorySpec =
   | { readonly kind: 'github'; readonly name: string; readonly cloneUrl: string }
   | { readonly kind: 'local'; readonly path: string };
@@ -21,8 +23,7 @@ export class RepositorySpecError extends Error {
  */
 export function parseRepository(text: string, cwd: string, home: string): RepositorySpec {
   if (EXPLICIT_PATH.test(text)) {
-    const expanded = text.startsWith('~') ? home + text.slice(1) : text;
-    return { kind: 'local', path: resolve(cwd, expanded) };
+    return { kind: 'local', path: resolve(cwd, expandHome(text, home)) };
   }
   if (GITHUB_NAME.test(text)) {
     const name = text.replace(/\.git$/, '');
