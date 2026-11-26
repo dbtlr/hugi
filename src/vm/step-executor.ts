@@ -236,35 +236,34 @@ async function readCommandFile(ctx: StepRunContext, step: RunStep, path: string)
 
 /**
  * Parse the step's `GITHUB_ENV` and `GITHUB_PATH` into the carried state and check its
- * `GITHUB_OUTPUT`, or say why one of them is invalid. The errors GitHub's runner logs for the
- * `GITHUB_ENV` writes it refuses come back for the step's log.
+ * `GITHUB_OUTPUT`. As in GitHub's runner, each file is processed on its own: a bad one fails the
+ * step (`errors`, one per bad file) without costing it the valid results of the
+ * others, and the `GITHUB_ENV` assignments before a bad line still count. The errors the runner
+ * logs for the `GITHUB_ENV` writes it refuses come back as `refused`, for the step's log.
  */
 async function applyCommandFiles(
   ctx: StepRunContext,
   step: RunStep,
   files: StepFiles,
   carried: CarriedState,
-): Promise<
-  | { readonly carried: CarriedState; readonly refused: readonly string[] }
-  | { readonly error: string }
-> {
+): Promise<{
+  readonly carried: CarriedState;
+  readonly refused: readonly string[];
+  readonly errors: readonly string[];
+}> {
   const envText = await readCommandFile(ctx, step, files.env);
   const pathText = await readCommandFile(ctx, step, files.path);
   const outputError = parseOutputFile(await readCommandFile(ctx, step, files.output));
   const env = parseEnvFile(envText);
-  if ('error' in env) {
-    return { error: env.error };
-  }
-  if (outputError !== undefined) {
-    return { error: outputError };
-  }
   const kept = carriedGithubEnv(env.env);
+  const errors = [env.error, outputError].filter((error) => error !== undefined);
   return {
     carried: {
       ...carried,
       extraPath: prependPaths(carried.extraPath, parsePathFile(pathText)),
       fromGithubEnv: { ...carried.fromGithubEnv, ...kept.env },
     },
+    errors,
     refused: kept.refused,
   };
 }
@@ -402,16 +401,20 @@ async function runOneStep(
       result: { ...base, exitCode, logFile, outcome: 'failure' },
     };
   }
-  if ('error' in applied) {
-    const logFile = await copyLog(ctx, step, files, `Error: ${applied.error}\n`);
+  const messages = [...applied.refused, ...applied.errors];
+  const logFile = await copyLog(
+    ctx,
+    step,
+    files,
+    messages.map((message) => `Error: ${message}\n`).join(''),
+  );
+  if (applied.errors.length > 0) {
     return {
-      carried,
+      carried: applied.carried,
       end: 'exited',
-      result: { ...base, error: applied.error, exitCode, logFile, outcome: 'failure' },
+      result: { ...base, error: applied.errors.join('; '), exitCode, logFile, outcome: 'failure' },
     };
   }
-  const refusals = applied.refused.map((message) => `Error: ${message}\n`).join('');
-  const logFile = await copyLog(ctx, step, files, refusals);
   return {
     carried: applied.carried,
     end: 'exited',
