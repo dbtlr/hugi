@@ -1,8 +1,8 @@
 /* oxlint-disable node/no-sync, promise/avoid-new, promise/prefer-await-to-then, typescript/parameter-properties -- test support: simple fixtures and a hand-rolled fake */
 /**
  * Runs plans in real tart VMs. Skipped unless HUGI_VM_TESTS=1 (Linux CI has no tart).
- * The image comes from HUGI_TEST_IMAGE. The pinned-tools case also needs
- * HUGI_GOLDEN_TESTS=1 and a local `hugi-golden` image, which it clones and never changes; so does
+ * The image comes from HUGI_TEST_IMAGE. The pinned-tools and `tools: mise` cases also need
+ * HUGI_GOLDEN_TESTS=1 and a local `hugi-golden` image, which they clone and never change; so does
  * the sweep case, the only other one that clones that image.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
@@ -111,6 +111,13 @@ const step = (index: number, script: string, overrides: Partial<RunStep> = {}): 
   when: 'success',
   ...overrides,
 });
+
+/** A step that prints the Rust the steps run and the environment of the workflow tools alone. */
+const rustReport = (index: number) =>
+  step(
+    index,
+    'echo "toolchain=$RUSTUP_TOOLCHAIN"\nrustc --version\ncat /Users/admin/hugi/control/mise-workflow-environment.json',
+  );
 
 /** The lane's `actions/checkout` step, which materializes the workspace. */
 const checkout = (index: number): ActionStep => ({
@@ -521,6 +528,98 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
       expect(deps.vm.startsWith(SERVICE_VM_PREFIX)).toBe(true);
       expect(vmRemains(deps.vm)).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  /** A commit of the fixture repository, on a branch of its own, whose `mise.toml` is `toml`. */
+  const miseConfigSource = async (
+    branch: string,
+    toml: string,
+  ): Promise<{ sha: string; snapshot: GuestSource }> => {
+    git(repo, 'checkout', '-q', '-B', branch, sha);
+    writeFileSync(join(repo, 'mise.toml'), toml);
+    git(repo, 'add', 'mise.toml');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', branch);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    const source = await openHostSource({ kind: 'local', path: repo }, head, {
+      cacheDir: join(scratch, 'cache'),
+      cwd: scratch,
+      env: handle.env,
+      platform: handle.platform,
+      spawn,
+      tempDir: scratch,
+      uid: handle.uid,
+    });
+    return { sha: head, snapshot: await source.guestSource() };
+  };
+
+  test.skipIf(!goldenEnabled)(
+    "tools: mise runs a Rust the config pins over the image's default (ADR-0008)",
+    async () => {
+      await waitForFreeSlot();
+      const config = await miseConfigSource(
+        'config-rust',
+        '[tools]\nrust = { version = "1.95.0", profile = "minimal" }\n',
+      );
+      try {
+        const req = request('golden-config-rust', [checkout(1), rustReport(2)], {
+          event: {
+            event: 'push',
+            refName: 'main',
+            refType: 'branch',
+            repository: 'dbtlr/hugi',
+            sha: config.sha,
+          },
+          image: GOLDEN_IMAGE,
+          source: config.snapshot.location,
+          toolSource: 'mise',
+        });
+        const deps = realDeps();
+        const result = await runInVm(req, deps);
+        expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
+        const report = logOf(req, '02-step-2.log');
+        expect(report).toContain('toolchain=1.95.0');
+        expect(report).toContain('rustc 1.95.0');
+        expect(report).not.toContain('RUSTUP_TOOLCHAIN');
+        expect(vmRemains(deps.vm)).toBe(false);
+      } finally {
+        await config.snapshot.release();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test.skipIf(!goldenEnabled)(
+    'tools: mise keeps a workflow Rust pin, and the workflow tools alone set its variables (ADR-0008)',
+    async () => {
+      await waitForFreeSlot();
+      const config = await miseConfigSource('config-no-rust', '[tools]\n');
+      try {
+        const req = request('golden-workflow-rust', [checkout(1), rustReport(2)], {
+          event: {
+            event: 'push',
+            refName: 'main',
+            refType: 'branch',
+            repository: 'dbtlr/hugi',
+            sha: config.sha,
+          },
+          image: GOLDEN_IMAGE,
+          source: config.snapshot.location,
+          toolSource: 'mise',
+          tools: ['rust@1.97.1'],
+        });
+        const deps = realDeps();
+        const result = await runInVm(req, deps);
+        expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
+        const report = logOf(req, '02-step-2.log');
+        expect(report).toContain('toolchain=1.97.1');
+        expect(report).toContain('rustc 1.97.1');
+        expect(report).toMatch(/"RUSTUP_TOOLCHAIN": ?"1\.97\.1"/);
+        expect(vmRemains(deps.vm)).toBe(false);
+      } finally {
+        await config.snapshot.release();
+      }
     },
     TEST_TIMEOUT_MS,
   );
