@@ -12,6 +12,7 @@ import { openHostSource, openPullRequestSource } from '../source/host-source';
 import type { HostSourceOptions } from '../source/host-source';
 import {
   createRunDirectory,
+  expandHome,
   resolveCacheDir,
   resolveConfigPath,
   resolveRunsDir,
@@ -288,7 +289,9 @@ function buildRequest(
     matrix: parseMatrix(options.matrix ?? []),
     needs: parseNeeds(options.needs ?? []),
     toolSource: oneOf('--tools', options.tools, TOOL_SOURCES) ?? 'workflow',
-    ...(options.logs === undefined ? {} : { logDir: resolve(runner.cwd, options.logs) }),
+    ...(options.logs === undefined
+      ? {}
+      : { logDir: resolve(runner.cwd, expandHome(options.logs, runner.home)) }),
   };
   const event = oneOf('--event', options.event, EVENTS);
   const pullRequest = parsePullRequestArgument(args.commit);

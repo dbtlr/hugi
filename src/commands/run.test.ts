@@ -49,11 +49,20 @@ const source = (
   ...(commit === 'main' ? { refKind: 'branch' as const } : {}),
 });
 
-async function hugi(argv: string[], vm: RunResult | undefined, files?: Record<string, string>) {
+async function hugi(
+  argv: string[],
+  vm: RunResult | undefined,
+  files?: Record<string, string>,
+  env: Record<string, string> = {},
+) {
   const requests: RunRequest[] = [];
-  const mock = mockProcess({ argv, env: {}, stdin: '' });
+  let sourcesOpened = 0;
+  const mock = mockProcess({ argv, env, stdin: '' });
   const exitCode = await createApp({
-    openSource: async (_spec, commit) => source(files, commit),
+    openSource: async (_spec, commit) => {
+      sourcesOpened += 1;
+      return source(files, commit);
+    },
     runInVm: async (request) => {
       requests.push(request);
       if (vm === undefined) {
@@ -62,7 +71,7 @@ async function hugi(argv: string[], vm: RunResult | undefined, files?: Record<st
       return vm;
     },
   }).run({ process: mock });
-  return { exitCode, requests, stderr: mock.stderr.text, stdout: mock.stdout.text };
+  return { exitCode, requests, sourcesOpened, stderr: mock.stderr.text, stdout: mock.stdout.text };
 }
 
 /** A real directory for `--logs`, because a run writes its record there before its VM boots. */
@@ -522,15 +531,33 @@ test('a --logs path that cannot be created exits 2 naming the path, before any V
     const file = join(parent, 'a-file');
     await writeFile(file, 'x');
     const logs = join(file, 'logs');
-    const { exitCode, requests, stderr } = await hugi(
+    const { exitCode, requests, sourcesOpened, stderr } = await hugi(
       ['run', 'example/project', 'main', 'ci.yml:build', '--logs', logs],
       undefined,
     );
     expect(exitCode).toBe(2);
+    expect(sourcesOpened).toBe(0);
     expect(requests).toHaveLength(0);
     expect(stderr).toContain(`Cannot create the --logs directory ${logs}:`);
     expect(stderr).not.toContain('UNHANDLED');
   } finally {
     await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test('a --logs path starting with ~/ is created under home, not as a literal ~ directory', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hugi-run-home-'));
+  try {
+    const { exitCode, stdout } = await hugi(
+      ['run', 'example/project', 'main', 'ci.yml:build', '--logs=~/hugi-logs'],
+      result({}),
+      undefined,
+      { HOME: home },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`logs: ${join(home, 'hugi-logs')}`);
+    expect((await stat(join(home, 'hugi-logs'))).isDirectory()).toBe(true);
+  } finally {
+    await rm(home, { force: true, recursive: true });
   }
 });
