@@ -56,9 +56,9 @@ Any other input fails resolution. The lane reader already refuses `steps.<id>.ou
 
 **Known gap:** Hugi passes no GitHub token, so a tool install that calls GitHub's API can meet a rate limit under Hugi that it does not meet on GitHub.
 
-**Known gap:** A workflow `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT` or `BASH_FUNC_*` variable does not reach the commands Hugi runs for the action, or for a lane with `tools: mise`. Hugi keeps them from the bash that runs those commands, so a workflow cannot make it source a file, change its options, run in posix mode, or replace a command with a function. The job's own `run:` steps get them, as on GitHub.
+**Known gap:** A step whose environment sets `SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT`, `POSIX_PEDANTIC`, `TMOUT` or a `BASH_FUNC_*` function fails before its first command, naming the variable, even with `continue-on-error`. Hugi runs the action's mise commands in a bash of its own, which those variables would change. Set them on the `run:` steps that need them instead. A `BASH_ENV` or `ENV` reaches the action's mise and the programs it runs, as on GitHub.
 
-The action exports mise's variables with `core.exportVariable`, and GitHub's runner reads them back from `GITHUB_ENV`. Hugi reads them the same way, so a name such as `FOO-BAR` reaches the later steps, and a name the file cannot carry, such as `A=B` or `C<<D`, fails the step with the runner's message.
+The action exports mise's variables with `core.exportVariable`, and GitHub's runner reads them back from `GITHUB_ENV`. Hugi reads them the same way, so a name such as `FOO-BAR` reaches the later steps, and a name the file cannot carry, such as `A=B` or `C<<D`, fails the step with the runner's message. As on the runner, the variables before the bad name still reach the later steps and the ones after it do not, and `A=B` still sets `A`, to `B<<` followed by the toolkit's delimiter.
 
 ## Versions and repository files
 
