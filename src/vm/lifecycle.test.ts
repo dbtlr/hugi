@@ -952,6 +952,7 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(install).toContain('mise install');
     expect(install).toContain('MISE_NO_ENV=1 mise env --json');
     expect(install).not.toContain('mise bin-paths');
+    expect(install).not.toContain('mise-workflow-environment');
     expect(install).not.toContain('MISE_IGNORED_CONFIG_PATHS');
   });
 
@@ -1009,6 +1010,12 @@ describe('tools from the mise config (ADR-0006)', () => {
     expect(script).toContain(
       `MISE_CEILING_PATHS='/Users/admin/hugi' MISE_CONFIG_DIR='${dir}' MISE_GLOBAL_CONFIG_FILE='${dir}/config.toml' MISE_NO_ENV=1 mise env --json > '/Users/admin/hugi/control/mise-workflow-environment.json'`,
     );
+  });
+
+  test("a failure of the tool environment's script names both of its mise commands", async () => {
+    const h = harness({ mise: { ...mise, toolEnvironmentExitCode: 29 }, steps: {} });
+    const result = await run(h, miseRequest([checkout(), runStep(2)]));
+    expect(result.detail).toContain('mise env or mise bin-paths exited with code 29');
   });
 
   test("the workflow tools alone take no version from the plan's env, as the first environment takes none", async () => {

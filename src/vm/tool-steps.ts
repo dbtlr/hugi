@@ -106,7 +106,8 @@ export function runToolEnvironment(
     async (tools): Promise<HostStepVerdict<Environment>> => {
       const exitCode = await tools.exec(toolEnvironmentScript(request));
       if (exitCode !== 0) {
-        return { error: `mise env exited with code ${exitCode}`, exitCode, ok: false };
+        const commands = request.toolSource === 'mise' ? 'mise env or mise bin-paths' : 'mise env';
+        return { error: `${commands} exited with code ${exitCode}`, exitCode, ok: false };
       }
       try {
         const value = parseToolEnvironment(await tools.readFile(GUEST_TOOL_FILES.environment));
