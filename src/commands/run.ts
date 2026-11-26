@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { Command, FatalError } from '@loomcli/core';
@@ -5,6 +6,7 @@ import type { Host, View } from '@loomcli/core';
 import { json } from '@loomcli/plugins/format';
 import { helpCommand } from '@loomcli/plugins/help/extension';
 
+import { messageOf } from '../errors';
 import { readPullRequest } from '../github/pull-request';
 import { openHostSource, openPullRequestSource } from '../source/host-source';
 import type { HostSourceOptions } from '../source/host-source';
@@ -172,7 +174,7 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
     })
     .option('logs', {
       description:
-        'Directory for the step logs; default a new directory under the XDG state directory.',
+        'Directory for the step logs, created if missing; default a new directory under the XDG state directory.',
       type: 'string',
     })
     .option('cache-dir', {
@@ -184,6 +186,9 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
     .action(async ({ args, host, options, out, signal }) => {
       const runner: Runner = host;
       const request = buildRequest(args, options, runner);
+      if (request.logDir !== undefined) {
+        await ensureLogDirectory(request.logDir);
+      }
       const sourceOptions: HostSourceOptions = {
         cacheDir: resolveCacheDir(options['cache-dir'], host.env, host.home),
         cwd: host.cwd,
@@ -235,6 +240,18 @@ export function runCommand(overrides: RunCommandOverrides = {}) {
         );
       }
     });
+}
+
+/**
+ * Creates the `--logs` directory as the default run directory is made (private, with its parents),
+ * so a fresh path works; a path that cannot be a directory is a usage error, before any clone or VM.
+ */
+async function ensureLogDirectory(logDir: string): Promise<void> {
+  try {
+    await mkdir(logDir, { mode: 0o700, recursive: true });
+  } catch (error) {
+    throw new RunUsageError(`Cannot create the --logs directory ${logDir}: ${messageOf(error)}.`);
+  }
 }
 
 type RunOptions = {

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -496,4 +496,41 @@ test('--tools with another value is a usage error and never runs the VM', async 
   expect(exitCode).toBe(2);
   expect(stderr).toContain('--tools must be one of workflow, mise');
   expect(requests).toHaveLength(0);
+});
+
+test('a --logs directory that does not exist is created, and the run proceeds in it', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'hugi-run-logs-'));
+  try {
+    const logs = join(parent, 'deep', 'logs');
+    const { exitCode, requests, stdout } = await hugi(
+      ['run', 'example/project', 'main', 'ci.yml:build', '--logs', logs],
+      result({}),
+    );
+    expect(exitCode).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(stdout).toContain(`logs: ${logs}`);
+    expect((await stat(logs)).isDirectory()).toBe(true);
+    expect((await stat(logs)).mode & 0o777).toBe(0o700);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test('a --logs path that cannot be created exits 2 naming the path, before any VM work', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'hugi-run-logs-'));
+  try {
+    const file = join(parent, 'a-file');
+    await writeFile(file, 'x');
+    const logs = join(file, 'logs');
+    const { exitCode, requests, stderr } = await hugi(
+      ['run', 'example/project', 'main', 'ci.yml:build', '--logs', logs],
+      undefined,
+    );
+    expect(exitCode).toBe(2);
+    expect(requests).toHaveLength(0);
+    expect(stderr).toContain(`Cannot create the --logs directory ${logs}:`);
+    expect(stderr).not.toContain('UNHANDLED');
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
 });
