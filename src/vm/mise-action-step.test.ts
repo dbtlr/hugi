@@ -453,15 +453,16 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
   });
 
   test.each([
-    ['A=B', "Invalid environment variable format 'v'"],
-    ['=X', "Invalid environment variable format '=X<<ghadelimiter_"],
-    ['C<<D', "Invalid environment variable value. Matching delimiter not found 'D<<ghadelimiter_"],
-    ['E\nF', "Invalid environment variable format 'E'"],
+    ['A=B', "Invalid format 'v'"],
+    ['C<<D', "Invalid value. Matching delimiter not found 'D<<ghadelimiter_"],
+    ['E\nF', "Invalid format 'E'"],
   ])(
     "a name %p it exports fails the step with GitHub's runner's message, as it reads the name back from GITHUB_ENV",
-    async (name, message) => {
+    async (name, error) => {
+      const message = `Unable to process file command 'env' successfully. ${error}`;
       const h = harness({
-        environment: JSON.stringify({ EARLIER: 'kept', [name]: 'v' }),
+        // oxlint-disable-next-line sort-keys -- in write order: the bad name between two good ones
+        environment: JSON.stringify({ EARLIER: 'kept', [name]: 'v', LATER: 'x' }),
         paths: '/cfg/bin\n',
       });
       const result = await h.run(
@@ -478,12 +479,27 @@ describe('a jdx/mise-action step (ADR-0007)', () => {
       expect(log.split('\n').filter((line) => line.startsWith(`Error: ${message}`))).toHaveLength(
         1,
       );
-      // As on GitHub, the writes before the bad one and the GITHUB_PATH entries still count.
+      // As on GitHub, the writes before the bad one and the GITHUB_PATH entries still count, and
+      // the writes after it are lost.
       const later = h.tart.launcherFor(4);
       expect(later).toContain("'EARLIER=kept'");
       expect(later).toContain('/cfg/bin');
+      expect(later).not.toContain('LATER=');
     },
   );
+
+  test('an exported name A=B still gives later steps A, from its opening line, as the runner reads it', async () => {
+    const h = harness({ environment: JSON.stringify({ 'A=B': 'v' }) });
+    await h.run(requestOf({ later: [runStep(3, { when: 'always' })] }));
+    expect(h.tart.launcherFor(3)).toMatch(/'A=B<<ghadelimiter_[\da-f-]{36}'/u);
+  });
+
+  test('an exported name with an empty part before =, such as =X, fails the step', async () => {
+    const h = harness({ environment: JSON.stringify({ '=X': 'v' }) });
+    const result = await h.run(requestOf());
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(outcomes(result)[2]).toEqual(['Set up mise', 'failure']);
+  });
 
   test('continue-on-error covers a name GITHUB_ENV cannot carry, since the runner fails the step too', async () => {
     const h = harness({ environment: JSON.stringify({ 'A=B': 'v' }) });
@@ -855,6 +871,43 @@ test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
     expect(h.phases()).toEqual([]);
   },
 );
+
+test.each([
+  'SHELLOPTS',
+  'BASHOPTS',
+  'POSIXLY_CORRECT',
+  'POSIX_PEDANTIC',
+  'TMOUT',
+  'BASH_FUNC_mise%%',
+])(
+  "a step environment that sets %s, which would change the bash of the step's mise commands, fails the step as Hugi's own before its first command",
+  async (name) => {
+    const h = harness();
+    const result = await h.run(
+      requestOf({ planEnv: { [name]: '1' }, step: { continueOnError: true } }),
+    );
+    expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
+    expect(result.detail).toContain(`the step's environment sets ${name}, which would change`);
+    expect(result.steps[2]).not.toHaveProperty('continuedOnError');
+    expect(h.phases()).toEqual([]);
+  },
+);
+
+test("a step environment's BASH_ENV and ENV reach the step's mise commands as exports inside their bash, as on GitHub", async () => {
+  const h = harness();
+  const result = await h.run(
+    requestOf({ step: { env: { BASH_ENV: '/repo/bash-env.sh', ENV: '/repo/env.sh' } } }),
+  );
+  expect(result.reason).toBe('passed');
+  for (const phase of STEP_PHASES) {
+    const script = h.tart.miseActionScript(2, phase);
+    expect(script).toContain('-u BASH_ENV -u ENV');
+    expect(script).not.toContain("'BASH_ENV=");
+    expect(readableGuestScript(script)).toContain(
+      "\nexport BASH_ENV='/repo/bash-env.sh'\nexport ENV='/repo/env.sh'\nmkdir -p ",
+    );
+  }
+});
 
 /** The scripts a run of the step with `settings`, `tools` and `step` generated, as the guest runs them. */
 async function scriptsOf(

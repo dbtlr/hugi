@@ -51,7 +51,7 @@ import {
   versionConflicts,
   workflowPins,
 } from './tool-environment';
-import { configListingLines, guestScript } from './tool-steps';
+import { configListingLines, guestScript, shellSettingKeys } from './tool-steps';
 
 /** What the step runs with. */
 export type MiseActionInput = {
@@ -155,7 +155,7 @@ function runScript(
       `mise-action ${step.input.index} ${phase}`,
       scriptEnvironment(step),
       [`mkdir -p ${shellQuote(step.files.configDir)}`, `cd ${shellQuote(directory)}`, ...lines],
-      extraPath,
+      { extraPath, startupFiles: true },
     ),
   );
 }
@@ -543,6 +543,13 @@ async function runAction(step: Step): Promise<Verdict> {
     return hugisOwn(
       step,
       `the step's environment sets ${replaced}, which Hugi replaces to keep the image's mise config out of the step, so the step cannot run as it would on GitHub's runner`,
+    );
+  }
+  const [shellSetting] = shellSettingKeys(env);
+  if (shellSetting !== undefined) {
+    return hugisOwn(
+      step,
+      `the step's environment sets ${shellSetting}, which would change the bash Hugi runs the step's mise commands in, so the step cannot run as it would on GitHub's runner`,
     );
   }
   if (settings.miseEnv !== undefined) {

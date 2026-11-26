@@ -36,35 +36,50 @@ import {
 /** The name of the step that installs the tools from the repository's mise config. */
 export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 
+/** The files bash sources at startup (`BASH_ENV`, and `ENV` in posix mode); it reads them only then. */
+const STARTUP_FILES = ['BASH_ENV', 'ENV'];
+
 /**
- * The variables that make bash source a file or change its options or mode, unset for Hugi's
- * wrapper bash and kept from its commands.
+ * The variables that change bash's options, mode or `read` (bash 3.2 reads `POSIX_PEDANTIC` at
+ * startup, and `TMOUT` times out a `read`), which no running bash can take without changing.
  */
-const SHELL_STARTUP = ['BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'POSIXLY_CORRECT'];
+const SHELL_SETTINGS = ['SHELLOPTS', 'BASHOPTS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT'];
 
 /** What bash imports as a function (`BASH_FUNC_mise%%`), which could replace a command of Hugi's. */
 const FUNCTION_PREFIX = 'BASH_FUNC_';
+
+/** The keys of `env` that would change the bash a guest script runs its lines in, in `env`'s order. */
+export function shellSettingKeys(env: Environment): string[] {
+  return Object.keys(env).filter(
+    (key) => SHELL_SETTINGS.includes(key) || key.startsWith(FUNCTION_PREFIX),
+  );
+}
 
 /**
  * The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`, or the
  * `PATH` that `env` sets, with `extraPath` in front of it. `lines` run in a bash that
  * `/usr/bin/env` starts with every other variable of `env` as an assignment, so a key that is not a
  * shell name, or one bash treats specially such as `UID`, reaches its commands exactly. The
- * variables in `SHELL_STARTUP` are unset, whether `env` or the guest shell's own environment holds
- * them, and every `BASH_FUNC_` key of `env` is left out of the assignments, so the workflow cannot
- * make that bash source a file, change its options, run in posix mode or replace a command such as
- * `mise` with a function; they do not reach its commands either (a known gap, in
- * docs/supported-actions.md).
+ * variables in `STARTUP_FILES` and `SHELL_SETTINGS` are unset, whether `env` or the guest shell's
+ * own environment holds them, and they and every `BASH_FUNC_` key of `env` are left out of the
+ * assignments, so the workflow cannot make that bash source a file, change its options or mode, time
+ * out a `read`, or replace a command such as `mise` with a function. With `startupFiles`, the
+ * `STARTUP_FILES` of `env` are exported as the first lines instead, after bash has started, so the
+ * lines' commands and their children get them while that bash sources neither.
  */
 export function guestScript(
   marker: string,
   env: Environment,
   lines: readonly string[],
-  extraPath: readonly string[] = [],
+  { extraPath = [], startupFiles = false }: GuestScriptOptions = {},
 ): string {
-  const unset = SHELL_STARTUP.flatMap((name) => ['-u', name]);
-  const functions = Object.keys(env).filter((key) => key.startsWith(FUNCTION_PREFIX));
-  const assignments = envAssignments(env, ['PATH', ...SHELL_STARTUP, ...functions]);
+  const unset = [...STARTUP_FILES, ...SHELL_SETTINGS].flatMap((name) => ['-u', name]);
+  const omitted = ['PATH', ...STARTUP_FILES, ...shellSettingKeys(env)];
+  const exports = startupFiles
+    ? STARTUP_FILES.filter((name) => env[name] !== undefined).map(
+        (name) => `export ${name}=${shellQuote(env[name]!)}`,
+      )
+    : [];
   return [
     `# hugi-${marker}`,
     'set -eo pipefail',
@@ -74,13 +89,20 @@ export function guestScript(
       'exec /usr/bin/env',
       ...unset,
       '--',
-      ...assignments,
+      ...envAssignments(env, omitted),
       '/bin/bash -eo pipefail -c',
-      shellQuote(lines.join('\n')),
+      shellQuote([...exports, ...lines].join('\n')),
     ].join(' '),
     '',
   ].join('\n');
 }
+
+type GuestScriptOptions = {
+  /** Directories in front of the script's `PATH`. */
+  readonly extraPath?: readonly string[];
+  /** Pass `env`'s `BASH_ENV` and `ENV` to the lines' commands, as a jdx/mise-action step does. */
+  readonly startupFiles?: boolean;
+};
 
 /** The environment of the tool environment's computation and of the workflow's tools. */
 export function workflowEnvironment(request: RunRequest): Environment {

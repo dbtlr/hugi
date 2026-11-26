@@ -126,7 +126,9 @@ describe('guestScript', () => {
         FOO: "it's",
         PATH: '/wf/bin',
         POSIXLY_CORRECT: '1',
+        POSIX_PEDANTIC: '1',
         SHELLOPTS: 'xtrace',
+        TMOUT: '1',
       },
       ['echo "$FOO"', "touch 'ok'"],
     );
@@ -135,8 +137,16 @@ describe('guestScript', () => {
       'export PATH="/wf/bin"',
     ]);
     expect(script).toEndWith(
-      `${String.raw`exec /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u POSIXLY_CORRECT -- 'FOO=it'\''s' /bin/bash -eo pipefail -c 'echo "$FOO"`}\n${String.raw`touch '\''ok'\'''`}\n`,
+      `${String.raw`exec /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u POSIXLY_CORRECT -u POSIX_PEDANTIC -u TMOUT -- 'FOO=it'\''s' /bin/bash -eo pipefail -c 'echo "$FOO"`}\n${String.raw`touch '\''ok'\'''`}\n`,
     );
+  });
+
+  test("with startupFiles, BASH_ENV and ENV are exported as the -c body's first lines, not given to the wrapper bash", () => {
+    const env = { BASH_ENV: "/b'x", ENV: '/e', SHELLOPTS: 'xtrace' };
+    const script = guestScript('x', env, ['true'], { startupFiles: true });
+    const body = `export BASH_ENV=${shellQuote("/b'x")}\nexport ENV='/e'\ntrue`;
+    expect(script).toEndWith(` -- /bin/bash -eo pipefail -c ${shellQuote(body)}\n`);
+    expect(script).not.toContain('SHELLOPTS=');
   });
 
   describe('run by a real bash', () => {
@@ -204,7 +214,7 @@ describe('guestScript', () => {
             "set -o | grep '^posix' | tr -s '\t ' ' '",
             '/usr/bin/env | grep -c -e ^BASH_ENV= -e ^ENV= -e ^SHELLOPTS= -e ^POSIXLY_CORRECT= -e ^BASH_FUNC_ || true',
           ],
-          [bin],
+          { extraPath: [bin] },
         ),
       );
       expect(ran.code, ran.out).toBe(0);
@@ -227,6 +237,40 @@ describe('guestScript', () => {
       expect(ran.code, ran.out).toBe(0);
       expect(ran.out).toBe('quiet\n0\n');
       expect(existsSync(marker)).toBe(false);
+    });
+
+    test("a TMOUT or POSIX_PEDANTIC, in the environment or the guest shell's own, does not time out the wrapper's read or put it in posix mode", () => {
+      const script = guestScript('x', { POSIX_PEDANTIC: '1', TMOUT: '1' }, [
+        // Longer than TMOUT, so a read that took it would time out and fail the script.
+        '{ sleep 1.5; echo late; } | { read -r line; echo "read $line"; }',
+        "set -o | grep '^posix' | tr -s '\t ' ' '",
+        '/usr/bin/env | grep -c -e ^TMOUT= -e ^POSIX_PEDANTIC= || true',
+      ]);
+      const ran = run(
+        script.replace('exec 2>&1\n', 'exec 2>&1\nexport TMOUT=1 POSIX_PEDANTIC=1\n'),
+      );
+      expect(ran.code, ran.out).toBe(0);
+      expect(ran.out).toBe('read late\nposix off\n0\n');
+    });
+
+    test('with startupFiles, a BASH_ENV is sourced by a child bash of the lines but not by the wrapper, and ENV reaches the child', () => {
+      const marker = join(dir, 'sourced');
+      const file = join(dir, 'bash-env.sh');
+      writeFileSync(file, `echo sourced >> ${shellQuote(marker)}\n`);
+      const ran = run(
+        guestScript(
+          'x',
+          { BASH_ENV: file, ENV: file },
+          [
+            `test ! -e ${shellQuote(marker)} && echo wrapper-clean`,
+            "/bin/bash -c 'echo child; /usr/bin/env | grep -c ^ENV='",
+            `cat ${shellQuote(marker)}`,
+          ],
+          { startupFiles: true },
+        ),
+      );
+      expect(ran.code, ran.out).toBe(0);
+      expect(ran.out).toBe('wrapper-clean\nchild\n1\nsourced\n');
     });
 
     test('a failing line or pipeline fails the script, and its exit code carries out', () => {

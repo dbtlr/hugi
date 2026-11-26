@@ -81,44 +81,34 @@ export function withoutToolVersions(env: Environment): Environment {
  */
 export type EnvFileParse = { readonly env: Environment; readonly error?: string };
 
-/** The phrases GitHub's runner uses for one kind of command file's errors. */
-type Wording = { readonly format: string; readonly name: string; readonly value: string };
-
-const ENV_WORDING: Wording = {
-  format: 'Invalid environment variable format',
-  name: 'Environment variable name',
-  value: 'Invalid environment variable value',
-};
-
-const OUTPUT_WORDING: Wording = { format: 'Invalid format', name: 'Name', value: 'Invalid value' };
-
 /**
  * Parse the content of a `GITHUB_ENV` file as GitHub's runner does: `KEY=value`
  * lines and `KEY<<DELIMITER` blocks that run to a line equal to the delimiter,
- * whichever of `=` and `<<` comes first deciding the form. Empty lines are
- * skipped and later assignments win. Any other line, an empty name or
+ * whichever of `=` and `<<` comes first deciding the form. Lines end at `\n`
+ * alone, as on the runner outside Windows, so a `\r` stays in the line. Empty
+ * lines are skipped and later assignments win. Any other line, an empty name or
  * delimiter, or a block with no closing delimiter is an error that fails the
  * step, with GitHub's wording; parsing stops there, keeping what came before.
  */
 export function parseEnvFile(content: string): EnvFileParse {
-  return parseKeyValueFile(content, ENV_WORDING);
+  return parseKeyValueFile(content, 'env');
 }
 
 /**
  * How GitHub's runner reads an action's `core.exportVariable` writes of `variables`, in order: each
- * is a `name<<delimiter` block in `GITHUB_ENV`, with a `ghadelimiter_<uuid>` delimiter that occurs
- * in no name or value, as the action's toolkit writes it, and the runner parses the file as
- * `parseEnvFile` does. A name the file cannot carry, such as `A=B`, `C<<D` or one holding a
- * newline, is an error that fails the step, while `FOO-BAR` passes through.
+ * is a `name<<delimiter` block in `GITHUB_ENV`, with a random `ghadelimiter_<uuid>` delimiter, as
+ * the action's toolkit writes it, and the runner parses the file as `parseEnvFile` does. A name the
+ * file cannot carry, such as `A=B`, `C<<D` or one holding a newline, is an error that fails the
+ * step, while `FOO-BAR` passes through. As on the runner, the bad name's opening line is still read
+ * where it can be: `A=B` sets `A` to `B<<ghadelimiter_<uuid>`, which later steps get. The names
+ * after the bad one are dropped.
  */
 export function parseExportedVariables(variables: Environment): EnvFileParse {
-  const entries = Object.entries(variables);
-  let delimiter = `ghadelimiter_${randomUUID()}`;
-  while (entries.some(([name, value]) => name.includes(delimiter) || value.includes(delimiter))) {
-    delimiter = `ghadelimiter_${randomUUID()}`;
-  }
+  const delimiter = `ghadelimiter_${randomUUID()}`;
   return parseEnvFile(
-    entries.map(([name, value]) => `${name}<<${delimiter}\n${value}\n${delimiter}\n`).join(''),
+    Object.entries(variables)
+      .map(([name, value]) => `${name}<<${delimiter}\n${value}\n${delimiter}\n`)
+      .join(''),
   );
 }
 
@@ -128,15 +118,20 @@ export function parseExportedVariables(variables: Environment): EnvFileParse {
  * values go nowhere, since the lane reader refuses `steps.*.outputs`.
  */
 export function parseOutputFile(content: string): string | undefined {
-  const parsed = parseKeyValueFile(content, OUTPUT_WORDING);
-  return parsed.error !== undefined
-    ? `Unable to process file command 'output' successfully. ${parsed.error}`
-    : undefined;
+  return parseKeyValueFile(content, 'output').error;
 }
 
-function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
+/**
+ * The runner's one parser for both files; an error opens with the line it logs before the parse
+ * error, which names the file command.
+ */
+function parseKeyValueFile(content: string, command: 'env' | 'output'): EnvFileParse {
   const parsed: Record<string, string> = {};
-  const lines = content.split('\n').map((line) => line.replace(/\r$/, ''));
+  const failure = (error: string): EnvFileParse => ({
+    env: parsed,
+    error: `Unable to process file command '${command}' successfully. ${error}`,
+  });
+  const lines = content.split('\n');
   for (let at = 0; at < lines.length; at += 1) {
     const line = lines[at]!;
     if (line === '') {
@@ -146,32 +141,25 @@ function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
     const heredoc = line.indexOf('<<');
     if (equals !== -1 && (heredoc === -1 || equals < heredoc)) {
       if (equals === 0) {
-        return {
-          env: parsed,
-          error: `${wording.format} '${line}'. ${wording.name} must not be empty`,
-        };
+        return failure(`Invalid format '${line}'. Name must not be empty`);
       }
       parsed[line.slice(0, equals)] = line.slice(equals + 1);
       continue;
     }
     if (heredoc === -1) {
-      return { env: parsed, error: `${wording.format} '${line}'` };
+      return failure(`Invalid format '${line}'`);
     }
     const key = line.slice(0, heredoc);
     const delimiter = line.slice(heredoc + 2);
     if (key === '' || delimiter === '') {
-      return {
-        env: parsed,
-        error: `${wording.format} '${line}'. ${wording.name} must not be empty and delimiter must not be empty`,
-      };
+      return failure(
+        `Invalid format '${line}'. Name must not be empty and delimiter must not be empty`,
+      );
     }
     // Searched from the opening line, so each line is visited once however many blocks there are.
     const end = lines.indexOf(delimiter, at + 1);
     if (end === -1) {
-      return {
-        env: parsed,
-        error: `${wording.value}. Matching delimiter not found '${delimiter}'`,
-      };
+      return failure(`Invalid value. Matching delimiter not found '${delimiter}'`);
     }
     parsed[key] = lines.slice(at + 1, end).join('\n');
     at = end;

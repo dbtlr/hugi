@@ -224,7 +224,7 @@ test("an invalid GITHUB_ENV fails its step as on GitHub, but the lines before th
   expect(result.steps[0]).toMatchObject({ exitCode: 0, outcome: 'failure' });
   expect(result.detail).toContain("Matching delimiter not found 'EOF'");
   expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
-    "Error: Invalid environment variable value. Matching delimiter not found 'EOF'",
+    "Error: Unable to process file command 'env' successfully. Invalid value. Matching delimiter not found 'EOF'",
   );
   const second = h.tart.launcherFor(2);
   expect(second).toContain("'GOOD=1'");
@@ -244,7 +244,9 @@ test("an invalid GITHUB_ENV still refuses the names GitHub's runner refuses, wit
   expect(log).toContain(
     "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
   );
-  expect(log).toContain("Error: Invalid environment variable format 'broken line'");
+  expect(log).toContain(
+    "Error: Unable to process file command 'env' successfully. Invalid format 'broken line'",
+  );
 });
 
 test("an invalid GITHUB_OUTPUT fails its step but keeps the step's GITHUB_ENV and GITHUB_PATH", async () => {
@@ -266,10 +268,12 @@ test('when both GITHUB_ENV and GITHUB_OUTPUT are invalid, both errors are report
   });
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   const error = result.steps[0]!.error!;
-  expect(error).toContain("Invalid environment variable format 'junk'");
+  expect(error).toContain(
+    "Unable to process file command 'env' successfully. Invalid format 'junk'",
+  );
   expect(error).toContain("Unable to process file command 'output' successfully.");
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
-  expect(log).toContain("Invalid environment variable format 'junk'");
+  expect(log).toContain("Unable to process file command 'env' successfully. Invalid format 'junk'");
   expect(log).toContain("Unable to process file command 'output' successfully.");
   expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
 });

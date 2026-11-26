@@ -197,7 +197,7 @@ export function readableGuestScript(script: string): string {
   }
   const words = [...script.slice(exec + 1).matchAll(SHELL_WORD)];
   const body = words.at(-1);
-  if (body === undefined || words.at(-2)?.[0] !== '-c') {
+  if (body === undefined) {
     return script;
   }
   const lines = [...body[0].matchAll(/'([^']*)'|\\'|./gsu)]
