@@ -817,6 +817,111 @@ test('an interrupt right after the step exits skips its command files and delete
   expect(ms).toBeLessThanOrEqual(SHUTDOWN_BUDGET_MS);
 }, 60_000);
 
+/**
+ * Run one step that exits with `exitCode`, with the interrupt arriving right after the read of its
+ * status file that says it exited.
+ */
+async function runInterruptedAfterExit(
+  exitCode: number,
+  {
+    continueOnError = false,
+    output = 'built\n',
+    log,
+  }: {
+    continueOnError?: boolean;
+    output?: string;
+    /** The guest log read arrives in these chunks and exits with this code. */
+    log?: { readonly chunks: readonly string[]; readonly exitCode: number };
+  } = {},
+) {
+  const h = harness({ steps: { 1: { exitCode, output } } });
+  const read = h.tart.exec.bind(h.tart);
+  let exitSeen = false;
+  h.tart.exec = async (vm, argv, options) => {
+    if (log !== undefined && argv.at(-1) === stepFiles(1).log) {
+      for (const chunk of log.chunks) {
+        options?.onOutput?.(chunk);
+      }
+      return { exitCode: log.exitCode };
+    }
+    const answer = await read(vm, argv, options);
+    exitSeen ||= argv.at(-1) === stepFiles(1).status && answer.exitCode === 0;
+    return answer;
+  };
+  // The exit is seen with the wait over; the run's next look at the clock is where the interrupt
+  // lands, ahead of the check that decides whether to read the command files.
+  const now = h.clock.now.bind(h.clock);
+  h.clock.now = () => {
+    if (exitSeen) {
+      h.interrupt.abort();
+    }
+    return now();
+  };
+  const result = await run(h, requestOf([runStep(1, { continueOnError })]));
+  return { result, step: result.steps[0]! };
+}
+
+describe('a step that exited just before the interrupt', () => {
+  test.each([
+    [0, 'success'],
+    [3, 'failure'],
+  ] as const)(
+    'with exit code %i is recorded as %s, and the run is still interrupted',
+    async (code, outcome) => {
+      const { result, step } = await runInterruptedAfterExit(code);
+      expect(step).toMatchObject({ exitCode: code, outcome });
+      expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
+    },
+  );
+
+  test('ends its log with a note that its command files were not applied', async () => {
+    const { step } = await runInterruptedAfterExit(0);
+    expect(readFileSync(step.logFile!, 'utf8')).toBe(
+      "built\nhugi: the run was interrupted, so this step's command files were not applied\n",
+    );
+  });
+
+  test('puts the note on its own line after output with no final newline', async () => {
+    const { step } = await runInterruptedAfterExit(0, { output: 'built' });
+    expect(readFileSync(step.logFile!, 'utf8')).toBe(
+      "built\nhugi: the run was interrupted, so this step's command files were not applied\n",
+    );
+  });
+
+  test('starts a note after a partial log copy on its own line, and adds no blank line after chunked output', async () => {
+    const partial = await runInterruptedAfterExit(0, { log: { chunks: ['partial'], exitCode: 1 } });
+    expect(readFileSync(partial.step.logFile!, 'utf8')).toMatch(
+      /^partial\nhugi: could not copy this step's log from the VM \(.*\)\nhugi: the run was interrupted, so this step's command files were not applied\n$/,
+    );
+    const chunked = await runInterruptedAfterExit(0, {
+      log: { chunks: ['a', 'b\n'], exitCode: 0 },
+    });
+    expect(readFileSync(chunked.step.logFile!, 'utf8')).toBe(
+      "ab\nhugi: the run was interrupted, so this step's command files were not applied\n",
+    );
+  });
+
+  test('a continue-on-error step that exited 0 is not marked as continued', async () => {
+    const { step } = await runInterruptedAfterExit(0, { continueOnError: true });
+    expect(step.continuedOnError).toBeUndefined();
+  });
+
+  test('a continue-on-error step the interrupt cut short is not marked as continued', async () => {
+    const h = harness({ steps: { 1: { hangs: true } } });
+    const pending = runInVm(requestOf([runStep(1, { continueOnError: true })]), h.deps);
+    await settle();
+    h.interrupt.abort();
+    const result = await advanceUntilSettled(h.clock, pending);
+    expect(result).toMatchObject({ reason: 'interrupted', verdict: 'none' });
+    expect(result.steps[0]!.continuedOnError).toBeUndefined();
+  });
+
+  test('a continue-on-error step that failed is marked as continued, as one that ran to its end is', async () => {
+    const { step } = await runInterruptedAfterExit(3, { continueOnError: true });
+    expect(step).toMatchObject({ continuedOnError: true, exitCode: 3, outcome: 'failure' });
+  });
+});
+
 test('an interrupt during the step launch ends the launch, kills the step, and deletes within the shutdown budget', async () => {
   const { fake, ms, result } = await msFromInterruptToReturn('launch');
   expect(result.reason).toBe('interrupted');
