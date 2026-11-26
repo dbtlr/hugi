@@ -1097,3 +1097,21 @@ describe("jobSelects decides a job's if: as readLane does", () => {
     expect(new Set(outcomes)).toEqual(new Set([true, false]));
   });
 });
+
+test.each([
+  ['workflow', (env: object) => workflow({}, { env })],
+  ['job', (env: object) => workflow({ env })],
+  ['step', (env: object) => workflow({ steps: [{ env, run: 'true' }] })],
+])('an empty %s env key is refused at lane read', (_level, build) => {
+  expect(() => read(build({ '': 'x' }))).toThrow(LaneReadError);
+  expect(() => read(build({ '': 'x' }))).toThrow(/env has an empty key/);
+});
+
+test.each(['GITHUB_ENV=/tmp/alternate', 'A=B'])(
+  'an env key holding = (%p) is refused at lane read, so it cannot set another variable',
+  (key) => {
+    const text = workflow({ steps: [{ env: { [key]: 'x' }, run: 'true' }] });
+    expect(() => read(text)).toThrow(LaneReadError);
+    expect(() => read(text)).toThrow(`env key "${key}" holds =`);
+  },
+);

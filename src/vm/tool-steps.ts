@@ -7,6 +7,7 @@
  * host reads and judges them (`./tool-environment`).
  */
 import {
+  environmentExports,
   githubEnvironment,
   miseConfigEnvironment,
   miseIsolation,
@@ -19,7 +20,7 @@ import { runHostStep } from './host-step';
 import type { HostStepContext, HostStepRun, HostStepTools, HostStepVerdict } from './host-step';
 import type { RunRequest } from './run-request';
 import { shellQuote } from './shell';
-import { environmentExports, guestPath } from './step-launcher';
+import { guestPath } from './step-launcher';
 import {
   configFilesInWorkspace,
   mergeToolEnvironments,

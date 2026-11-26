@@ -182,12 +182,12 @@ test('GITHUB_ENV and GITHUB_PATH from one step reach the next step', async () =>
   });
   await run(h, requestOf([runStep(1), runStep(2, { env: { PLAN_VAR: 'step' } })]));
   const second = h.tart.launcherFor(2);
-  expect(second).toContain("export FROM_FILE='hi there'");
-  expect(second).toContain("export BLOB='a\nb'");
+  expect(second).toContain("'FROM_FILE=hi there'");
+  expect(second).toContain("'BLOB=a\nb'");
   expect(second).toContain('export PATH="/custom/bin:/fake/tools:/usr/bin"');
-  expect(second).toContain("export PLAN_VAR='step'");
-  expect(h.tart.launcherFor(1)).toContain("export PLAN_VAR='plan'");
-  expect(second).toContain("export GITHUB_SHA='abc123'");
+  expect(second).toContain("'PLAN_VAR=step'");
+  expect(h.tart.launcherFor(1)).toContain("'PLAN_VAR=plan'");
+  expect(second).toContain("'GITHUB_SHA=abc123'");
 });
 
 test('each step gets fresh command files, and their values accumulate across steps', async () => {
@@ -201,8 +201,8 @@ test('each step gets fresh command files, and their values accumulate across ste
   expect(h.tart.launcherFor(1)).toContain(`export GITHUB_ENV='${stepFiles(1).env}'`);
   expect(h.tart.launcherFor(2)).toContain(`: > '${stepFiles(2).env}'`);
   const third = h.tart.launcherFor(3);
-  expect(third).toContain("export A='1'");
-  expect(third).toContain("export B='2'");
+  expect(third).toContain("'A=1'");
+  expect(third).toContain("'B=2'");
   expect(third).toContain('export PATH="/two:/one:/fake/tools:/usr/bin"');
 });
 
@@ -220,7 +220,7 @@ test("an invalid GITHUB_ENV fails its step as on GitHub, but the lines before th
     "Error: Invalid environment variable value. Matching delimiter not found 'EOF'",
   );
   const second = h.tart.launcherFor(2);
-  expect(second).toContain("export GOOD='1'");
+  expect(second).toContain("'GOOD=1'");
   expect(second).not.toContain('LATER');
   expect(second).toContain('export PATH="/custom/bin:');
 });
@@ -231,7 +231,7 @@ test("an invalid GITHUB_ENV still refuses the names GitHub's runner refuses, wit
   });
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
-  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
+  expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
   expect(h.tart.launcherFor(2)).not.toMatch(/node_options/i);
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
   expect(log).toContain(
@@ -249,7 +249,7 @@ test("an invalid GITHUB_OUTPUT fails its step but keeps the step's GITHUB_ENV an
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
   const second = h.tart.launcherFor(2);
-  expect(second).toContain("export GOOD='1'");
+  expect(second).toContain("'GOOD=1'");
   expect(second).toContain('export PATH="/custom/bin:');
 });
 
@@ -264,14 +264,14 @@ test('when both GITHUB_ENV and GITHUB_OUTPUT are invalid, both errors are report
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
   expect(log).toContain("Invalid environment variable format 'junk'");
   expect(log).toContain("Unable to process file command 'output' successfully.");
-  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
+  expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
 });
 
 test("a GITHUB_ENV write of NODE_OPTIONS is refused as on GitHub's runner, and the step's log says so", async () => {
   const h = harness({ steps: { 1: { appendsEnv: 'KEPT=1\nNode_Options=--inspect\n' } } });
   const result = await run(h, requestOf([runStep(1), runStep(2)]));
   expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
-  expect(h.tart.launcherFor(2)).toContain("export KEPT='1'");
+  expect(h.tart.launcherFor(2)).toContain("'KEPT=1'");
   expect(h.tart.launcherFor(2)).not.toMatch(/node_options/i);
   expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
     "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
@@ -315,8 +315,8 @@ test('pinned tools reach every step as mise version overrides, with no mise wrap
   await run(h, requestOf([runStep(1)], { tools: ['node@22.23.2', 'pnpm@10.0.0'] }));
   for (const index of [0, 1]) {
     const launcher = h.tart.launcherFor(index);
-    expect(launcher).toContain("export MISE_NODE_VERSION='22.23.2'");
-    expect(launcher).toContain("export MISE_PNPM_VERSION='10.0.0'");
+    expect(launcher).toContain("'MISE_NODE_VERSION=22.23.2'");
+    expect(launcher).toContain("'MISE_PNPM_VERSION=10.0.0'");
     expect(launcher).not.toContain("'mise' 'x'");
   }
 });
@@ -964,10 +964,10 @@ describe('the tool environment (ADR-0006)', () => {
     await run(h, requestOf([runStep(1), runStep(2)], { tools }));
     for (const index of [1, 2]) {
       const launcher = h.tart.launcherFor(index);
-      expect(launcher).toContain("export RUSTUP_TOOLCHAIN='1.97.1'");
-      expect(launcher).toContain("export CARGO_HOME='/mock/cargo'");
-      expect(launcher).toContain("export MISE_NODE_VERSION='22.23.2'");
-      expect(launcher).toContain("export MISE_IGNORED_CONFIG_PATHS='/Users/admin/hugi/workspace'");
+      expect(launcher).toContain("'RUSTUP_TOOLCHAIN=1.97.1'");
+      expect(launcher).toContain("'CARGO_HOME=/mock/cargo'");
+      expect(launcher).toContain("'MISE_NODE_VERSION=22.23.2'");
+      expect(launcher).toContain("'MISE_IGNORED_CONFIG_PATHS=/Users/admin/hugi/workspace'");
       expect(launcher).not.toContain('MISE_TRUSTED_CONFIG_PATHS');
       expect(launcher).not.toContain('shims');
     }
@@ -983,7 +983,7 @@ describe('the tool environment (ADR-0006)', () => {
   test('a workflow can override the ignored config path, as the lowest layer of the environment', async () => {
     const h = harness({ mise: { toolEnvironment }, steps: {} });
     await run(h, requestOf([runStep(1, { env: { MISE_IGNORED_CONFIG_PATHS: '/elsewhere' } })]));
-    expect(h.tart.launcherFor(1)).toContain("export MISE_IGNORED_CONFIG_PATHS='/elsewhere'");
+    expect(h.tart.launcherFor(1)).toContain("'MISE_IGNORED_CONFIG_PATHS=/elsewhere'");
   });
 
   test('a failed "Install tools" computes none, and later steps keep the base PATH', async () => {
@@ -1125,7 +1125,7 @@ describe('tools from the mise config (ADR-0006)', () => {
     });
     const result = await run(h, miseRequest([checkout(), runStep(2)]));
     expect(result.reason).toBe('passed');
-    expect(h.tart.launcherFor(2)).toContain("export RUSTUP_TOOLCHAIN='1.95.0'");
+    expect(h.tart.launcherFor(2)).toContain("'RUSTUP_TOOLCHAIN=1.95.0'");
   });
 
   test("a workflow Rust pin keeps its RUSTUP_TOOLCHAIN over the config's (ADR-0008)", async () => {
@@ -1146,7 +1146,7 @@ describe('tools from the mise config (ADR-0006)', () => {
       miseRequest([checkout(), runStep(2)], { tools: ['node@22.23.2', 'rust@1.97.1'] }),
     );
     expect(result.reason).toBe('passed');
-    expect(h.tart.launcherFor(2)).toContain("export RUSTUP_TOOLCHAIN='1.97.1'");
+    expect(h.tart.launcherFor(2)).toContain("'RUSTUP_TOOLCHAIN=1.97.1'");
   });
 
   test('computes the workflow bins and the workflow tools alone with the tool environment, before the checkout, with every mise config kept out', async () => {

@@ -9,6 +9,7 @@ import { posix } from 'node:path';
 import { refValues } from '../lane/refs';
 import type { EventContext } from '../lane/step-plan';
 import { GUEST_COMMAND_FILES, GUEST_RUNNER_PATHS } from './guest-paths';
+import { shellQuote } from './shell';
 
 export type Environment = Readonly<Record<string, string>>;
 
@@ -235,4 +236,25 @@ export function stepEnvironment(layers: {
   readonly step: Environment;
 }): Environment {
   return { ...layers.runner, ...layers.plan, ...layers.fromGithubEnv, ...layers.step };
+}
+
+/**
+ * The environment as `/usr/bin/env` assignment words, each `KEY=value` shell-quoted whole, without
+ * the names in `omit`. Put after `/usr/bin/env --` on the command that starts a process, they give
+ * it every variable exactly, whatever its name: `FOO-BAR`, a name bash treats specially such as
+ * `UID` or `SECONDS`, or a key starting with `-`, which `--` keeps from reading as an option. No
+ * shell of Hugi's sees them. A key `env` cannot set, such as an empty one or one starting with `=`,
+ * makes `env` fail, so the process does not start and the command exits non-zero.
+ */
+export function envAssignments(env: Environment, omit: readonly string[]): string[] {
+  return Object.entries(env)
+    .filter(([key]) => !omit.includes(key))
+    .map(([key, value]) => shellQuote(`${key}=${value}`));
+}
+
+/** `export` lines for every variable but `PATH`, which `guestPath` sets. For Hugi's own scripts. */
+export function environmentExports(env: Environment): string[] {
+  return Object.entries(env)
+    .filter(([key]) => key !== 'PATH')
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
 }
