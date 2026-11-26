@@ -4,6 +4,7 @@
  * step gets fresh, empty command files; the runner parses them once the step
  * exits, and a malformed file fails the step as it does on GitHub.
  */
+import { randomUUID } from 'node:crypto';
 import { posix } from 'node:path';
 
 import { refValues } from '../lane/refs';
@@ -101,6 +102,24 @@ const OUTPUT_WORDING: Wording = { format: 'Invalid format', name: 'Name', value:
  */
 export function parseEnvFile(content: string): EnvFileParse {
   return parseKeyValueFile(content, ENV_WORDING);
+}
+
+/**
+ * How GitHub's runner reads an action's `core.exportVariable` writes of `variables`, in order: each
+ * is a `name<<delimiter` block in `GITHUB_ENV`, with a `ghadelimiter_<uuid>` delimiter that occurs
+ * in no name or value, as the action's toolkit writes it, and the runner parses the file as
+ * `parseEnvFile` does. A name the file cannot carry, such as `A=B`, `C<<D` or one holding a
+ * newline, is an error that fails the step, while `FOO-BAR` passes through.
+ */
+export function parseExportedVariables(variables: Environment): EnvFileParse {
+  const entries = Object.entries(variables);
+  let delimiter = `ghadelimiter_${randomUUID()}`;
+  while (entries.some(([name, value]) => name.includes(delimiter) || value.includes(delimiter))) {
+    delimiter = `ghadelimiter_${randomUUID()}`;
+  }
+  return parseEnvFile(
+    entries.map(([name, value]) => `${name}<<${delimiter}\n${value}\n${delimiter}\n`).join(''),
+  );
 }
 
 /**
@@ -250,11 +269,4 @@ export function envAssignments(env: Environment, omit: readonly string[]): strin
   return Object.entries(env)
     .filter(([key]) => !omit.includes(key))
     .map(([key, value]) => shellQuote(`${key}=${value}`));
-}
-
-/** `export` lines for every variable but `PATH`, which `guestPath` sets. For Hugi's own scripts. */
-export function environmentExports(env: Environment): string[] {
-  return Object.entries(env)
-    .filter(([key]) => key !== 'PATH')
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
 }

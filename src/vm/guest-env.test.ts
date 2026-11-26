@@ -4,6 +4,7 @@ import {
   carriedGithubEnv,
   githubEnvironment,
   parseEnvFile,
+  parseExportedVariables,
   parseOutputFile,
   parsePathFile,
   prependPaths,
@@ -138,6 +139,33 @@ test('a malformed GITHUB_ENV keeps the assignments before the bad line, as GitHu
   expect(parseEnvFile('A=1\n=value\nB=2\n')).toMatchObject({ env: { A: '1' } });
   expect(parseEnvFile('A=1\nB<<\nx\n')).toMatchObject({ env: { A: '1' } });
 });
+
+test('exported variables read back from GITHUB_ENV keep a name like FOO-BAR and any value exactly', () => {
+  const variables = { '-x': '', 'A-B': 'v', 'FOO-BAR': 'x=y\nZ<<EOF\n' };
+  expect(parseExportedVariables(variables)).toEqual({ env: variables });
+});
+
+test.each([
+  ['A=B', "Invalid environment variable format 'v'"],
+  ['=X', 'Environment variable name must not be empty'],
+  ['C<<D', "Invalid environment variable value. Matching delimiter not found 'D<<ghadelimiter_"],
+  ['E\nF', "Invalid environment variable format 'E'"],
+])(
+  "an exported name %p GITHUB_ENV cannot carry is the runner's error, keeping the writes before it",
+  (name, message) => {
+    // In write order: the bad name between two good ones.
+    const read = parseExportedVariables(
+      Object.fromEntries([
+        ['EARLIER', 'kept'],
+        [name, 'v'],
+        ['LATER', 'x'],
+      ]),
+    );
+    expect(read.error).toContain(message);
+    expect(read.env).toMatchObject({ EARLIER: 'kept' });
+    expect(read.env).not.toHaveProperty(name);
+  },
+);
 
 test("GitHub's runner refuses NODE_OPTIONS from GITHUB_ENV in any case, with its message for each", () => {
   expect(carriedGithubEnv({ A: '1', NODE_OPTIONS: '--x', node_options: '--y' })).toEqual({

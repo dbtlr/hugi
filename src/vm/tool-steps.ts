@@ -7,7 +7,7 @@
  * host reads and judges them (`./tool-environment`).
  */
 import {
-  environmentExports,
+  envAssignments,
   githubEnvironment,
   miseConfigEnvironment,
   miseIsolation,
@@ -37,8 +37,24 @@ import {
 export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 
 /**
+ * The variables that make bash source a file or change its options or mode, unset for Hugi's
+ * wrapper bash and kept from its commands.
+ */
+const SHELL_STARTUP = ['BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'POSIXLY_CORRECT'];
+
+/** What bash imports as a function (`BASH_FUNC_mise%%`), which could replace a command of Hugi's. */
+const FUNCTION_PREFIX = 'BASH_FUNC_';
+
+/**
  * The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`, or the
- * `PATH` that `env` sets, with `extraPath` in front of it.
+ * `PATH` that `env` sets, with `extraPath` in front of it. `lines` run in a bash that
+ * `/usr/bin/env` starts with every other variable of `env` as an assignment, so a key that is not a
+ * shell name, or one bash treats specially such as `UID`, reaches its commands exactly. The
+ * variables in `SHELL_STARTUP` are unset, whether `env` or the guest shell's own environment holds
+ * them, and every `BASH_FUNC_` key of `env` is left out of the assignments, so the workflow cannot
+ * make that bash source a file, change its options, run in posix mode or replace a command such as
+ * `mise` with a function; they do not reach its commands either (a known gap, in
+ * docs/supported-actions.md).
  */
 export function guestScript(
   marker: string,
@@ -46,13 +62,22 @@ export function guestScript(
   lines: readonly string[],
   extraPath: readonly string[] = [],
 ): string {
+  const unset = SHELL_STARTUP.flatMap((name) => ['-u', name]);
+  const functions = Object.keys(env).filter((key) => key.startsWith(FUNCTION_PREFIX));
+  const assignments = envAssignments(env, ['PATH', ...SHELL_STARTUP, ...functions]);
   return [
     `# hugi-${marker}`,
     'set -eo pipefail',
     'exec 2>&1',
-    ...environmentExports(env),
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
-    ...lines,
+    [
+      'exec /usr/bin/env',
+      ...unset,
+      '--',
+      ...assignments,
+      '/bin/bash -eo pipefail -c',
+      shellQuote(lines.join('\n')),
+    ].join(' '),
     '',
   ].join('\n');
 }

@@ -16,7 +16,13 @@
 import { posix } from 'node:path';
 
 import type { MiseActionSettings } from '../toolchain/types';
-import { carriedGithubEnv, miseIsolation, parsePathFile, prependPaths } from './guest-env';
+import {
+  carriedGithubEnv,
+  miseIsolation,
+  parseExportedVariables,
+  parsePathFile,
+  prependPaths,
+} from './guest-env';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS, miseActionFiles } from './guest-paths';
 import type { MiseActionFiles } from './guest-paths';
@@ -506,17 +512,25 @@ async function exportEnvironment(step: Step): Promise<Verdict | undefined> {
   if (exitCode !== 0) {
     return failed(`mise env exited with code ${exitCode}`, exitCode);
   }
-  const variables = exportedVariables(await step.tools.readFile(step.files.environment));
-  for (const [name, value] of Object.entries(variables)) {
+  // The runner reads the writes back from GITHUB_ENV once the action ends: a name it cannot read
+  // there fails the step, as a bad GITHUB_ENV write fails a run: step. The writes before it still
+  // count, and so does GITHUB_PATH, which the runner processes on its own.
+  const read = parseExportedVariables(
+    exportedVariables(await step.tools.readFile(step.files.environment)),
+  );
+  for (const [name, value] of Object.entries(read.env)) {
     exportVariable(step, name, value, false);
   }
-  const names = Object.keys(variables);
+  const names = Object.keys(read.env);
   step.tools.log.write(`Exported ${names.length === 0 ? 'no variables' : names.join(', ')}\n`);
   if (settings.exportPath) {
     // Added last-first, so mise's first entry comes first on PATH.
     for (const entry of managedPaths(await step.tools.readFile(step.files.paths)).toReversed()) {
       addPath(step, entry);
     }
+  }
+  if (read.error !== undefined) {
+    return failed(read.error);
   }
   return undefined;
 }

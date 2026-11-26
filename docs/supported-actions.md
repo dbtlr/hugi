@@ -56,6 +56,10 @@ Any other input fails resolution. The lane reader already refuses `steps.<id>.ou
 
 **Known gap:** Hugi passes no GitHub token, so a tool install that calls GitHub's API can meet a rate limit under Hugi that it does not meet on GitHub.
 
+**Known gap:** A workflow `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT` or `BASH_FUNC_*` variable does not reach the commands Hugi runs for the action, or for a lane with `tools: mise`. Hugi keeps them from the bash that runs those commands, so a workflow cannot make it source a file, change its options, run in posix mode, or replace a command with a function. The job's own `run:` steps get them, as on GitHub.
+
+The action exports mise's variables with `core.exportVariable`, and GitHub's runner reads them back from `GITHUB_ENV`. Hugi reads them the same way, so a name such as `FOO-BAR` reaches the later steps, and a name the file cannot carry, such as `A=B` or `C<<D`, fails the step with the runner's message.
+
 ## Versions and repository files
 
 Numeric versions, including partial versions such as `22` and `22.23`, pass through as written. Numeric versions can have a leading `v`, a prerelease suffix, or build metadata. A prerelease suffix must contain a digit to pin a specific build, such as `1.2.0-rc.1`. Bare moving aliases such as `22-nightly`, `22-rc`, and `1.2-canary` fail as unpinned. Digits in build metadata do not make a prerelease suffix pinned. Other aliases and ranges such as `latest`, `lts/*`, `x`, `22.x`, `^22`, and `>=22` also fail. Two different strings for the same tool conflict, even when one could include the other, such as `22` and `22.23.2`. Repeated identical pins install once. Tools retain their first-use order.
