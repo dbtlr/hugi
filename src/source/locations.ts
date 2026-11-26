@@ -9,6 +9,14 @@ function present(value: string | undefined): string | undefined {
   return value === undefined || value === '' ? undefined : value;
 }
 
+/** `~` is `home`, and `~/x` is `x` under `home`; any other path is returned as written. */
+export function expandHome(path: string, home: string): string {
+  if (path === '~') {
+    return home;
+  }
+  return path.startsWith('~/') ? `${home.replace(/\/+$/u, '')}/${path.slice(2)}` : path;
+}
+
 /** The cache holding bare partial clones: the flag, else `HUGI_CACHE_DIR`, else the XDG cache. */
 export function resolveCacheDir(flag: string | undefined, env: Env, home: string): string {
   return (

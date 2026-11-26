@@ -10,10 +10,10 @@ import type { Host } from '@loomcli/core';
 
 import { ConfigError, validateConfig } from '../config/schema';
 import { messageOf } from '../errors';
+import { expandHome } from '../source/locations';
 import {
   checkAppKey,
   createInstallationTokens,
-  expandHome,
   GitHubAppError,
   REFRESH_MARGIN_MS,
   requireGitHubApp,
@@ -493,5 +493,7 @@ describe('the App configuration', () => {
   test('a home-relative key path resolves under home', () => {
     expect(expandHome('~/keys/app.pem', '/home/mock/')).toBe('/home/mock/keys/app.pem');
     expect(expandHome('/abs/app.pem', '/home/mock')).toBe('/abs/app.pem');
+    expect(expandHome('~', '/home/mock')).toBe('/home/mock');
+    expect(expandHome('~other/x', '/home/mock')).toBe('~other/x');
   });
 });

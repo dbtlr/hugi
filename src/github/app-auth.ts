@@ -15,6 +15,7 @@ import { ConfigError, isRepositoryName } from '../config/schema';
 import type { GitHubAppConfig, HugiConfig } from '../config/schema';
 import { errnoCode } from '../errno';
 import { messageOf } from '../errors';
+import { expandHome } from '../source/locations';
 import { hasAccessControlList, judgePrivacy } from '../source/private-path';
 import { isMapping } from '../yaml/strict';
 import type { TokenProvider } from './client';
@@ -80,11 +81,6 @@ export async function checkAppKey(
   } catch (error) {
     throw new ConfigError(`github_app.private_key_path: ${messageOf(error)}`);
   }
-}
-
-/** `~/x` becomes `x` under `home`; any other path is returned as written. */
-export function expandHome(path: string, home: string): string {
-  return path.startsWith('~/') ? `${home.replace(/\/+$/u, '')}/${path.slice(2)}` : path;
 }
 
 /** Mode bits that let another user read or write the key. */
