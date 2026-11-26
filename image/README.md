@@ -32,7 +32,7 @@ The mise shims directory comes first on `PATH` in `.zshenv`, `.zprofile`, `.bash
 | Repository | Lane | Tools |
 | --- | --- | --- |
 | `dbtlr/norn-next` | determinism and filesystem (macOS ARM64) | Rust from `rust-toolchain.toml` |
-| `dbtlr/loomcli` | `node / macos-latest`, `bun / macos-latest` | Node, pnpm, Bun, fish, PowerShell |
+| `dbtlr/loomcli` | `node_macos`, `bun_macos` | Node, pnpm, Bun, fish, PowerShell |
 | `dbtlr/mimir` | `build mimir-darwin-arm64` | Bun |
 
 ## Add a toolchain

@@ -72,6 +72,26 @@ Resolution also reads root Rust toolchain files for every lane, even when no act
 
 The legacy `rust-toolchain` file accepts a plain one-line channel, optionally ending in a newline, or a TOML document with `[toolchain] channel`. The `rust-toolchain.toml` file accepts only TOML with `[toolchain] channel`. The channel produces `rust@<channel>`. Numeric pins and dated channels such as `nightly-2026-10-01` are accepted. Bare `stable`, `beta`, and `nightly` are unpinned and fail. Missing or malformed channels fail when the selected file exists. Components and profile remain rustup's responsibility in the guest, recorded in `notes` with the selected filename. Subdirectory toolchain files are out of scope and are not read.
 
+## Supported workflow syntax
+
+The lane reader (`src/lane/`) reads the lane's job and refuses what it cannot carry, so a lane that uses an unsupported key fails with a fail verdict instead of running differently from GitHub. The whole file must also be one GitHub accepts: an unknown top-level key, a job with neither `runs-on` nor `uses`, a `needs` cycle, or a duplicate step id fails every lane in it.
+
+**Job keys.** The lane's job accepts `concurrency`, `defaults`, `env`, `if`, `name`, `needs`, `outputs`, `permissions`, `runs-on`, `steps`, `strategy`, and `timeout-minutes`. Hugi ignores `concurrency`, `outputs`, and `permissions`. Any other key fails, including `container`, `services`, `environment`, `uses`, `with`, `secrets`, and `continue-on-error`. Job-level `continue-on-error` is refused because no enrolled lane uses it, and accepting it means deciding what an allowed-to-fail lane reports. Step-level `continue-on-error` is supported.
+
+**Nested keys.** `strategy` accepts `fail-fast`, `matrix`, and `max-parallel`. `defaults` accepts only `run`, and `run` accepts only `shell` and `working-directory`. Workflow-level `defaults.run` cannot hold an expression.
+
+**Step keys.** Every step takes `continue-on-error`, `env`, `id`, `if`, `name`, and `timeout-minutes`, and has exactly one of `run` or `uses`. A `run` step also takes `shell` and `working-directory`. A `uses` step also takes `with`.
+
+**YAML merge keys.** A `<<` key anywhere in the job, the workflow's `env`, or the workflow's `defaults` fails the read. GitHub does not support merge keys.
+
+**Step `env` context.** An expression in a step that reads `env.*` fails, because an earlier step can change `env` through `GITHUB_ENV`. Job-level and workflow-level `env` follow GitHub's context rules: the workflow's `env` cannot read `env`, `job`, `matrix`, `needs`, `runner`, `steps`, or `strategy`, and the job's cannot read `env`, `job`, `runner`, or `steps`.
+
+**Runner labels.** `runs-on` must be one Apple-silicon label, compared without regard to case: `macos-latest`, `macos-14`, `macos-15`, `macos-26`, or any of these with `-xlarge` added. Intel (`macos-13`, `-large`, `-intel`), self-hosted, Linux, and unknown labels fail, as does a list of more than one label.
+
+**Shells.** A `run` step with no `shell`, and no `defaults.run.shell`, runs as `bash -e {0}`, without `pipefail`, as on GitHub's macOS runners. An explicit `shell: bash` runs as `bash --noprofile --norc -eo pipefail {0}`, and `shell: sh` as `sh -e {0}`. Any other shell fails.
+
+**Job-level `if:`.** It can read the `github` and `needs` contexts. `env`, `job`, `matrix`, `runner`, `secrets`, `steps`, and `strategy` are refused as GitHub refuses them, and `inputs` and `vars` fail because Hugi has no values for them. A job whose `if:` is false for the event has no lane to run, and `hugi run` exits with a usage error.
+
 ## Failures
 
 Resolution rejects with a `ToolchainResolutionError` and returns no partial result. Action failures use its `UnsupportedActionError` subtype and name the step index, step name, action reference, and reason. Conflicting pins name both versions and their source steps. Repository Rust errors name the selected `rust-toolchain` or `rust-toolchain.toml` file. A resolution failure is a fail verdict, with one exception: when the file-reading port cannot read a repository file at all (a source read failure, as opposed to a missing or invalid file), the run yields no verdict, because the failure lies outside the lane. `hugi run` tells the two apart; see the [glossary](glossary.md).
