@@ -206,8 +206,12 @@ test('each step gets fresh command files, and their values accumulate across ste
   expect(third).toContain('export PATH="/two:/one:/fake/tools:/usr/bin"');
 });
 
-test('an invalid GITHUB_ENV fails its step as on GitHub, and later steps see none of it', async () => {
-  const h = harness({ steps: { 1: { appendsEnv: 'GOOD=1\nNOTE<<EOF\nno end\n' } } });
+test("an invalid GITHUB_ENV fails its step as on GitHub, but the lines before the bad one and the step's GITHUB_PATH still reach later steps", async () => {
+  const h = harness({
+    steps: {
+      1: { appendsEnv: 'GOOD=1\nNOTE<<EOF\nno end\nLATER=2\n', appendsPath: '/custom/bin\n' },
+    },
+  });
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   expect(result).toMatchObject({ reason: 'step-failed', verdict: 'fail' });
   expect(result.steps[0]).toMatchObject({ exitCode: 0, outcome: 'failure' });
@@ -215,7 +219,52 @@ test('an invalid GITHUB_ENV fails its step as on GitHub, and later steps see non
   expect(readFileSync(result.steps[0]!.logFile!, 'utf8')).toContain(
     "Error: Invalid environment variable value. Matching delimiter not found 'EOF'",
   );
-  expect(h.tart.launcherFor(2)).not.toContain('GOOD');
+  const second = h.tart.launcherFor(2);
+  expect(second).toContain("export GOOD='1'");
+  expect(second).not.toContain('LATER');
+  expect(second).toContain('export PATH="/custom/bin:');
+});
+
+test("an invalid GITHUB_ENV still refuses the names GitHub's runner refuses, with their messages", async () => {
+  const h = harness({
+    steps: { 1: { appendsEnv: 'GOOD=1\nNODE_OPTIONS=--inspect\nbroken line\n' } },
+  });
+  const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
+  expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
+  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
+  expect(h.tart.launcherFor(2)).not.toMatch(/node_options/i);
+  const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
+  expect(log).toContain(
+    "Error: Can't store NODE_OPTIONS output parameter using '$GITHUB_ENV' command.",
+  );
+  expect(log).toContain("Error: Invalid environment variable format 'broken line'");
+});
+
+test("an invalid GITHUB_OUTPUT fails its step but keeps the step's GITHUB_ENV and GITHUB_PATH", async () => {
+  const h = harness({
+    steps: {
+      1: { appendsEnv: 'GOOD=1\n', appendsOutput: 'files=a\nb\n', appendsPath: '/custom/bin\n' },
+    },
+  });
+  const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
+  expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
+  const second = h.tart.launcherFor(2);
+  expect(second).toContain("export GOOD='1'");
+  expect(second).toContain('export PATH="/custom/bin:');
+});
+
+test('when both GITHUB_ENV and GITHUB_OUTPUT are invalid, both errors are reported', async () => {
+  const h = harness({
+    steps: { 1: { appendsEnv: 'GOOD=1\njunk\n', appendsOutput: 'files=a\nb\n' } },
+  });
+  const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
+  const error = result.steps[0]!.error!;
+  expect(error).toContain("Invalid environment variable format 'junk'");
+  expect(error).toContain("Unable to process file command 'output' successfully.");
+  const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
+  expect(log).toContain("Invalid environment variable format 'junk'");
+  expect(log).toContain("Unable to process file command 'output' successfully.");
+  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
 });
 
 test("a GITHUB_ENV write of NODE_OPTIONS is refused as on GitHub's runner, and the step's log says so", async () => {

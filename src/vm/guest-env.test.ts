@@ -112,10 +112,12 @@ test('an empty file and an empty multiline value both parse', () => {
 });
 
 test('malformed GITHUB_ENV content is an error, as on GitHub', () => {
-  expect(parseEnvFile('A=1\nB<<EOF\nnever ends\n')).toEqual({
+  expect(parseEnvFile('A=1\nB<<EOF\nnever ends\n')).toMatchObject({
     error: "Invalid environment variable value. Matching delimiter not found 'EOF'",
   });
-  expect(parseEnvFile('junk\n')).toEqual({ error: "Invalid environment variable format 'junk'" });
+  expect(parseEnvFile('junk\n')).toMatchObject({
+    error: "Invalid environment variable format 'junk'",
+  });
   expect(parseEnvFile('=value\n')).toMatchObject({
     error: expect.stringContaining('name must not be empty'),
   });
@@ -125,6 +127,16 @@ test('malformed GITHUB_ENV content is an error, as on GitHub', () => {
   expect(parseEnvFile('A<<\nx\n')).toMatchObject({
     error: expect.stringContaining('delimiter must not be empty'),
   });
+});
+
+test('a malformed GITHUB_ENV keeps the assignments before the bad line, as GitHub does', () => {
+  expect(parseEnvFile('A=1\nNOTE<<EOF\nx\nEOF\nB=2\njunk\nC=3\n')).toEqual({
+    env: { A: '1', B: '2', NOTE: 'x' },
+    error: "Invalid environment variable format 'junk'",
+  });
+  expect(parseEnvFile('A=1\nB<<EOF\nnever ends\n')).toMatchObject({ env: { A: '1' } });
+  expect(parseEnvFile('A=1\n=value\nB=2\n')).toMatchObject({ env: { A: '1' } });
+  expect(parseEnvFile('A=1\nB<<\nx\n')).toMatchObject({ env: { A: '1' } });
 });
 
 test("GitHub's runner refuses NODE_OPTIONS from GITHUB_ENV in any case, with its message for each", () => {
@@ -174,5 +186,5 @@ test('a long file of heredoc entries parses in time linear in its length', () =>
   const started = performance.now();
   const parsed = parseEnvFile(`${records}\n`);
   expect(performance.now() - started).toBeLessThan(1000);
-  expect('env' in parsed && parsed.env.K59999).toBe('v59999');
+  expect(parsed.env.K59999).toBe('v59999');
 });

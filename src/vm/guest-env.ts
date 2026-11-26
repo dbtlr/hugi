@@ -72,8 +72,12 @@ export function withoutToolVersions(env: Environment): Environment {
   );
 }
 
-/** A parsed `GITHUB_ENV` file, or the error GitHub's runner reports for it. */
-export type EnvFileParse = { readonly env: Environment } | { readonly error: string };
+/**
+ * A parsed `GITHUB_ENV` file: the assignments read, and the error GitHub's runner reports for the
+ * first bad line. The runner sets each assignment as it reads it, so `env` holds the ones before
+ * that line even when `error` is set.
+ */
+export type EnvFileParse = { readonly env: Environment; readonly error?: string };
 
 /** The phrases GitHub's runner uses for one kind of command file's errors. */
 type Wording = { readonly format: string; readonly name: string; readonly value: string };
@@ -92,7 +96,7 @@ const OUTPUT_WORDING: Wording = { format: 'Invalid format', name: 'Name', value:
  * whichever of `=` and `<<` comes first deciding the form. Empty lines are
  * skipped and later assignments win. Any other line, an empty name or
  * delimiter, or a block with no closing delimiter is an error that fails the
- * step, with GitHub's wording.
+ * step, with GitHub's wording; parsing stops there, keeping what came before.
  */
 export function parseEnvFile(content: string): EnvFileParse {
   return parseKeyValueFile(content, ENV_WORDING);
@@ -105,7 +109,7 @@ export function parseEnvFile(content: string): EnvFileParse {
  */
 export function parseOutputFile(content: string): string | undefined {
   const parsed = parseKeyValueFile(content, OUTPUT_WORDING);
-  return 'error' in parsed
+  return parsed.error !== undefined
     ? `Unable to process file command 'output' successfully. ${parsed.error}`
     : undefined;
 }
@@ -123,6 +127,7 @@ function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
     if (equals !== -1 && (heredoc === -1 || equals < heredoc)) {
       if (equals === 0) {
         return {
+          env: parsed,
           error: `${wording.format} '${line}'. ${wording.name} must not be empty`,
         };
       }
@@ -130,12 +135,13 @@ function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
       continue;
     }
     if (heredoc === -1) {
-      return { error: `${wording.format} '${line}'` };
+      return { env: parsed, error: `${wording.format} '${line}'` };
     }
     const key = line.slice(0, heredoc);
     const delimiter = line.slice(heredoc + 2);
     if (key === '' || delimiter === '') {
       return {
+        env: parsed,
         error: `${wording.format} '${line}'. ${wording.name} must not be empty and delimiter must not be empty`,
       };
     }
@@ -143,6 +149,7 @@ function parseKeyValueFile(content: string, wording: Wording): EnvFileParse {
     const end = lines.indexOf(delimiter, at + 1);
     if (end === -1) {
       return {
+        env: parsed,
         error: `${wording.value}. Matching delimiter not found '${delimiter}'`,
       };
     }
