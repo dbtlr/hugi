@@ -137,7 +137,7 @@ describe('guestScript', () => {
       'export PATH="/wf/bin"',
     ]);
     expect(script).toEndWith(
-      `${String.raw`exec /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u POSIXLY_CORRECT -u POSIX_PEDANTIC -u TMOUT -- 'FOO=it'\''s' /bin/bash -eo pipefail -c 'echo "$FOO"`}\n${String.raw`touch '\''ok'\'''`}\n`,
+      `${String.raw`exec /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u IFS -u POSIXLY_CORRECT -u POSIX_PEDANTIC -u TMOUT -- 'FOO=it'\''s' /bin/bash -eo pipefail -c 'echo "$FOO"`}\n${String.raw`touch '\''ok'\'''`}\n`,
     );
   });
 

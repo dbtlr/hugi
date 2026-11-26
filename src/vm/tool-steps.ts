@@ -40,11 +40,12 @@ export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 const STARTUP_FILES = ['BASH_ENV', 'ENV'];
 
 /**
- * The variables that change bash's options, mode or `read` (bash 3.2 reads `POSIX_PEDANTIC` at
- * startup, and `TMOUT` times out a `read`), which no running bash can take without changing.
- * `BASHOPTS` is not one: the guest's bash 3.2 ignores it, so it passes through.
+ * The variables that change bash's options, mode, word splitting or `read` (bash 3.2 reads
+ * `POSIX_PEDANTIC` at startup, resets `IFS` there, and `TMOUT` times out a `read`), which no running
+ * bash can take without changing, nor hand to mise as it got them. `BASHOPTS` is not one: the
+ * guest's bash 3.2 ignores it, so it passes through.
  */
-const SHELL_SETTINGS = ['SHELLOPTS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT'];
+const SHELL_SETTINGS = ['SHELLOPTS', 'IFS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT'];
 
 /** What bash imports as a function (`BASH_FUNC_mise%%`), which could replace a command of Hugi's. */
 const FUNCTION_PREFIX = 'BASH_FUNC_';

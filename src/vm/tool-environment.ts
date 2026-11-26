@@ -56,7 +56,7 @@ export function parseToolEnvironment(text: string): Environment {
   }
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
-    if (key === '' || key.includes('=')) {
+    if (key === '' || key.includes('=') || key.includes('\0')) {
       throw new ToolOutputError(
         `the tool environment has ${JSON.stringify(key)}, which no process can carry as a variable name`,
       );

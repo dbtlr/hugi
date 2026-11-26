@@ -872,7 +872,7 @@ test.each(['MISE_CONFIG_DIR', 'MISE_GLOBAL_CONFIG_FILE', 'MISE_CEILING_PATHS'])(
   },
 );
 
-test.each(['SHELLOPTS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT', 'BASH_FUNC_mise%%'])(
+test.each(['SHELLOPTS', 'IFS', 'POSIXLY_CORRECT', 'POSIX_PEDANTIC', 'TMOUT', 'BASH_FUNC_mise%%'])(
   "a step environment that sets %s, which would change the bash of the step's mise commands, fails the step as Hugi's own before its first command",
   async (name) => {
     const h = harness();

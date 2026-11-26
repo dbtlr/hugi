@@ -72,7 +72,7 @@ describe('parseToolEnvironment', () => {
     },
   );
 
-  test.each(['', 'A=B', '=X'])(
+  test.each(['', 'A=B', '=X', 'A\u0000B'])(
     'refuses the key %p, which no process can carry, naming it',
     (key) => {
       const text = JSON.stringify(
