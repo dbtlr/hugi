@@ -227,7 +227,7 @@ test("an invalid GITHUB_ENV fails its step as on GitHub, but the lines before th
     "Error: Invalid environment variable value. Matching delimiter not found 'EOF'",
   );
   const second = h.tart.launcherFor(2);
-  expect(second).toContain("export GOOD='1'");
+  expect(second).toContain("'GOOD=1'");
   expect(second).not.toContain('LATER');
   expect(second).toContain('export PATH="/custom/bin:');
 });
@@ -238,7 +238,7 @@ test("an invalid GITHUB_ENV still refuses the names GitHub's runner refuses, wit
   });
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
-  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
+  expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
   expect(h.tart.launcherFor(2)).not.toMatch(/node_options/i);
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
   expect(log).toContain(
@@ -256,7 +256,7 @@ test("an invalid GITHUB_OUTPUT fails its step but keeps the step's GITHUB_ENV an
   const result = await run(h, requestOf([runStep(1), runStep(2, { when: 'always' })]));
   expect(result.steps[0]).toMatchObject({ outcome: 'failure' });
   const second = h.tart.launcherFor(2);
-  expect(second).toContain("export GOOD='1'");
+  expect(second).toContain("'GOOD=1'");
   expect(second).toContain('export PATH="/custom/bin:');
 });
 
@@ -271,7 +271,7 @@ test('when both GITHUB_ENV and GITHUB_OUTPUT are invalid, both errors are report
   const log = readFileSync(result.steps[0]!.logFile!, 'utf8');
   expect(log).toContain("Invalid environment variable format 'junk'");
   expect(log).toContain("Unable to process file command 'output' successfully.");
-  expect(h.tart.launcherFor(2)).toContain("export GOOD='1'");
+  expect(h.tart.launcherFor(2)).toContain("'GOOD=1'");
 });
 
 test("a GITHUB_ENV write of NODE_OPTIONS is refused as on GitHub's runner, and the step's log says so", async () => {
