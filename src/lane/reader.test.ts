@@ -1106,3 +1106,12 @@ test.each([
   expect(() => read(build({ '': 'x' }))).toThrow(LaneReadError);
   expect(() => read(build({ '': 'x' }))).toThrow(/env has an empty key/);
 });
+
+test.each(['GITHUB_ENV=/tmp/alternate', 'A=B'])(
+  'an env key holding = (%p) is refused at lane read, so it cannot set another variable',
+  (key) => {
+    const text = workflow({ steps: [{ env: { [key]: 'x' }, run: 'true' }] });
+    expect(() => read(text)).toThrow(LaneReadError);
+    expect(() => read(text)).toThrow(`env key "${key}" holds =`);
+  },
+);
