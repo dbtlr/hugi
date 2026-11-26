@@ -119,6 +119,9 @@ const rustReport = (index: number) =>
     'echo "toolchain=$RUSTUP_TOOLCHAIN"\nrustc --version\ncat /Users/admin/hugi/control/mise-workflow-environment.json',
   );
 
+/** A step that prints the `FOO-BAR` variable it runs with, a name no shell can export. */
+const envReport = (index: number) => step(index, "/usr/bin/env | grep '^FOO-BAR='");
+
 /** The lane's `actions/checkout` step, which materializes the workspace. */
 const checkout = (index: number): ActionStep => ({
   continueOnError: false,
@@ -620,7 +623,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
       await waitForFreeSlot();
       const config = await miseConfigSource('config-no-rust', '[tools]\n');
       try {
-        const req = request('golden-workflow-rust', [checkout(1), rustReport(2)], {
+        const base = request('golden-workflow-rust', [checkout(1), rustReport(2), envReport(3)], {
           event: {
             event: 'push',
             refName: 'main',
@@ -633,9 +636,15 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
           toolSource: 'mise',
           tools: ['rust@1.97.1'],
         });
+        // A workflow variable that is not a shell name reaches mise's scripts and the steps (HUGI-34).
+        const req = {
+          ...base,
+          plan: { ...base.plan, env: { ...base.plan.env, 'FOO-BAR': 'dash' } },
+        };
         const deps = realDeps();
         const result = await runInVm(req, deps);
         expect(result).toMatchObject({ reason: 'passed', verdict: 'pass' });
+        expect(logOf(req, '03-step-3.log')).toContain('FOO-BAR=dash');
         const report = logOf(req, '02-step-2.log');
         expect(report).toContain('toolchain=1.97.1');
         expect(report).toContain('rustc 1.97.1');
