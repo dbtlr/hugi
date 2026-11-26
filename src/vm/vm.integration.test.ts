@@ -251,7 +251,7 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
   );
 
   test(
-    'a key that is not a shell name reaches the step and its children, from env: and from GITHUB_ENV',
+    'a key that is not a shell name, or one bash treats specially, reaches the step and its children, from env: and from GITHUB_ENV',
     async () => {
       await waitForFreeSlot();
       const req = request('odd-env-keys', [
@@ -261,8 +261,8 @@ describe.skipIf(!enabled)('runInVm in a real VM', () => {
         }),
         step(
           3,
-          'test "$(/usr/bin/env | grep -c \'^FOO-BAR=\')" = 1 && /usr/bin/env | grep -F "FROM-FILE=file value" && ! test -e hacked && echo odd-keys-ok',
-          { env: { 'FOO-BAR': "it's x" } },
+          'test "$(/usr/bin/env | grep -c \'^FOO-BAR=\')" = 1 && /usr/bin/env | grep -F "FROM-FILE=file value" && /usr/bin/env | grep -x GROUPS=g && /usr/bin/env | grep -x SECONDS=x && ! test -e hacked && echo odd-keys-ok',
+          { env: { 'FOO-BAR': "it's x", GROUPS: 'g', SECONDS: 'x' } },
         ),
       ]);
       const deps = realDeps();

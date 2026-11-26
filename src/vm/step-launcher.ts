@@ -1,9 +1,9 @@
 /**
  * Builds the shell text that starts one step in the guest. The host feeds it to
  * `bash -s` over `tart exec -i`. It writes the step's script and a supervisor
- * to the guest, gives the step fresh command files, sets
- * the step's environment, and starts the supervisor detached in a new session,
- * then returns at once.
+ * to the guest, gives the step fresh command files, exports what Hugi owns
+ * (the command-file variables and `PATH`), and starts the supervisor detached
+ * in a new session, then returns at once.
  *
  * The supervisor records its process id (the session's process group), runs
  * the step's shell with output going to a guest log file, and writes the
@@ -11,9 +11,17 @@
  * for that status, so a step ends when its script exits, as on GitHub, even
  * while a background child it started still holds the output open. The host
  * kills a timed-out step by signalling the whole process group.
+ *
+ * The rest of the step's environment reaches only the step's shell: the
+ * supervisor starts it through `/usr/bin/env` with each variable as an
+ * assignment, which `env` sets before it execs the shell, as GitHub's runner
+ * sets them in the step process's environment. Neither the launcher nor the
+ * supervisor carries a workflow variable, so none (`SHELLOPTS`, `BASH_ENV`, a
+ * key that is not a shell name) changes how Hugi's own shells run. A key `env`
+ * cannot set fails the step with env's message in its log.
  */
 import type { RunStep } from '../lane/step-plan';
-import { splitEnvironment } from './guest-env';
+import { envAssignments } from './guest-env';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS } from './guest-paths';
 import type { StepFiles } from './guest-paths';
@@ -88,12 +96,24 @@ export function guestPath(extraPath: readonly string[], replacement?: string): s
  */
 const START_SESSION = `/usr/bin/perl -e 'use POSIX (); POSIX::setsid() or die "setsid: $!\\n"; $SIG{INT} = "DEFAULT"; $SIG{QUIT} = "DEFAULT"; exec @ARGV or die "exec: $!\\n"'`;
 
-/** The supervisor: runs the step shell in the working directory, then records its exit status. */
-function supervisorScript(step: RunStep, files: StepFiles): string {
+/** The variables Hugi sets for every step, which the workflow's environment does not replace. */
+const HUGI_OWNED = ['PATH', 'GITHUB_ENV', 'GITHUB_PATH', 'GITHUB_OUTPUT'];
+
+/**
+ * The supervisor: runs the step shell in the working directory with the step's environment, then
+ * records its exit status. `env` execs the shell, so the shell stays in the supervisor's process
+ * group and its exit status is the step's.
+ */
+function supervisorScript(step: RunStep, env: Environment, files: StepFiles): string {
   const workingDirectory = step.workingDirectory
     ? `${GUEST_RUNNER_PATHS.workspace}/${step.workingDirectory}`
     : GUEST_RUNNER_PATHS.workspace;
-  const shell = shellCommand(step.shell, files.script).map(shellQuote).join(' ');
+  const shell = [
+    '/usr/bin/env',
+    '--',
+    ...envAssignments(env, HUGI_OWNED),
+    ...shellCommand(step.shell, files.script).map(shellQuote),
+  ].join(' ');
   const statusTemp = `${files.status}.tmp`;
   return [
     `exec >> ${shellQuote(files.log)} 2>&1 < /dev/null`,
@@ -113,22 +133,20 @@ export function buildStepLauncher(input: LauncherInput): string {
   const { step, env, extraPath, files } = input;
   const directory = files.script.slice(0, files.script.lastIndexOf('/'));
   const supervisorPath = `${directory}/supervisor.sh`;
-  const { envPrefix, exports } = splitEnvironment(env);
   return [
     `# hugi-step ${step.index}`,
     'set -e',
     'exec 2>&1',
     `mkdir -p ${shellQuote(directory)}`,
     ...writeFile(files.script, step.script),
-    ...writeFile(supervisorPath, supervisorScript(step, files)),
+    ...writeFile(supervisorPath, supervisorScript(step, env, files)),
     ...[files.env, files.path, files.output, files.log].map((file) => `: > ${shellQuote(file)}`),
-    ...exports,
     `export GITHUB_ENV=${shellQuote(files.env)}`,
     `export GITHUB_PATH=${shellQuote(files.path)}`,
     `export GITHUB_OUTPUT=${shellQuote(files.output)}`,
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
     // A failure to start the session lands in the step's log.
-    `${envPrefix === '' ? '' : `${envPrefix} `}${START_SESSION} /bin/bash ${shellQuote(supervisorPath)} >> ${shellQuote(files.log)} 2>&1 < /dev/null &`,
+    `${START_SESSION} /bin/bash ${shellQuote(supervisorPath)} >> ${shellQuote(files.log)} 2>&1 < /dev/null &`,
     '',
   ].join('\n');
 }

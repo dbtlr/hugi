@@ -181,12 +181,30 @@ export type FakeMiseAction = {
   readonly hangs?: MiseActionPhase;
 };
 
+const WRAPPER_BASH = ' /bin/bash -eo pipefail -c ';
+
+/**
+ * A `guestScript` as it reads before its lines are quoted into the wrapper bash's `-c` argument:
+ * the same text up to `-c`, then each line as written on a line of its own. Any other script is
+ * returned unchanged.
+ */
+export function readableGuestScript(script: string): string {
+  const exec = script.indexOf('\nexec /usr/bin/env ');
+  const at = exec === -1 ? -1 : script.indexOf(WRAPPER_BASH, exec);
+  if (at === -1) {
+    return script;
+  }
+  const quoted = script.slice(at + WRAPPER_BASH.length).replace(/\n$/u, '');
+  const lines = quoted.slice(1, -1).replaceAll(String.raw`'\''`, "'");
+  return `${script.slice(0, at + WRAPPER_BASH.length - 1)}\n${lines}\n`;
+}
+
 /**
  * The install check's default answer: each place its script searches holds no regular file. The
  * places are the loop's `shellQuote`d words, which write an apostrophe as `'\''`.
  */
 function emptyLockPlaces(script: string): string {
-  const places = /^for place in (.*); do/mu.exec(script)?.[1] ?? '';
+  const places = /^for place in (.*); do/mu.exec(readableGuestScript(script))?.[1] ?? '';
   return [...places.matchAll(/(?:'[^']*'|\\')+/gu)]
     .map(([word]) => word.replaceAll(String.raw`'\''`, "'").slice(1, -1))
     .map((path) => `${JSON.stringify({ files: [], path })}\n`)

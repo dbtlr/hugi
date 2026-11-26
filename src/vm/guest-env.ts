@@ -238,36 +238,16 @@ export function stepEnvironment(layers: {
   return { ...layers.runner, ...layers.plan, ...layers.fromGithubEnv, ...layers.step };
 }
 
-/** What a shell accepts as a variable name; only such a key can become an `export KEY=...` line. */
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Names bash (3.2, the guest's) keeps read-only, so `export NAME=...` fails; GitHub passes them through. */
-const READ_ONLY_NAMES = new Set(['BASH_VERSINFO', 'EUID', 'PPID', 'SHELLOPTS', 'UID']);
-
-const isExportable = (name: string): boolean =>
-  VARIABLE_NAME.test(name) && !READ_ONLY_NAMES.has(name);
-
 /**
- * An environment split by how a guest shell can carry it. A key that is an exportable shell name
- * becomes an `export` line (`PATH` is left to `guestPath`). Any other key, such as `FOO-BAR` or a
- * name bash keeps read-only like `UID`, which a workflow `env:` map or `GITHUB_ENV` may hold and
- * GitHub's runner passes to the step, cannot be exported by a shell, so it becomes an
- * `/usr/bin/env` assignment, shell-quoted whole, that starts the process which should inherit it.
- * `--` ends env's options, so a key starting with `-` is not read as one. `envPrefix` is empty
- * when there is no such key.
+ * The environment as `/usr/bin/env` assignment words, each `KEY=value` shell-quoted whole, without
+ * the names in `omit`. Put after `/usr/bin/env --` on the command that starts a process, they give
+ * it every variable exactly, whatever its name: `FOO-BAR`, a name bash treats specially such as
+ * `UID` or `SECONDS`, or a key starting with `-`, which `--` keeps from reading as an option. No
+ * shell of Hugi's sees them. A key `env` cannot set, such as an empty one or one starting with `=`,
+ * makes `env` fail, so the process does not start and the command exits non-zero.
  */
-export function splitEnvironment(env: Environment): {
-  readonly exports: string[];
-  readonly envPrefix: string;
-} {
-  const entries = Object.entries(env).filter(([key]) => key !== 'PATH');
-  const assignments = entries
-    .filter(([key]) => !isExportable(key))
+export function envAssignments(env: Environment, omit: readonly string[]): string[] {
+  return Object.entries(env)
+    .filter(([key]) => !omit.includes(key))
     .map(([key, value]) => shellQuote(`${key}=${value}`));
-  return {
-    envPrefix: assignments.length === 0 ? '' : `/usr/bin/env -- ${assignments.join(' ')}`,
-    exports: entries
-      .filter(([key]) => isExportable(key))
-      .map(([key, value]) => `export ${key}=${shellQuote(value)}`),
-  };
 }
