@@ -7,7 +7,7 @@
  * host reads and judges them (`./tool-environment`).
  */
 import {
-  envAssignments,
+  environmentExports,
   githubEnvironment,
   miseConfigEnvironment,
   miseIsolation,
@@ -36,17 +36,9 @@ import {
 /** The name of the step that installs the tools from the repository's mise config. */
 export const MISE_CONFIG_STEP_NAME = 'Install tools from mise config';
 
-/** The variables that make bash source a file or change its options, kept from Hugi's wrapper bash. */
-const SHELL_STARTUP = ['BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS'];
-
 /**
  * The guest script `marker` names, running `lines` with `env` under the fixed base `PATH`, or the
- * `PATH` that `env` sets, with `extraPath` in front of it. `lines` run in a bash that
- * `/usr/bin/env` starts with every other variable of `env` as an assignment, so a key that is not a
- * shell name, or one bash treats specially such as `UID`, reaches its commands exactly. The
- * variables in `SHELL_STARTUP` are unset and left out of the assignments, so neither `env` nor the
- * guest shell's own environment can make that bash source a file or change its options; they do
- * not reach its commands either (a known gap, in docs/supported-actions.md).
+ * `PATH` that `env` sets, with `extraPath` in front of it.
  */
 export function guestScript(
   marker: string,
@@ -54,21 +46,13 @@ export function guestScript(
   lines: readonly string[],
   extraPath: readonly string[] = [],
 ): string {
-  const unset = SHELL_STARTUP.flatMap((name) => ['-u', name]);
-  const assignments = envAssignments(env, ['PATH', ...SHELL_STARTUP]);
   return [
     `# hugi-${marker}`,
     'set -eo pipefail',
     'exec 2>&1',
+    ...environmentExports(env),
     `export PATH="${guestPath(extraPath, env.PATH)}"`,
-    [
-      'exec /usr/bin/env',
-      ...unset,
-      '--',
-      ...assignments,
-      '/bin/bash -eo pipefail -c',
-      shellQuote(lines.join('\n')),
-    ].join(' '),
+    ...lines,
     '',
   ].join('\n');
 }

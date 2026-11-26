@@ -9,7 +9,7 @@ import { posix } from 'node:path';
 import { isMapping } from '../yaml/strict';
 import type { Environment } from './guest-env';
 import { GUEST_RUNNER_PATHS } from './guest-paths';
-import { ToolOutputError } from './tool-environment';
+import { isVariableName, ToolOutputError } from './tool-environment';
 
 /** Parse one JSON document per line, failing with a `ToolOutputError` that names `what`. */
 function jsonLines(text: string, what: string): Record<string, unknown>[] {
@@ -162,6 +162,11 @@ export function exportedVariables(json: string): Environment {
   for (const [name, value] of Object.entries(parsed)) {
     if (name.toUpperCase() === 'PATH' || typeof value !== 'string') {
       continue;
+    }
+    if (!isVariableName(name)) {
+      throw new ToolOutputError(
+        `mise env --json has ${JSON.stringify(name)}, which a later step's shell cannot export`,
+      );
     }
     exported[name] = value;
   }

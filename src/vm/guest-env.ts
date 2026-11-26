@@ -251,3 +251,10 @@ export function envAssignments(env: Environment, omit: readonly string[]): strin
     .filter(([key]) => !omit.includes(key))
     .map(([key, value]) => shellQuote(`${key}=${value}`));
 }
+
+/** `export` lines for every variable but `PATH`, which `guestPath` sets. For Hugi's own scripts. */
+export function environmentExports(env: Environment): string[] {
+  return Object.entries(env)
+    .filter(([key]) => key !== 'PATH')
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`);
+}

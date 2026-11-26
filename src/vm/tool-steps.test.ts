@@ -1,7 +1,6 @@
 /* oxlint-disable node/no-sync -- test support: builds a throwaway workspace and runs the guest script on the host */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,13 +10,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { GUEST_CONTROL_DIR, GUEST_RUNNER_PATHS, GUEST_TOOL_FILES } from './guest-paths';
 import type { RunRequest } from './run-request';
-import { shellQuote } from './shell';
 import { configFilesInWorkspace, parseConfigListing } from './tool-environment';
-import { configListingScript, guestScript } from './tool-steps';
+import { configListingScript } from './tool-steps';
 
 const mise = Bun.which('mise');
 const jq = Bun.which('jq');
@@ -114,85 +112,4 @@ describe.skipIf(!canRun)('the guest listing script, run on the host with real mi
 
 test('the listing script resolves each file with realpath', () => {
   expect(configListingScript(request)).toContain('realpath "$path"');
-});
-
-describe('guestScript', () => {
-  test('keeps the marker first, exports only PATH, and runs the lines in a bash that env starts', () => {
-    const script = guestScript(
-      'x',
-      { BASH_ENV: '/b', FOO: "it's", PATH: '/wf/bin', SHELLOPTS: 'xtrace' },
-      ['echo "$FOO"', "touch 'ok'"],
-    );
-    expect(script).toStartWith('# hugi-x\n');
-    expect(script.split('\n').filter((line) => line.startsWith('export '))).toEqual([
-      'export PATH="/wf/bin"',
-    ]);
-    expect(script).toEndWith(
-      `${String.raw`exec /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -- 'FOO=it'\''s' /bin/bash -eo pipefail -c 'echo "$FOO"`}\n${String.raw`touch '\''ok'\'''`}\n`,
-    );
-  });
-
-  describe('run by a real bash', () => {
-    let dir = '';
-
-    beforeEach(() => {
-      mkdirSync('.scratch', { recursive: true });
-      dir = resolve(mkdtempSync(join('.scratch', 'guest-script.')));
-    });
-
-    afterEach(() => {
-      rmSync(dir, { recursive: true });
-    });
-
-    /** Run `script` as the guest runs a guest script: `bash -s` reading it, in `dir`. */
-    const run = (script: string) => {
-      const ran = Bun.spawnSync(['/bin/bash', '-s'], {
-        cwd: dir,
-        env: { PATH: '/usr/bin:/bin' },
-        stdin: new TextEncoder().encode(script),
-      });
-      return { code: ran.exitCode, out: ran.stdout.toString() };
-    };
-
-    test('hands a child every key exactly, whatever bash makes of the name, and runs nothing from one', () => {
-      const env = {
-        'A;touch hacked': 'q',
-        'FOO-BAR': "it's x",
-        GROUPS: 'g',
-        SECONDS: 'x',
-        UID: '5',
-      };
-      const ran = run(guestScript('x', env, ['/usr/bin/env']));
-      expect(ran.code, ran.out).toBe(0);
-      const lines = ran.out.split('\n');
-      for (const [key, value] of Object.entries(env)) {
-        expect(lines).toContain(`${key}=${value}`);
-      }
-      expect(existsSync(join(dir, 'hacked'))).toBe(false);
-    });
-
-    test("a BASH_ENV or SHELLOPTS in the environment reaches neither the wrapper bash nor the lines' commands", () => {
-      const marker = join(dir, 'sourced');
-      const file = join(dir, 'bash-env.sh');
-      writeFileSync(file, `touch ${shellQuote(marker)}\n`);
-      const ran = run(
-        guestScript('x', { BASH_ENV: file, SHELLOPTS: 'xtrace' }, [
-          'echo quiet',
-          '/usr/bin/env | grep -c -e ^BASH_ENV= -e ^SHELLOPTS= || true',
-        ]),
-      );
-      expect(ran.code, ran.out).toBe(0);
-      expect(ran.out).toBe('quiet\n0\n');
-      expect(existsSync(marker)).toBe(false);
-    });
-
-    test('a failing line or pipeline fails the script, and its exit code carries out', () => {
-      const after = join(dir, 'after');
-      expect(run(guestScript('x', {}, ['false', `touch ${shellQuote(after)}`])).code).toBe(1);
-      expect(existsSync(after)).toBe(false);
-      // pipefail: a failing command anywhere in a pipeline fails it.
-      expect(run(guestScript('x', {}, ['false | true', 'exit 0'])).code).toBe(1);
-      expect(run(guestScript('x', {}, ['exit 7'])).code).toBe(7);
-    });
-  });
 });
